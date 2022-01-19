@@ -1,0 +1,7 @@
+.venv/
+.cache/
+__pycache__/
+finetune_checkpoints/wandb/
+glide_model_cache/
+.vscode/
+outputs/
