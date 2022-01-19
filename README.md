@@ -38,4 +38,5 @@ source .venv/bin/activate
 ## Known issues:
 - batching isn't handled in the dataloader
 - NaN/Inf errors
+- Resizing doesn't handle non-square aspect ratios properly
 - some of the code is messy, needs refactoring.
