@@ -7,18 +7,6 @@ from glide_text2im.model_creation import (
     model_and_diffusion_defaults,
 )
 
-# def training_losses(self, model, x_start, t, model_kwargs=None, noise=None):
-#     """
-#     Compute training losses for a single timestep.
-
-#     :param model: the model to evaluate loss on.
-#     :param x_start: the [N x C x ...] tensor of inputs.
-#     :param t: a batch of timestep indices.
-#     :param model_kwargs: if not None, a dict of extra keyword arguments to
-#         pass to the model. This can be used for conditioning.
-#     :param noise: if specified, the specific Gaussian noise to try to remove.
-#     :return: a dict with the key "loss" containing a tensor of shape [N].
-#                 Some me
 
 def load_base_model(glide_path:str='', use_fp16:bool=False, dropout: float=0.1, timestep_respacing: str = '1000', freeze_transformer: bool = False, freeze_diffusion: bool = False):
     """
