@@ -12,60 +12,51 @@ import torch as th
 from torch.utils.data import Dataset
 from torchvision import transforms as T
 
-def _extract_into_tensor(arr, timesteps, broadcast_shape):
-    res = th.from_numpy(arr).to(device=timesteps.device)[timesteps].float()
-    while len(res.shape) < len(broadcast_shape):
-        res = res[..., None]
-    return res.expand(broadcast_shape)
+DEFAULT_KEY_CACHE_PATH = Path(expanduser('~/.cache/glide/keys.txt'))
+DEFAULT_IMAGES_CACHE_PATH = Path(expanduser('~/.cache/glide/images.txt'))
+DEFAULT_CAPTIONS_CACHE_PATH = Path(expanduser('~/.cache/glide/captions.txt'))
 
-def show_image(batch):
-    scaled = ((batch + 1)*127.5).round().clamp(0,255).to(th.uint8).cpu()
-    reshaped = scaled.permute(2, 0, 3, 1).reshape([batch.shape[2], -1, 3])
+def get_image_files_dict(base_path):
+    image_files = [
+        *base_path.glob('**/*.png'), *base_path.glob('**/*.jpg'),
+        *base_path.glob('**/*.jpeg'), *base_path.glob('**/*.bmp')
+    ]
+    return {image_file.stem: image_file for image_file in image_files}
 
-@lru_cache(maxsize=1)
-def get_keys(base_path):
-    if os.path.isdir(base_path):
-        text_files = [*base_path.glob('**/*.txt')]
-        image_files = [
-            *base_path.glob('**/*.png'), *base_path.glob('**/*.jpg'),
-            *base_path.glob('**/*.jpeg'), *base_path.glob('**/*.bmp')
-        ]
-    
-    text_files = {text_file.stem: text_file for text_file in text_files}
-    image_files = {image_file.stem: image_file for image_file in image_files}
-    keys = (image_files.keys() & text_files.keys())
-    return list(keys), image_files, text_files
+def get_text_files_dict(base_path):
+    text_files = [*base_path.glob('**/*.txt')]
+    return {text_file.stem: text_file for text_file in text_files}
 
-KEY_CACHE_PATH = Path(expanduser('~/.cache/glide/keys.txt'))
+def get_shared_stems(image_files_dict, text_files_dict):
+    image_files_stems = set(image_files_dict.keys())
+    text_files_stems = set(text_files_dict.keys())
+    return list(image_files_stems & text_files_stems)
 
-@lru_cache(maxsize=1)
-def get_keys_from_cache(image_files_cache, text_files_cache):
-    """
-    Get the keys from a file containing the paths to the image and text files instead of globbing.
-
-    Args:
-        image_files_cache: The path to the image files cache. Must end in .txt
-        text_files_cache: The path to the text files cache. Must end in .txt
-    """
-    image_files_cache, text_files_cache = Path(image_files_cache), Path(text_files_cache)
-
-    print(f'Loading keys from cache: {image_files_cache}...')
-    image_files = open(image_files_cache, 'r').read().splitlines()
-    image_files = { Path(image_file).stem: Path(image_file) for image_file in image_files }
-
-    print(f'Loading keys from cache: {text_files_cache}...')
-    text_files = open(text_files_cache,'r').read().splitlines()
-    text_files = { Path(text_file).stem: Path(text_file) for text_file in text_files }
-
-    if not KEY_CACHE_PATH.exists():
-        print(f"Finding keys from path basename/stem...")
-        keys = (image_files.keys() & text_files.keys())
-        KEY_CACHE_PATH.write_text('\n'.join(keys))
-        return list(keys), image_files, text_files
+def get_keys_from_cache(folder, image_cache_path, text_cache_path, keys_cache_path):
+    image_cache_path, text_cache_path, keys_cache_path = Path(image_cache_path), Path(text_cache_path), Path(keys_cache_path)
+    if not image_cache_path.exists(): 
+        print(f'Creating image cache at {image_cache_path}...')
+        image_files = get_image_files_dict(folder)
     else:
-        keys = open(KEY_CACHE_PATH, 'r').read().splitlines()
-        print(f"Loaded {len(keys)} keys from cache")
-        return keys, image_files, text_files
+        print(f'Loading image cache from {image_cache_path}...')
+        image_files = open(image_cache_path, 'r').read().splitlines()
+        image_files = {Path(image_file).stem: image_file for image_file in image_files}
+
+    if not text_cache_path.exists():
+        print(f'Creating text cache at {text_cache_path}...')
+        text_files = get_text_files_dict(folder)
+    else:
+        print(f'Loading text cache from {text_cache_path}...')
+        text_files = open(text_cache_path, 'r').read().splitlines()
+        text_files = {Path(text_file).stem: text_file for text_file in text_files}
+
+    if not keys_cache_path.exists():
+        print(f'Creating keys cache at {keys_cache_path}...')
+        keys = get_shared_stems(image_files, text_files)
+    else:
+        print(f'Loading keys cache from {keys_cache_path}...')
+        keys = open(keys_cache_path, 'r').read().splitlines()
+    return keys, image_files, text_files
 
 class TextImageDataset(Dataset):
     def __init__(self,
@@ -73,26 +64,31 @@ class TextImageDataset(Dataset):
                  batch_size=1,
                  side_x=64,
                  side_y=64,
-                 image_files_cache='./image_files.txt',
-                 text_files_cache='./text_files.txt',
                  shuffle=False,
                  device='cpu',
-                 ):
-        """
-        @param folder: Folder containing images and text files matched by their paths' respective "stem"
-        @param truncate_captions: Rather than throw an exception, captions which are too long will be truncated.
-        """
+                 image_files_cache=DEFAULT_IMAGES_CACHE_PATH,
+                 text_files_cache=DEFAULT_CAPTIONS_CACHE_PATH,
+                 shared_keys_cache=DEFAULT_KEY_CACHE_PATH,
+                 force_reload=False):
         super().__init__()
-        if '~' in folder:
-            folder = expanduser(folder)
         image_cache_path = Path(image_files_cache)
         text_cache_path = Path(text_files_cache)
+        keys_cache_path = Path(shared_keys_cache)
         folder = Path(folder)
-        if image_cache_path.exists() and text_cache_path.exists():
-            print(f"Found image and text cache files, loading from them...")
-            self.keys, self.image_files, self.text_files = get_keys_from_cache(image_cache_path, text_cache_path)
-        else:
-            raise FileNotFoundError(f"Could not find image and text cache files, {image_cache_path} and {text_cache_path}")
+
+        if force_reload:
+            if image_cache_path.exists():
+                os.remove(image_cache_path)
+            if text_cache_path.exists():
+                os.remove(text_cache_path)
+            if keys_cache_path.exists():
+                os.remove(keys_cache_path)
+
+        keys, image_files, text_files = get_keys_from_cache(folder, image_cache_path, text_cache_path, keys_cache_path)
+        self.keys = list(keys)
+        self.image_files = image_files
+        self.text_files = text_files
+
         self.shuffle = shuffle
         self.device = device
         self.batch_size = batch_size
@@ -133,7 +129,7 @@ class TextImageDataset(Dataset):
         try:
             x_img = PIL.Image.open(os.path.join(self.prefix, image_file))
             preprocess = lambda x: th.from_numpy(np.asarray(x.resize((self.side_x, self.side_y)).convert("RGB"))).unsqueeze(0).permute(0, 3, 1, 2) / 127. - 1.
-            x_img = preprocess(x_img).to(self.device)
+            x_img = preprocess(x_img)
         except OSError as e:
             print(f"An exception occurred trying to load file {image_file}.")
             print(f"Skipping index {ind}")
