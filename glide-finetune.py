@@ -1,3 +1,5 @@
+from math import fabs
+import argparse
 from torch.cuda.amp import autocast
 import os
 from ctypes import resize
@@ -65,7 +67,6 @@ def run_glide_finetune(
     side_y=64,
     resume_ckpt="",
     checkpoints_dir="./finetune_checkpoints",
-    outputs_dir="./outputs",
     use_fp16=False, # Tends to cause issues,not sure why as the paper states fp16 is stable.
     device="cpu",
     freeze_transformer=False,
@@ -75,7 +76,6 @@ def run_glide_finetune(
 ):
     # Create the checkpoint/output directories
     os.makedirs(checkpoints_dir, exist_ok=True)
-    os.makedirs(outputs_dir, exist_ok=True)
 
     # Start wandb logging
     wandb_run = util.wandb_setup(
@@ -118,73 +118,83 @@ def run_glide_finetune(
         freeze_diffusion=freeze_diffusion,
     )
     glide_model.to(device)
-    glide_model.half() #
+
     # Optimizer setup
-    # adam_optimizer = th.optim.Adam(
-    adam_optimizer = bnb.optim.Adam( # use bitsandbytes adam, supports 8-bit
+    # adam_optimizer = bnb.optim.Adam( # use bitsandbytes adam, supports 8-bit
+    adam_optimizer = th.optim.Adam( # use pytorch adam
         [x for x in glide_model.parameters() if x.requires_grad],
         lr=learning_rate,
         weight_decay=weight_decay,
     )
-    # sgd_optimizer = th.optim.SGD(
-    #     [x for x in glide_model.parameters() if x.requires_grad],
-    #     lr=learning_rate,
-    #     momentum=0.9,
-    #     weight_decay=weight_decay,
-    # )
 
     # Training setup
     current_loss = 0  # hold gradients until all are accumulated
     accum_losses = []  # for determining grad_acc division
 
     # Training loop
-    for i, (captions, images) in tqdm(enumerate(dataloader), total=len(dataloader)):
-        images = images.to(device)
-        for prompt, image in zip(captions, images):  # TODO refactor to use dataloader
-            loss = train_step(glide_model, glide_diffusion, glide_options, prompt, image, batch_size, device)
-            current_loss += loss.item()  # sum up loss over grad_acc batches
-            loss.backward() # backpropagate the loss
-            if i % grad_acc == grad_acc - 1:
-                adam_optimizer.step() # update the model parameters
-                adam_optimizer.zero_grad() # NOW zero the gradients, get it?
-                current_loss /= grad_acc  # finally average the loss over the grad_acc
-                accum_losses.append(current_loss)
-                wandb_run.log({"loss": current_loss})
-                tqdm.write(f"Loss: {current_loss:.12f}")
-                current_loss = 0
-            if i % 5000 == 0:
-                th.save(
-                    glide_model.state_dict(),
-                    os.path.join(checkpoints_dir, f"glide-ft-{i}.pt"),
-                )
-                th.save(
-                    glide_model.state_dict(),
-                    os.path.join(checkpoints_dir, f"glide-ft.pt"),
-                )
+    with autocast(enabled=use_fp16):
+        for i, (captions, images) in tqdm(enumerate(dataloader), total=len(dataloader)):
+            images = images.to(device)
+            for prompt, image in zip(captions, images):  # TODO refactor to use dataloader, this is terrible, this is terrible, this is terrible
+                loss = train_step(glide_model, glide_diffusion, glide_options, prompt, image, batch_size, device)
+                current_loss += loss.item()  # sum up loss over grad_acc batches
+                loss.backward() # backpropagate the loss
+                if i % grad_acc == grad_acc - 1:
+                    adam_optimizer.step() # update the model parameters
+                    adam_optimizer.zero_grad() # NOW zero the gradients, get it?
+                    current_loss /= grad_acc  # finally average the loss over the grad_acc
+                    accum_losses.append(current_loss)
+                    wandb_run.log({"loss": current_loss})
+                    tqdm.write(f"Loss: {current_loss:.12f}")
+                    current_loss = 0
+            if i % 500 == 0 and i > 0:
+                th.save(glide_model.state_dict(), os.path.join(checkpoints_dir, f"glide-ft-{i}.pt"),)
                 print(f"Saved checkpoint {i} to {checkpoints_dir}/glide-ft-{i}.pt")
-            # current_loss = 0  # reset for next grad_acc
 
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--data_dir", type=str, default="./data")
+    parser.add_argument("--batch_size", type=int, default=1)
+    parser.add_argument("--grad_acc", type=int, default=1)
+    parser.add_argument("--guidance_scale", type=float, default=4.0)
+    parser.add_argument("--learning_rate", type=float, default=2e-5)
+    parser.add_argument("--dropout", type=float, default=0.1)
+    parser.add_argument("--timestep_respacing", type=str, default="1000")
+    parser.add_argument("--side_x", type=int, default=64)
+    parser.add_argument("--side_y", type=int, default=64)
+    parser.add_argument("--resume_ckpt", type=str, default="")
+    parser.add_argument("--checkpoints_dir", type=str, default="./glide_checkpoints/")
+    parser.add_argument("--use_fp16", action="store_true")
+    parser.add_argument("--device", type=str, default="")
+    parser.add_argument("--freeze_transformer", action="store_true")
+    parser.add_argument("--freeze_diffusion", action="store_true")
+    parser.add_argument("--weight_decay", type=float, default=0.0)
+    parser.add_argument("--project_name", type=str, default="glide-finetune")
+    return parser.parse_args()
 
 if __name__ == "__main__":
     # CUDA/CPU setup
-    has_cuda = th.cuda.is_available()
-    device = th.device("cpu") if not has_cuda else "cuda"
+    args = parse_args()
+    if len(args.device) > 0:
+        device = th.device(args.device)
+    else:
+        device = th.device("cpu") if not th.cuda.is_available() else th.device("cuda")
     run_glide_finetune(
-        data_dir=expanduser("~/datasets/text-image-datasets/COCO"),
-        batch_size=1,
-        grad_acc=1,
-        guidance_scale=4.0,
-        learning_rate=2e-5,
-        dropout=0.0,
-        timestep_respacing="100",
-        side_x=64, side_y=64,
-        resume_ckpt="",
-        checkpoints_dir="./round2_checkpoints",
-        outputs_dir="./outputs",
-        use_fp16=True,
-        device="cuda",
-        freeze_transformer=False,
-        freeze_diffusion=False,
-        weight_decay=0.0,
-        project_name="glide_finetune",
+        data_dir=args.data_dir,
+        batch_size=args.batch_size,
+        grad_acc=args.grad_acc,
+        guidance_scale=args.guidance_scale,
+        learning_rate=args.learning_rate,
+        dropout=args.dropout,
+        timestep_respacing=args.timestep_respacing,
+        side_x=args.side_x,
+        side_y=args.side_y,
+        resume_ckpt=args.resume_ckpt,
+        checkpoints_dir=args.checkpoints_dir,
+        use_fp16=args.use_fp16,
+        device=device,
+        freeze_transformer=args.freeze_transformer,
+        freeze_diffusion=args.freeze_diffusion,
+        weight_decay=args.weight_decay,
+        project_name=args.project_name,
     )
