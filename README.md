@@ -4,8 +4,8 @@ Finetune the base 64 px GLIDE-text2im model from OpenAI on your own image-text d
 
 ## Installation
 ```sh
-git clone https://github.com/afiaka87/GLIDE-Finetune.git
-cd GLIDE-Finetune/
+git clone https://github.com/afiaka87/glide-finetune.git
+cd glide-finetune/
 python3 -m venv .venv # create a virtual environment to keep global install clean.
 source .venv/bin/activate
 (.venv) # optionally install pytorch manually for your own specific env first...
