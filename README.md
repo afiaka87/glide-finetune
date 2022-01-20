@@ -3,6 +3,8 @@
 Finetune the base 64 px GLIDE-text2im model from OpenAI on your own image-text dataset.
 
 ## Installation
+
+
 ```sh
 git clone https://github.com/afiaka87/glide-finetune.git
 cd glide-finetune/
@@ -11,6 +13,13 @@ source .venv/bin/activate
 (.venv) # optionally install pytorch manually for your own specific env first...
 (.venv) python -m pip install -r requirements.txt
 ```
+### bitsandbytes
+```sh
+# choices: {cuda92, cuda 100, cuda101, cuda102, cuda110, cuda111, cuda113}
+# replace XXX with the respective number
+pip install bitsandbytes-cudaXXX
+```
+If you prefer to use `torch.optim.Adam`, you can just change `bnb` to `th` in the code.
 
 ## Usage
 ```sh
