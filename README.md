@@ -14,29 +14,38 @@ source .venv/bin/activate
 
 ## Usage
 ```sh
-(.venv) python glide-finetune.py 
-    --data_dir=./data \
-    --batch_size=1 \
-    --grad_acc=1 \
-    --guidance_scale=4.0 \
-    --learning_rate=2e-5 \
-    --dropout=0.1 \
-    --timestep_respacing=1000 \
-    --side_x=64 \
-    --side_y=64 \
-    --resume_ckpt='' \
-    --checkpoints_dir='./glide_checkpoints/' \
-    --use_fp16 \
-    --device='' \
-    --freeze_transformer \
-    --freeze_diffusion \
-    --weight_decay=0.0 \
-    --project_name='glide-finetune'
+usage: glide-finetune.py [-h] [--data_dir DATA_DIR] [--batch_size BATCH_SIZE]
+                        [--grad_acc GRAD_ACC]
+                        [--guidance_scale GUIDANCE_SCALE]
+                        [--learning_rate LEARNING_RATE] [--dropout DROPOUT]
+                        [--timestep_respacing TIMESTEP_RESPACING]
+                        [--side_x SIDE_X] [--side_y SIDE_Y]
+                        [--resize_ratio RESIZE_RATIO] [--uncond_p UNCOND_P]
+                        [--resume_ckpt RESUME_CKPT]
+                        [--checkpoints_dir CHECKPOINTS_DIR] [--use_fp16]
+                        [--device DEVICE] [--freeze_transformer]
+                        [--freeze_diffusion] [--weight_decay WEIGHT_DECAY]
+                        [--project_name PROJECT_NAME]
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --data_dir DATA_DIR
+  --batch_size BATCH_SIZE
+  --grad_acc GRAD_ACC
+  --guidance_scale GUIDANCE_SCALE
+  --learning_rate LEARNING_RATE
+  --dropout DROPOUT
+  --timestep_respacing TIMESTEP_RESPACING
+  --side_x SIDE_X
+  --side_y SIDE_Y
+  --resize_ratio RESIZE_RATIO
+  --uncond_p UNCOND_P
+  --resume_ckpt RESUME_CKPT
+  --checkpoints_dir CHECKPOINTS_DIR
+  --use_fp16
+  --device DEVICE
+  --freeze_transformer
+  --freeze_diffusion
+  --weight_decay WEIGHT_DECAY
+  --project_name PROJECT_NAME
 ```
-
-
-## Known issues:
-- batching isn't handled in the dataloader
-- NaN/Inf errors
-- Resizing doesn't handle non-square aspect ratios properly
-- some of the code is messy, needs refactoring.
