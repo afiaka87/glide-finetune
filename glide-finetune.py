@@ -108,7 +108,7 @@ def run_glide_finetune(
     )  # Do this after the dataset is created, so that the tokenizer is loaded
 
     # Optimizer setup
-    adam_optimizer = th.optim.SGD(  # use bitsandbytes adam, supports 8-bit
+    optimizer = th.optim.SGD(  # use bitsandbytes adam, supports 8-bit
         [x for x in glide_model.parameters() if x.requires_grad],
         lr=learning_rate,
         momentum=0.9,
@@ -130,8 +130,8 @@ def run_glide_finetune(
         current_loss += loss.item()  # sum up loss over grad_acc batches
         loss.backward()  # backpropagate the loss
         if train_idx % grad_acc == grad_acc - 1:
-            adam_optimizer.step()  # update the model parameters
-            adam_optimizer.zero_grad()  # NOW zero the gradients, get it?
+            optimizer.step()  # update the model parameters
+            optimizer.zero_grad()  # NOW zero the gradients, get it?
             current_loss /= grad_acc  # finally average the loss over the grad_acc
             accum_losses.append(current_loss)
             wandb_run.log({"loss": current_loss})
