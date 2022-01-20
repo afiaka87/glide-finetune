@@ -26,26 +26,4 @@ usage: glide-finetune.py [-h] [--data_dir DATA_DIR] [--batch_size BATCH_SIZE]
                         [--device DEVICE] [--freeze_transformer]
                         [--freeze_diffusion] [--weight_decay WEIGHT_DECAY]
                         [--project_name PROJECT_NAME]
-
-optional arguments:
-  -h, --help            show this help message and exit
-  --data_dir DATA_DIR
-  --batch_size BATCH_SIZE
-  --grad_acc GRAD_ACC
-  --guidance_scale GUIDANCE_SCALE
-  --learning_rate LEARNING_RATE
-  --dropout DROPOUT
-  --timestep_respacing TIMESTEP_RESPACING
-  --side_x SIDE_X
-  --side_y SIDE_Y
-  --resize_ratio RESIZE_RATIO
-  --uncond_p UNCOND_P
-  --resume_ckpt RESUME_CKPT
-  --checkpoints_dir CHECKPOINTS_DIR
-  --use_fp16
-  --device DEVICE
-  --freeze_transformer
-  --freeze_diffusion
-  --weight_decay WEIGHT_DECAY
-  --project_name PROJECT_NAME
 ```
