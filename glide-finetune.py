@@ -1,5 +1,6 @@
 from math import fabs
 import argparse
+from typing import Tuple
 from torch.cuda.amp import autocast
 import os
 from ctypes import resize
@@ -22,38 +23,28 @@ from loader import TextImageDataset
 import bitsandbytes as bnb
 
 
-# def create_gaussian_diffusion(timestep_respacing):
 def pred_to_pil(pred: th.Tensor) -> PIL.Image:
     scaled = ((pred+ 1)*127.5).round().clamp(0,255).to(th.uint8).cpu()
     reshaped = scaled.permute(2, 0, 3, 1).reshape([pred.shape[2], -1, 3])
     return PIL.Image.fromarray(reshaped.numpy())
 
-@autocast(enabled=True)
 def train_step(
     glide_model: Text2ImUNet,
     glide_diffusion: SpacedDiffusion,
-    glide_options: dict,
-    prompt: str, # the prompt to use for the image
-    x_img: th.Tensor, # the image to be generated
-    batch_size: int,
+    batch: Tuple[th.Tensor, th.Tensor, th.Tensor],
     device: str,
 ):
-    model_kwargs = util.prompt_to_model_kwargs(glide_model, glide_options, prompt, batch_size, device) # get the prompt embedding attached to kwargs
-    current_respacing = int(glide_options['timestep_respacing']) # the current respacing
-    respace_multiplier = glide_options['diffusion_steps'] // current_respacing # multiply the respacing by this before passing to the model
-    full_batch_size = batch_size * 2  # bs is double for uncond/mask tokens
-    x_img = x_img.repeat((full_batch_size, 1, 1, 1)) # repeat the image for the full batch size
-    noise = th.randn_like(x_img) # the noise to be added to the image
-    t = th.randint(0, current_respacing-1, (full_batch_size,), device=device) # the timestep to use, respecting the respacing
-    scaled_t = t * respace_multiplier # scale the timesteps to e.g. 1000 before feeding into the model
-    x_t = glide_diffusion.q_sample(x_img, t, noise=noise) # sample from q(x_t | x_0, t)
-    model_output = glide_model(x_t, scaled_t, **model_kwargs).requires_grad_(True) # get the model output.
-    # pred = model_output[..., 3:, :, :] # get the prediction from the model output
-    # pred_pil = pred_to_pil(pred) # convert to PIL image
-    # pred_pil.save('pred.png') # save the image
+    batch = [x.to(device) for x in batch]
+    tokens, masks, x_imgs = batch
+    t = th.randint(0, 999, (x_imgs.shape[0],)).to(device)
+    noise = th.randn_like(x_imgs, device=device)
+    x_t = glide_diffusion.q_sample(x_imgs, t, noise=noise)
+    model_output = glide_model(x_t, t, tokens=tokens, mask=masks)
+    pred = model_output[..., 3:, :, :] # get the prediction from the model output
+    pred_pil = pred_to_pil(pred) # convert to PIL image
+    pred_pil.save('pred.png') # save the image
     epsilon = model_output[..., :3, :, :] # epsilon is [bs, 3, h, w]
     return th.nn.functional.mse_loss(epsilon, noise) # the loss is the mean squared error between the image and the predicted image
-
 
 def run_glide_finetune(
     data_dir="./data",
@@ -62,9 +53,10 @@ def run_glide_finetune(
     guidance_scale=4.0,
     learning_rate=2e-5,
     dropout=0.0,
-    timestep_respacing="100",
     side_x=64,
     side_y=64,
+    resize_ratio=1.0,
+    uncond_p=0.0,
     resume_ckpt="",
     checkpoints_dir="./finetune_checkpoints",
     use_fp16=False, # Tends to cause issues,not sure why as the paper states fp16 is stable.
@@ -91,16 +83,29 @@ def run_glide_finetune(
         base_dir=checkpoints_dir,
         project_name=project_name,
     )
+    print("Wandb setup.")
 
-    # Dataset/dataloader setup
+    # Model setup
+    glide_model, glide_diffusion, glide_options = util.load_base_model(
+        glide_path=resume_ckpt,
+        use_fp16=use_fp16,
+        dropout=dropout,
+        freeze_transformer=freeze_transformer,
+        freeze_diffusion=freeze_diffusion,
+    )
+    print("Model setup.")
+    print(glide_options)
+    
     dataset = TextImageDataset(
-        folder=data_dir,
-        shuffle=True,
-        batch_size=batch_size,
+        folder='/home/samsepiol/datasets/current-dataset/COCO',
         side_x=side_x,
         side_y=side_y,
-        device=device,
-        force_reload=False,
+        resize_ratio=resize_ratio,
+        uncond_p=uncond_p,
+        shuffle=True,
+        tokenizer=glide_model.tokenizer,
+        text_ctx_len=glide_options['text_ctx'],
+        force_reload=True,
     )
     assert len(dataset) > 0, "Dataset is empty"
     print(f"Dataset contains {len(dataset)} images")
@@ -108,20 +113,11 @@ def run_glide_finetune(
         dataset, batch_size=batch_size, shuffle=True, num_workers=0
     )
 
-    # Model setup
-    glide_model, glide_diffusion, glide_options = util.load_base_model(
-        glide_path=resume_ckpt,
-        use_fp16=use_fp16,
-        dropout=dropout,
-        timestep_respacing=timestep_respacing,
-        freeze_transformer=freeze_transformer,
-        freeze_diffusion=freeze_diffusion,
-    )
-    glide_model.to(device)
+    glide_model.to(device) # Do this after the dataset is created, so that the tokenizer is loaded
 
     # Optimizer setup
     # adam_optimizer = bnb.optim.Adam( # use bitsandbytes adam, supports 8-bit
-    adam_optimizer = th.optim.Adam( # use pytorch adam
+    adam_optimizer = th.optim.SGD( # use pytorch adam
         [x for x in glide_model.parameters() if x.requires_grad],
         lr=learning_rate,
         weight_decay=weight_decay,
@@ -132,24 +128,27 @@ def run_glide_finetune(
     accum_losses = []  # for determining grad_acc division
 
     # Training loop
-    with autocast(enabled=use_fp16):
-        for i, (captions, images) in tqdm(enumerate(dataloader), total=len(dataloader)):
-            images = images.to(device)
-            for prompt, image in zip(captions, images):  # TODO refactor to use dataloader, this is terrible, this is terrible, this is terrible
-                loss = train_step(glide_model, glide_diffusion, glide_options, prompt, image, batch_size, device)
-                current_loss += loss.item()  # sum up loss over grad_acc batches
-                loss.backward() # backpropagate the loss
-                if i % grad_acc == grad_acc - 1:
-                    adam_optimizer.step() # update the model parameters
-                    adam_optimizer.zero_grad() # NOW zero the gradients, get it?
-                    current_loss /= grad_acc  # finally average the loss over the grad_acc
-                    accum_losses.append(current_loss)
-                    wandb_run.log({"loss": current_loss})
-                    tqdm.write(f"Loss: {current_loss:.12f}")
-                    current_loss = 0
-            if i % 500 == 0 and i > 0:
-                th.save(glide_model.state_dict(), os.path.join(checkpoints_dir, f"glide-ft-{i}.pt"),)
-                print(f"Saved checkpoint {i} to {checkpoints_dir}/glide-ft-{i}.pt")
+    for train_idx, batch in tqdm(enumerate(dataloader), total=len(dataloader)):
+
+        loss = train_step(
+            glide_model=glide_model,
+            glide_diffusion=glide_diffusion,
+            batch=batch,
+            device=device)
+        
+        current_loss += loss.item()  # sum up loss over grad_acc batches
+        loss.backward() # backpropagate the loss
+        if train_idx % grad_acc == grad_acc - 1:
+            adam_optimizer.step() # update the model parameters
+            adam_optimizer.zero_grad() # NOW zero the gradients, get it?
+            current_loss /= grad_acc  # finally average the loss over the grad_acc
+            accum_losses.append(current_loss)
+            wandb_run.log({"loss": current_loss})
+            tqdm.write(f"Loss: {current_loss:.12f}")
+            current_loss = 0
+        if train_idx % 5000 == 0 and train_idx > 0:
+            th.save(glide_model.state_dict(), os.path.join(checkpoints_dir, f"glide-ft-{train_idx}.pt"),)
+            print(f"Saved checkpoint {train_idx} to {checkpoints_dir}/glide-ft-{train_idx}.pt")
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -162,6 +161,8 @@ def parse_args():
     parser.add_argument("--timestep_respacing", type=str, default="1000")
     parser.add_argument("--side_x", type=int, default=64)
     parser.add_argument("--side_y", type=int, default=64)
+    parser.add_argument("--resize_ratio", type=float, default=1.0)
+    parser.add_argument("--uncond_p", type=float, default=0.0)
     parser.add_argument("--resume_ckpt", type=str, default="")
     parser.add_argument("--checkpoints_dir", type=str, default="./glide_checkpoints/")
     parser.add_argument("--use_fp16", action="store_true")
@@ -186,9 +187,10 @@ if __name__ == "__main__":
         guidance_scale=args.guidance_scale,
         learning_rate=args.learning_rate,
         dropout=args.dropout,
-        timestep_respacing=args.timestep_respacing,
         side_x=args.side_x,
         side_y=args.side_y,
+        resize_ratio=args.resize_ratio,
+        uncond_p=args.uncond_p,
         resume_ckpt=args.resume_ckpt,
         checkpoints_dir=args.checkpoints_dir,
         use_fp16=args.use_fp16,
@@ -196,5 +198,4 @@ if __name__ == "__main__":
         freeze_transformer=args.freeze_transformer,
         freeze_diffusion=args.freeze_diffusion,
         weight_decay=args.weight_decay,
-        project_name=args.project_name,
-    )
+        project_name=args.project_name)
