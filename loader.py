@@ -2,7 +2,7 @@
 from functools import lru_cache
 import os
 from pathlib import Path
-from random import randint, choice
+from random import randint, choice, random
 
 from os.path import expanduser
 from typing import Tuple
@@ -21,13 +21,20 @@ DEFAULT_KEY_CACHE_PATH = Path(expanduser('~/.cache/glide/keys.txt'))
 DEFAULT_IMAGES_CACHE_PATH = Path(expanduser('~/.cache/glide/images.txt'))
 DEFAULT_CAPTIONS_CACHE_PATH = Path(expanduser('~/.cache/glide/captions.txt'))
 
-def get_tokens_and_mask(tokenizer: Encoder, text_ctx_len: int, prompt: str = '') -> Tuple[th.tensor, th.tensor]:
-    tokens = tokenizer.encode(prompt)
-    tokens, mask = tokenizer.padded_tokens_and_mask(tokens, text_ctx_len)
-    uncond_tokens, uncond_mask = tokenizer.padded_tokens_and_mask([], text_ctx_len)
-    tokens = th.tensor(tokens + uncond_tokens)
-    mask = th.tensor(mask + uncond_mask, dtype=th.bool)
-    return tokens, mask
+@lru_cache(maxsize=1)
+def get_uncond_tokens_mask(tokenizer: Encoder):
+    uncond_tokens, uncond_mask = tokenizer.padded_tokens_and_mask([], 128)
+    return th.tensor(uncond_tokens), th.tensor(uncond_mask, dtype=th.bool)
+
+def get_tokens_and_mask(tokenizer: Encoder, prompt: str = '') -> Tuple[th.tensor, th.tensor]:
+    if len(prompt) == 0:
+        return get_uncond_tokens_mask(tokenizer)
+    else:
+        tokens = tokenizer.encode(prompt)
+        tokens, mask = tokenizer.padded_tokens_and_mask(tokens, 128) # TODO: make this a parameter
+        tokens = th.tensor(tokens)# + uncond_tokens)
+        mask = th.tensor(mask, dtype=th.bool)# + uncond_mask, dtype=th.bool)
+        return tokens, mask
     
 def get_image_files_dict(base_path):
     image_files = [
@@ -80,7 +87,7 @@ class TextImageDataset(Dataset):
                  shuffle=False,
                  tokenizer=None,
                  text_ctx_len=128,
-                 device='cpu',
+                 uncond_p=0.0,
                  image_files_cache=DEFAULT_IMAGES_CACHE_PATH,
                  text_files_cache=DEFAULT_CAPTIONS_CACHE_PATH,
                  shared_keys_cache=DEFAULT_KEY_CACHE_PATH,
@@ -107,11 +114,11 @@ class TextImageDataset(Dataset):
         self.text_ctx_len = text_ctx_len
 
         self.shuffle = shuffle
-        self.device = device
         self.prefix = folder
         self.side_x = side_x
         self.side_y = side_y
         self.tokenizer = tokenizer
+        self.uncond_p = uncond_p
         self.imagepreproc = T.Compose([
                 T.Lambda(lambda img: img.convert('RGB') if img.mode != 'RGB' else img),
                 T.Resize(int(self.side_x * self.resize_ratio)),
@@ -147,9 +154,10 @@ class TextImageDataset(Dataset):
         descriptions = list(filter(lambda t: len(t) > 0, descriptions))
         try:
             description = choice(descriptions).strip()
+            if random() < self.uncond_p:
+                description = '' # uses the uncond tokens and masks
             tokens, mask = get_tokens_and_mask(
                 tokenizer=self.tokenizer,
-                text_ctx_len=self.text_ctx_len, 
                 prompt=description)
         except IndexError as zero_captions_in_file_ex:
             print(f"An exception occurred trying to load file {text_file}.")
@@ -157,7 +165,7 @@ class TextImageDataset(Dataset):
             return self.skip_sample(ind)
         try:
             x_img = PIL.Image.open(os.path.join(self.prefix, image_file))
-            x_img = self.imagepreproc(x_img)
+            x_img = (self.imagepreproc(x_img)+1).round()/127.5 - 1
         except OSError as e:
             print(f"An exception occurred trying to load file {image_file}.")
             print(f"Skipping index {ind}")
