@@ -1,14 +1,16 @@
+from typing import Tuple
 import wandb
 import torch as th
 from glide_text2im.download import load_checkpoint
 import os
+from glide_text2im.tokenizer.simple_tokenizer import SimpleTokenizer
 from glide_text2im.model_creation import (
     create_model_and_diffusion,
     model_and_diffusion_defaults,
 )
 
 
-def load_base_model(glide_path:str='', use_fp16:bool=False, dropout: float=0.1, timestep_respacing: str = '1000', freeze_transformer: bool = False, freeze_diffusion: bool = False):
+def load_base_model(glide_path:str='', use_fp16:bool=False, dropout: float=0.1, freeze_transformer: bool = False, freeze_diffusion: bool = False):
     """
     Loads a base model and returns it and its options. Optionally specify custom checkpoint `glide_path`.
 
@@ -23,7 +25,6 @@ def load_base_model(glide_path:str='', use_fp16:bool=False, dropout: float=0.1, 
     options = model_and_diffusion_defaults()
     options['use_fp16'] = use_fp16
     options['dropout'] = dropout
-    options['timestep_respacing'] = timestep_respacing
     glide_model, glide_diffusion = create_model_and_diffusion(**options)
     if use_fp16:
         glide_model.convert_to_fp16()
@@ -44,34 +45,6 @@ def load_base_model(glide_path:str='', use_fp16:bool=False, dropout: float=0.1, 
     return glide_model, glide_diffusion, options
 
 
-def prompt_to_model_kwargs(model: th.nn.Module, options: dict, prompt: str = '', _batch_size: int = 1, device: str = 'cpu') -> dict:
-    """
-    Tokenizes a prompt and returns a dictionary of model keyword args in the formate GLIDE expects.
-
-    Args:
-        model: The instance of a model to use. Must have a tokenize method.
-        options: The default or modified options for the model.
-        prompt: The prompt to tokenize.
-        _batch_size: The batch size to use. The kwargs will use double this value to support unconditional/classifier-free guidance.
-        device: The device to use. cpu or cuda.
-    """
-    prompt = prompt.lower()
-    tokens = model.tokenizer.encode(prompt)
-    tokens, mask = model.tokenizer.padded_tokens_and_mask(tokens, options['text_ctx'])
-    uncond_tokens, uncond_mask = model.tokenizer.padded_tokens_and_mask([], options['text_ctx'])
-    return dict(
-        tokens=th.tensor(
-            [tokens] * _batch_size + 
-            [uncond_tokens] * _batch_size, 
-            device=device
-        ),
-        mask=th.tensor(
-            [mask] * _batch_size + 
-            [uncond_mask] * _batch_size,
-            dtype=th.bool,
-            device=device
-        ),
-    )
 
 def wandb_setup(
     batch_size: int,
