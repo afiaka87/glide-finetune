@@ -5,6 +5,7 @@ from pathlib import Path
 from random import randint, choice
 
 from os.path import expanduser
+from typing import Tuple
 import PIL
 import numpy as np
 
@@ -12,10 +13,22 @@ import torch as th
 from torch.utils.data import Dataset
 from torchvision import transforms as T
 
+from glide_text2im.tokenizer.simple_tokenizer import SimpleTokenizer
+from glide_text2im.model_creation import get_encoder
+from glide_text2im.tokenizer.bpe import Encoder
+
 DEFAULT_KEY_CACHE_PATH = Path(expanduser('~/.cache/glide/keys.txt'))
 DEFAULT_IMAGES_CACHE_PATH = Path(expanduser('~/.cache/glide/images.txt'))
 DEFAULT_CAPTIONS_CACHE_PATH = Path(expanduser('~/.cache/glide/captions.txt'))
 
+def get_tokens_and_mask(tokenizer: Encoder, text_ctx_len: int, prompt: str = '') -> Tuple[th.tensor, th.tensor]:
+    tokens = tokenizer.encode(prompt)
+    tokens, mask = tokenizer.padded_tokens_and_mask(tokens, text_ctx_len)
+    uncond_tokens, uncond_mask = tokenizer.padded_tokens_and_mask([], text_ctx_len)
+    tokens = th.tensor(tokens + uncond_tokens)
+    mask = th.tensor(mask + uncond_mask, dtype=th.bool)
+    return tokens, mask
+    
 def get_image_files_dict(base_path):
     image_files = [
         *base_path.glob('**/*.png'), *base_path.glob('**/*.jpg'),
@@ -61,10 +74,12 @@ def get_keys_from_cache(folder, image_cache_path, text_cache_path, keys_cache_pa
 class TextImageDataset(Dataset):
     def __init__(self,
                  folder='',
-                 batch_size=1,
                  side_x=64,
                  side_y=64,
+                 resize_ratio=0.75,
                  shuffle=False,
+                 tokenizer=None,
+                 text_ctx_len=128,
                  device='cpu',
                  image_files_cache=DEFAULT_IMAGES_CACHE_PATH,
                  text_files_cache=DEFAULT_CAPTIONS_CACHE_PATH,
@@ -88,13 +103,24 @@ class TextImageDataset(Dataset):
         self.keys = list(keys)
         self.image_files = image_files
         self.text_files = text_files
+        self.resize_ratio = resize_ratio
+        self.text_ctx_len = text_ctx_len
 
         self.shuffle = shuffle
         self.device = device
-        self.batch_size = batch_size
         self.prefix = folder
         self.side_x = side_x
         self.side_y = side_y
+        self.tokenizer = tokenizer
+        self.imagepreproc = T.Compose([
+                T.Lambda(lambda img: img.convert('RGB') if img.mode != 'RGB' else img),
+                T.Resize(int(self.side_x * self.resize_ratio)),
+                T.RandomResizedCrop((self.side_x, self.side_y),
+                                    scale=(self.resize_ratio, 1.),
+                                    ratio=(1., 1.),
+                                    interpolation=T.InterpolationMode.LANCZOS),
+                T.ToTensor(),
+            ])
 
     def __len__(self):
         return len(self.keys)
@@ -121,17 +147,19 @@ class TextImageDataset(Dataset):
         descriptions = list(filter(lambda t: len(t) > 0, descriptions))
         try:
             description = choice(descriptions).strip()
+            tokens, mask = get_tokens_and_mask(
+                tokenizer=self.tokenizer,
+                text_ctx_len=self.text_ctx_len, 
+                prompt=description)
         except IndexError as zero_captions_in_file_ex:
             print(f"An exception occurred trying to load file {text_file}.")
             print(f"Skipping index {ind}")
             return self.skip_sample(ind)
-        
         try:
             x_img = PIL.Image.open(os.path.join(self.prefix, image_file))
-            preprocess = lambda x: th.from_numpy(np.asarray(x.resize((self.side_x, self.side_y)).convert("RGB"))).unsqueeze(0).permute(0, 3, 1, 2) / 127. - 1.
-            x_img = preprocess(x_img)
+            x_img = self.imagepreproc(x_img)
         except OSError as e:
             print(f"An exception occurred trying to load file {image_file}.")
             print(f"Skipping index {ind}")
             return self.skip_sample(ind)
-        return description, x_img
+        return tokens, mask, x_img
