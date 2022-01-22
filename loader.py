@@ -126,7 +126,6 @@ class TextImageDataset(Dataset):
                                     scale=(self.resize_ratio, 1.),
                                     ratio=(1., 1.),
                                     interpolation=T.InterpolationMode.LANCZOS),
-                T.ToTensor(),
             ])
 
     def __len__(self):
@@ -164,8 +163,8 @@ class TextImageDataset(Dataset):
             print(f"Skipping index {ind}")
             return self.skip_sample(ind)
         try:
-            x_img = PIL.Image.open(os.path.join(self.prefix, image_file)).convert('RGB')
-            x_img = self.imagepreproc(x_img)
+            x_img = self.imagepreproc(PIL.Image.open(os.path.join(self.prefix, image_file)).convert('RGB'))
+            x_img = np.asarray(self.imagepreproc(x_img)) / 127.5 - 1.
         except OSError as e:
             print(f"An exception occurred trying to load file {image_file}.")
             print(f"Skipping index {ind}")

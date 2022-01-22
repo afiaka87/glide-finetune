@@ -3,22 +3,15 @@ import os
 from typing import Tuple
 
 import bitsandbytes as bnb
-from glide_text2im.gaussian_diffusion import _extract_into_tensor
 import numpy as np
-import PIL
 import torch as th
 from glide_text2im.respace import SpacedDiffusion
 from glide_text2im.text2im_model import Text2ImUNet
-from tqdm import tqdm, trange
+from tqdm import tqdm
 
 import util
 from loader import TextImageDataset
 
-
-def pred_to_pil(pred: th.Tensor) -> PIL.Image:
-    scaled = ((pred + 1) * 127.5).round().clamp(0, 255).to(th.uint8).cpu()
-    reshaped = scaled.permute(2, 0, 3, 1).reshape([pred.shape[2], -1, 3])
-    return PIL.Image.fromarray(reshaped.numpy())
 
 def train_step(
     glide_model: Text2ImUNet,
@@ -28,15 +21,17 @@ def train_step(
 ):
     batch = [x.to(device) for x in batch]
     tokens, masks, x_imgs = batch
-    t = th.randint(0, len(glide_diffusion.betas)-1, (x_imgs.shape[0],), device=device)
-    noise_variance = _extract_into_tensor(glide_diffusion.betas, t, x_imgs.shape)
+    x_imgs = x_imgs.permute(0, 3, 1, 2).float() / 127.5 - 1
+    x_imgs = x_imgs.clamp(-1, 1)
+    util.pred_to_pil(x_imgs).save("x_imgs.png")
+    timestep = th.randint(0, len(glide_diffusion.betas)-1, (x_imgs.shape[0],), device=device)
+    noise_variance = util.extract_into_tensor(glide_diffusion.betas, timestep, x_imgs.shape)
     noise = th.randn_like(x_imgs, device=device)
-    x_t = (noise_variance ** 0.5) * noise + x_imgs
-    model_output = glide_model(x_t, t, tokens=tokens, mask=masks)
-    pred = model_output[..., 3:, :, :]  # get the prediction from the model output
-    pil_image = pred_to_pil(pred)
-    pil_image.save(f"./current_pred.png")
-    epsilon = model_output[..., :3, :, :]  # epsilon is [bs, 3, h, w]
+    noise_t = (noise_variance ** 0.5) * noise
+    model_output = glide_model(x_imgs + noise_t, timestep, tokens=tokens, mask=masks)
+    epsilon = model_output[:, :3]
+    # util.pred_to_pil(epsilon).save("current_epsilon.png")
+    # util.pred_to_pil(rest).save("current_rest.png")
     return th.nn.functional.mse_loss(epsilon, noise)
 
 
@@ -86,7 +81,6 @@ def run_glide_finetune(
         freeze_diffusion=freeze_diffusion,
     )
     glide_model.train()
-    glide_model.requires_grad_(True)
     glide_model.to(device)
     print("Model setup.")
     print(glide_options)
