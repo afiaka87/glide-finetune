@@ -2,6 +2,8 @@
 
 Finetune the base 64 px GLIDE-text2im model from OpenAI on your own image-text dataset.
 
+Presently has all sorts of issues that are challenging to debug. 
+
 ## Installation
 
 
