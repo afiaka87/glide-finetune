@@ -28,7 +28,7 @@ def train_step(
 ):
     batch = [x.to(device) for x in batch]
     tokens, masks, x_imgs = batch
-    x_imgs = x_imgs / 127. - 1.
+    x_imgs = x_imgs.float() / 127.5 - 1 # _have_ to cast to float, or you will get NaN
     t = th.randint(0, 999, (x_imgs.shape[0],), device=device)
     noise = th.randn_like(x_imgs, device=device)
     x_t = glide_diffusion.q_sample(x_imgs, t, noise=noise)
@@ -132,13 +132,13 @@ def run_glide_finetune(
         loss.backward()  # backpropagate the loss
         if train_idx % grad_acc == grad_acc - 1:
             optimizer.step()  # update the model parameters
-            optimizer.zero_grad()  # NOW zero the gradients, get it?
+            optimizer.zero_grad()
             current_loss /= grad_acc  # finally average the loss over the grad_acc
             accum_losses.append(current_loss)
             wandb_run.log({"loss": current_loss})
             tqdm.write(f"Loss: {current_loss:.12f}")
             current_loss = 0
-        if train_idx % 1000 == 0 and train_idx > 0:
+        if train_idx % 5000 == 0 and train_idx > 0:
             th.save(
                 glide_model.state_dict(),
                 os.path.join(checkpoints_dir, f"glide-ft-{train_idx}.pt"),
