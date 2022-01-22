@@ -28,12 +28,6 @@ def load_base_model(glide_path:str='', use_fp16:bool=False, dropout: float=0.1, 
     glide_model, glide_diffusion = create_model_and_diffusion(**options)
     if use_fp16:
         glide_model.convert_to_fp16()
-    if len(glide_path) > 0: # user provided checkpoint
-        assert os.path.exists(glide_path), 'glide path does not exist'
-        weights = th.load(glide_path, map_location='cpu')
-        glide_model.load_state_dict(weights)
-    else: # use default checkpoint from openai
-        glide_model.load_state_dict(load_checkpoint('base', 'cpu'))
     if freeze_transformer:
         glide_model.requires_grad_(True)
         glide_model.transformer.requires_grad_(False) # freeze transformer
@@ -42,6 +36,12 @@ def load_base_model(glide_path:str='', use_fp16:bool=False, dropout: float=0.1, 
         glide_model.transformer.requires_grad_(True) # then unfreeze transformer
     else:
         glide_model.requires_grad_(True) # unfreeze everything
+    if len(glide_path) > 0: # user provided checkpoint
+        assert os.path.exists(glide_path), 'glide path does not exist'
+        weights = th.load(glide_path, map_location='cpu')
+        glide_model.load_state_dict(weights)
+    else: # use default checkpoint from openai
+        glide_model.load_state_dict(load_checkpoint('base', 'cpu'))
     return glide_model, glide_diffusion, options
 
 

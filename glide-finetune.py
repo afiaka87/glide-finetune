@@ -3,6 +3,7 @@ import os
 from typing import Tuple
 
 import bitsandbytes as bnb
+from glide_text2im.gaussian_diffusion import _extract_into_tensor
 import numpy as np
 import PIL
 import torch as th
@@ -19,7 +20,6 @@ def pred_to_pil(pred: th.Tensor) -> PIL.Image:
     reshaped = scaled.permute(2, 0, 3, 1).reshape([pred.shape[2], -1, 3])
     return PIL.Image.fromarray(reshaped.numpy())
 
-
 def train_step(
     glide_model: Text2ImUNet,
     glide_diffusion: SpacedDiffusion,
@@ -28,12 +28,14 @@ def train_step(
 ):
     batch = [x.to(device) for x in batch]
     tokens, masks, x_imgs = batch
-    x_imgs = x_imgs.float() / 127.5 - 1 # _have_ to cast to float, or you will get NaN
-    t = th.randint(0, 999, (x_imgs.shape[0],), device=device)
+    t = th.randint(0, len(glide_diffusion.betas)-1, (x_imgs.shape[0],), device=device)
+    noise_variance = _extract_into_tensor(glide_diffusion.betas, t, x_imgs.shape)
     noise = th.randn_like(x_imgs, device=device)
-    x_t = glide_diffusion.q_sample(x_imgs, t, noise=noise)
+    x_t = (noise_variance ** 0.5) * noise + x_imgs
     model_output = glide_model(x_t, t, tokens=tokens, mask=masks)
-    # pred = model_output[..., 3:, :, :]  # get the prediction from the model output
+    pred = model_output[..., 3:, :, :]  # get the prediction from the model output
+    pil_image = pred_to_pil(pred)
+    pil_image.save(f"./current_pred.png")
     epsilon = model_output[..., :3, :, :]  # epsilon is [bs, 3, h, w]
     return th.nn.functional.mse_loss(epsilon, noise)
 
@@ -83,6 +85,9 @@ def run_glide_finetune(
         freeze_transformer=freeze_transformer,
         freeze_diffusion=freeze_diffusion,
     )
+    glide_model.train()
+    glide_model.requires_grad_(True)
+    glide_model.to(device)
     print("Model setup.")
     print(glide_options)
 
@@ -103,12 +108,9 @@ def run_glide_finetune(
         dataset, batch_size=batch_size, shuffle=True, num_workers=0
     )
 
-    glide_model.to(
-        device
-    )  # Do this after the dataset is created, so that the tokenizer is loaded
-
     # Optimizer setup
     #optimizer = th.optim.SGD(  # use bitsandbytes adam, supports 8-bit
+    # optimizer = th.optim.Adam(  # use bitsandbytes adam, supports 8-bit
     optimizer = bnb.optim.Adam(
         [x for x in glide_model.parameters() if x.requires_grad],
         lr=learning_rate,
