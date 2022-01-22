@@ -20,7 +20,6 @@ def pred_to_pil(pred: th.Tensor) -> PIL.Image:
     return PIL.Image.fromarray(reshaped.numpy())
 
 
-@th.cuda.amp.autocast(enabled=True, dtype=th.float16)
 def train_step(
     glide_model: Text2ImUNet,
     glide_diffusion: SpacedDiffusion,
@@ -29,7 +28,8 @@ def train_step(
 ):
     batch = [x.to(device) for x in batch]
     tokens, masks, x_imgs = batch
-    t = th.randint(0, 999, (x_imgs.shape[0],)).to(device)
+    x_imgs = x_imgs / 127. - 1.
+    t = th.randint(0, 999, (x_imgs.shape[0],), device=device)
     noise = th.randn_like(x_imgs, device=device)
     x_t = glide_diffusion.q_sample(x_imgs, t, noise=noise)
     model_output = glide_model(x_t, t, tokens=tokens, mask=masks)
@@ -42,8 +42,8 @@ def run_glide_finetune(
     data_dir="./data",
     batch_size=1,
     grad_acc=1,
-    learning_rate=2e-5,
-    dropout=0.0,
+    learning_rate=1e-5,
+    dropout=0.1,
     side_x=64,
     side_y=64,
     resize_ratio=1.0,
@@ -108,11 +108,12 @@ def run_glide_finetune(
     )  # Do this after the dataset is created, so that the tokenizer is loaded
 
     # Optimizer setup
-    optimizer = th.optim.SGD(  # use bitsandbytes adam, supports 8-bit
+    #optimizer = th.optim.SGD(  # use bitsandbytes adam, supports 8-bit
+    optimizer = bnb.optim.Adam(
         [x for x in glide_model.parameters() if x.requires_grad],
         lr=learning_rate,
-        momentum=0.9,
-        # weight_decay=weight_decay,
+        #momentum=0.9,
+        #weight_decay=weight_decay,
     )
 
     # Training setup
@@ -157,7 +158,7 @@ def parse_args():
     parser.add_argument("--timestep_respacing", type=str, default="1000")
     parser.add_argument("--side_x", type=int, default=64)
     parser.add_argument("--side_y", type=int, default=64)
-    parser.add_argument("--resize_ratio", type=float, default=1.0)
+    parser.add_argument("--resize_ratio", type=float, default=0.8)
     parser.add_argument("--uncond_p", type=float, default=0.0)
     parser.add_argument("--resume_ckpt", type=str, default="")
     parser.add_argument("--checkpoints_dir", type=str, default="./glide_checkpoints/")
@@ -177,6 +178,7 @@ if __name__ == "__main__":
         device = th.device(args.device)
     else:
         device = th.device("cpu") if not th.cuda.is_available() else th.device("cuda")
+    print(f"Resuming training checkpoint from {args.resume_ckpt} on device {device} with {args.grad_acc} gradients accumulated per step.")
     run_glide_finetune(
         data_dir=args.data_dir,
         batch_size=args.batch_size,
