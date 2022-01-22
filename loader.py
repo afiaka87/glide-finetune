@@ -164,7 +164,7 @@ class TextImageDataset(Dataset):
             return self.skip_sample(ind)
         try:
             x_img = self.imagepreproc(PIL.Image.open(os.path.join(self.prefix, image_file)).convert('RGB'))
-            x_img = np.asarray(self.imagepreproc(x_img)) / 127.5 - 1.
+            x_img = np.asarray(self.imagepreproc(x_img))
         except OSError as e:
             print(f"An exception occurred trying to load file {image_file}.")
             print(f"Skipping index {ind}")

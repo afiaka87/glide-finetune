@@ -22,7 +22,6 @@ def train_step(
     batch = [x.to(device) for x in batch]
     tokens, masks, x_imgs = batch
     x_imgs = x_imgs.permute(0, 3, 1, 2).float() / 127.5 - 1
-    x_imgs = x_imgs.clamp(-1, 1)
     util.pred_to_pil(x_imgs).save("x_imgs.png")
     timestep = th.randint(0, len(glide_diffusion.betas)-1, (x_imgs.shape[0],), device=device)
     noise_variance = util.extract_into_tensor(glide_diffusion.betas, timestep, x_imgs.shape)
@@ -30,8 +29,7 @@ def train_step(
     noise_t = (noise_variance ** 0.5) * noise
     model_output = glide_model(x_imgs + noise_t, timestep, tokens=tokens, mask=masks)
     epsilon = model_output[:, :3]
-    # util.pred_to_pil(epsilon).save("current_epsilon.png")
-    # util.pred_to_pil(rest).save("current_rest.png")
+    util.pred_to_pil(epsilon).save("current_epsilon.png")
     return th.nn.functional.mse_loss(epsilon, noise)
 
 
