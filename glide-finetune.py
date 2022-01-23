@@ -1,3 +1,4 @@
+from torch.cuda.amp import autocast
 import argparse
 import os
 from typing import Tuple
@@ -12,25 +13,23 @@ from tqdm import tqdm
 import util
 from loader import TextImageDataset
 
-
+@autocast(enabled=True, dtype=th.float16, cache_enabled=True)
 def train_step(
     glide_model: Text2ImUNet,
     glide_diffusion: SpacedDiffusion,
     batch: Tuple[th.Tensor, th.Tensor, th.Tensor],
     device: str,
 ):
-    batch = [x.to(device) for x in batch]
+    batch = [x.detach().clone().to(device) for x in batch]
     tokens, masks, x_imgs = batch
     x_imgs = x_imgs.permute(0, 3, 1, 2).float() / 127.5 - 1
-    util.pred_to_pil(x_imgs).save("x_imgs.png")
-    timestep = th.randint(0, len(glide_diffusion.betas)-1, (x_imgs.shape[0],), device=device)
-    noise_variance = util.extract_into_tensor(glide_diffusion.betas, timestep, x_imgs.shape)
+    timesteps = th.randint(0, len(glide_diffusion.betas)-1, (x_imgs.shape[0],), device=device)
     noise = th.randn_like(x_imgs, device=device)
-    noise_t = (noise_variance ** 0.5) * noise
-    model_output = glide_model(x_imgs + noise_t, timestep, tokens=tokens, mask=masks)
-    epsilon = model_output[:, :3]
+    x_t = glide_diffusion.q_sample(x_imgs, timesteps, noise=noise)
+    model_output = glide_model(x_t, timesteps, tokens=tokens, mask=masks)
+    epsilon = model_output[..., :3, :, :]
     util.pred_to_pil(epsilon).save("current_epsilon.png")
-    return th.nn.functional.mse_loss(epsilon, noise)
+    return th.nn.functional.mse_loss(epsilon, noise.detach())
 
 
 def run_glide_finetune(
@@ -79,6 +78,7 @@ def run_glide_finetune(
         freeze_diffusion=freeze_diffusion,
     )
     glide_model.train()
+    glide_model.requires_grad_(True)
     glide_model.to(device)
     print("Model setup.")
     print(glide_options)

@@ -1,4 +1,4 @@
-import PIL
+from PIL import Image
 from typing import Tuple
 import wandb
 import torch as th
@@ -16,10 +16,10 @@ def extract_into_tensor(arr, timesteps, broadcast_shape):
         res = res[..., None]
     return res.expand(broadcast_shape)
 
-def pred_to_pil(pred: th.Tensor) -> PIL.Image:
+def pred_to_pil(pred: th.Tensor) -> Image:
     scaled = ((pred + 1) * 127.5).round().clamp(0, 255).to(th.uint8).cpu()
     reshaped = scaled.permute(2, 0, 3, 1).reshape([pred.shape[2], -1, 3])
-    return PIL.Image.fromarray(reshaped.numpy())
+    return Image.fromarray(reshaped.numpy())
 
 
 def load_base_model(glide_path:str='', use_fp16:bool=False, dropout: float=0.1, freeze_transformer: bool = False, freeze_diffusion: bool = False):
