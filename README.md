@@ -8,6 +8,7 @@ Presently has all sorts of issues that are challenging to debug.
 
 
 ```sh
+sudo apt install libopenmpi-dev # On macOS: brew install mpich
 git clone https://github.com/afiaka87/glide-finetune.git
 cd glide-finetune/
 python3 -m venv .venv # create a virtual environment to keep global install clean.
