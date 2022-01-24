@@ -1,9 +1,14 @@
 # glide-finetune
 
+[![Neverix Finetuning Notebook](https://kaggle.com/static/images/open-in-kaggle.svg)](https://www.kaggle.com/neverix/glide-tuning)
+
 Finetune the base 64 px GLIDE-text2im model from OpenAI on your own image-text dataset.
 
 Presently has all sorts of issues that are challenging to debug. 
 
+Thanks to neverix from the EleutherAI discord for all the help with this!
+
+---
 ## Installation
 
 
