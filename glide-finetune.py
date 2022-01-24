@@ -7,30 +7,33 @@ import torch as th
 from glide_text2im.respace import SpacedDiffusion
 from glide_text2im.text2im_model import Text2ImUNet
 from tqdm import tqdm
+from wandb import wandb
 
 import util
 from loader import TextImageDataset
 
 
+
 def train_step(
     glide_model: Text2ImUNet,
     glide_diffusion: SpacedDiffusion,
+    glide_options: dict,
     batch: Tuple[th.Tensor, th.Tensor, th.Tensor],
     device: str,
+    respace: bool = True,
 ):
-    batch = [x.detach().clone().to(device) for x in batch]
-    tokens, masks, x_imgs = batch
-    x_imgs = x_imgs.permute(0, 3, 1, 2).float() / 127.5 - 1 # normalize to [-1, 1], shape: [batch_size, channels, side_x, side_y]
-    timesteps = th.randint(0, len(glide_diffusion.betas)-1, (x_imgs.shape[0],), device=device) # random timesteps
-    noise = th.randn_like(x_imgs, device=device) # random noise
-    x_t = glide_diffusion.q_sample(x_imgs, timesteps, noise=noise) # sample from diffusion
-    model_output = glide_model(x_t, timesteps, tokens=tokens, mask=masks) # forward pass
-    epsilon = model_output[..., :3, :, :] # extract epsilon
-    # delta = model_output[..., 3:, :, :] # extract delta
-    # util.pred_to_pil(epsilon).save("current_epsilon.png") # save epsilon
-    # util.pred_to_pil(x_t).save("current_x_t.png") # save x_t
-    # util.pred_to_pil(delta).save("current_delta.png") # save delta
-    return th.nn.functional.mse_loss(epsilon, noise.detach()) # compute loss
+    with autocast(enabled=glide_options['use_fp16'], dtype=th.float16, cache_enabled=False):
+        batch = [x.detach().clone().to(device) for x in batch]
+        tokens, masks, x_imgs = batch
+        x_imgs = x_imgs.permute(0, 3, 1, 2).float() / 127.5 - 1 # normalize to [-1, 1], shape: [batch_size, channels, side_x, side_y]
+        timesteps = th.randint(0, len(glide_diffusion.betas)-1, (x_imgs.shape[0],), device=device) # random timesteps
+        noise = th.randn_like(x_imgs, device=device) # random noise
+        if respace:
+            timesteps = timesteps // (glide_options["diffusion_steps"] // len(glide_diffusion.betas))
+        x_t = glide_diffusion.q_sample(x_imgs, timesteps, noise=noise) # sample from diffusion
+        model_output = glide_model(x_t, timesteps, tokens=tokens, mask=masks) # forward pass
+        epsilon = model_output[..., :3, :, :] # extract epsilon
+        return th.nn.functional.mse_loss(epsilon, noise.detach()) # compute loss
 
 
 def run_glide_finetune(
@@ -42,6 +45,7 @@ def run_glide_finetune(
     side_x=64,
     side_y=64,
     resize_ratio=1.0,
+    timestep_respacing="1000",
     uncond_p=0.0,
     resume_ckpt="",
     checkpoints_dir="./finetune_checkpoints",
@@ -49,10 +53,11 @@ def run_glide_finetune(
     device="cpu",
     freeze_transformer=False,
     freeze_diffusion=False,
-    weight_decay=0.0,
     project_name="glide_finetune",
     activation_checkpointing=False,
 ):
+    if "~" in data_dir:
+        data_dir = os.path.expanduser(data_dir)
     # Create the checkpoint/output directories
     os.makedirs(checkpoints_dir, exist_ok=True)
 
@@ -76,6 +81,7 @@ def run_glide_finetune(
         glide_path=resume_ckpt,
         use_fp16=use_fp16,
         dropout=dropout,
+        timestep_respacing=timestep_respacing,
         freeze_transformer=freeze_transformer,
         freeze_diffusion=freeze_diffusion,
         activation_checkpointing=activation_checkpointing,
@@ -104,11 +110,12 @@ def run_glide_finetune(
     )
 
     # Optimizer setup
-    optimizer = th.optim.SGD(  # use bitsandbytes adam, supports 8-bit
+    optimizer = th.optim.Adam(  # use bitsandbytes adam, supports 8-bit
         [x for x in glide_model.parameters() if x.requires_grad],
         lr=learning_rate,
-        momentum=0.9,
+        # momentum=0.9,
     )
+    prompt = "a red ball sits on a table" # TODO
 
     # Training setup
     current_loss = 0  # hold gradients until all are accumulated
@@ -119,9 +126,12 @@ def run_glide_finetune(
         loss = train_step(
             glide_model=glide_model,
             glide_diffusion=glide_diffusion,
+            glide_options=glide_options,
             batch=batch,
             device=device,
         )
+        if th.isnan(loss) or th.isinf(loss):
+            raise ValueError("Inf/NaN loss encountered")
         current_loss += loss.item()  # sum up loss over grad_acc batches
         loss.backward()  # backpropagate the loss
         if train_idx % grad_acc == grad_acc - 1:
@@ -131,6 +141,16 @@ def run_glide_finetune(
             wandb_run.log({"loss": current_loss})
             tqdm.write(f"Loss: {current_loss:.12f}")
             current_loss = 0
+        if train_idx % 100 == 0:
+            with th.no_grad():
+                print(f"Sampling from model at iteration {train_idx}")
+                samples = util.sample(
+                    model=glide_model, eval_diffusion=glide_diffusion,
+                    options=glide_options, prompt=prompt,#"several people standing in the sky",
+                    batch_size=batch_size, guidance_scale=3, device=device)
+                util.pred_to_pil(samples).save(f"{train_idx}.png")
+                wandb_run.log({"samples": [wandb.Image(f"{train_idx}.png", caption=prompt)]})
+                print(f"Saved sample {train_idx}.png")
         if train_idx % 5000 == 0 and train_idx > 0:
             th.save(
                 glide_model.state_dict(),
@@ -159,7 +179,6 @@ def parse_args():
     parser.add_argument("--device", type=str, default="")
     parser.add_argument("--freeze_transformer", action="store_true")
     parser.add_argument("--freeze_diffusion", action="store_true")
-    parser.add_argument("--weight_decay", type=float, default=0.0)
     parser.add_argument("--project_name", type=str, default="glide-finetune")
     parser.add_argument("--activation_checkpointing", action="store_true")
     return parser.parse_args()
@@ -178,6 +197,7 @@ if __name__ == "__main__":
         batch_size=args.batch_size,
         grad_acc=args.grad_acc,
         learning_rate=args.learning_rate,
+        timestep_respacing=args.timestep_respacing,
         dropout=args.dropout,
         side_x=args.side_x,
         side_y=args.side_y,
@@ -189,7 +209,6 @@ if __name__ == "__main__":
         device=device,
         freeze_transformer=args.freeze_transformer,
         freeze_diffusion=args.freeze_diffusion,
-        weight_decay=args.weight_decay,
         project_name=args.project_name,
         activation_checkpointing=args.activation_checkpointing,
     )

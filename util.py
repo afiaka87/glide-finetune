@@ -1,3 +1,5 @@
+from IPython.display import display, clear_output
+from ipywidgets import Output
 from PIL import Image
 import wandb
 import torch as th
@@ -24,6 +26,7 @@ def load_base_model(
     glide_path:str='',
     use_fp16:bool=False,
     dropout: float=0.1,
+    timestep_respacing: str='1000',
     freeze_transformer: bool = False,
     freeze_diffusion: bool = False,
     activation_checkpointing: bool = False,):
@@ -31,6 +34,7 @@ def load_base_model(
     options = model_and_diffusion_defaults()
     options['use_fp16'] = use_fp16
     options['dropout'] = dropout
+    options['timestep_respacing'] = timestep_respacing
     glide_model, glide_diffusion = create_model_and_diffusion(**options)
     if use_fp16:
         glide_model.convert_to_fp16()
@@ -53,6 +57,59 @@ def load_base_model(
     else: # use default checkpoint from openai
         glide_model.load_state_dict(load_checkpoint('base', 'cpu'))
     return glide_model, glide_diffusion, options
+
+# Sample from the base model.
+def sample(model, eval_diffusion, options, prompt='', batch_size=1, guidance_scale=4, device='cpu'):
+    model.del_cache()
+
+    # Create the text tokens to feed to the model.
+    tokens = model.tokenizer.encode(prompt)
+    tokens, mask = model.tokenizer.padded_tokens_and_mask(
+        tokens, options['text_ctx']
+    )
+
+    # Create the classifier-free guidance tokens (empty)
+    full_batch_size = batch_size * 2
+    uncond_tokens, uncond_mask = model.tokenizer.padded_tokens_and_mask(
+        [], options['text_ctx']
+    )
+
+    # Pack the tokens together into model kwargs.
+    model_kwargs = dict(
+        tokens=th.tensor(
+            [tokens] * batch_size + [uncond_tokens] * batch_size, device=device
+        ),
+        mask=th.tensor(
+            [mask] * batch_size + [uncond_mask] * batch_size,
+            dtype=th.bool,
+            device=device,
+        ),
+    )
+    with th.inference_mode():
+        def model_fn(x_t, ts, **kwargs):
+            half = x_t[: len(x_t) // 2]
+            combined = th.cat([half, half], dim=0)
+            model_out = model(combined, ts, **kwargs)
+            eps, rest = model_out[:, :3], model_out[:, 3:]
+            cond_eps, uncond_eps = th.split(eps, len(eps) // 2, dim=0)
+            beta = eval_diffusion.betas[int(ts.flatten()[0].item() / options["diffusion_steps"] * len(eval_diffusion.betas))]
+            half_eps = uncond_eps + guidance_scale * (cond_eps - uncond_eps)
+            eps = th.cat([half_eps, half_eps], dim=0)
+            current_prediction_pil = pred_to_pil((x_t - eps * (beta ** 0.5))[:batch_size])
+            current_prediction_pil.save('current_prediction.png')
+            return th.cat([eps, rest], dim=1)
+
+        samples = eval_diffusion.ddim_sample_loop(
+            model_fn,
+            (full_batch_size, 3, options['image_size'], options['image_size']),  # only thing that's changed
+            device=device,
+            clip_denoised=True,
+            progress=True,
+            model_kwargs=model_kwargs,
+            cond_fn=None,
+        )[:batch_size]
+    model.del_cache()
+    return samples
 
 
 
