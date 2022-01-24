@@ -1,10 +1,8 @@
 from PIL import Image
-from typing import Tuple
 import wandb
 import torch as th
 from glide_text2im.download import load_checkpoint
 import os
-from glide_text2im.tokenizer.simple_tokenizer import SimpleTokenizer
 from glide_text2im.model_creation import (
     create_model_and_diffusion,
     model_and_diffusion_defaults,
@@ -22,18 +20,14 @@ def pred_to_pil(pred: th.Tensor) -> Image:
     return Image.fromarray(reshaped.numpy())
 
 
-def load_base_model(glide_path:str='', use_fp16:bool=False, dropout: float=0.1, freeze_transformer: bool = False, freeze_diffusion: bool = False):
-    """
-    Loads a base model and returns it and its options. Optionally specify custom checkpoint `glide_path`.
+def load_base_model(
+    glide_path:str='',
+    use_fp16:bool=False,
+    dropout: float=0.1,
+    freeze_transformer: bool = False,
+    freeze_diffusion: bool = False,
+    activation_checkpointing: bool = False,):
 
-    Args:
-        glide_path: The path to the checkpoint to load.
-        use_fp16: Whether to use fp16.
-        dropout: The dropout rate to use.
-        timestep_respacing: The timestep respacing to use.
-        freeze_transformer: Whether to freeze the transformer for captions.
-        freeze_diffusion: Whether to freeze the diffusion for images.
-    """
     options = model_and_diffusion_defaults()
     options['use_fp16'] = use_fp16
     options['dropout'] = dropout
@@ -48,6 +42,10 @@ def load_base_model(glide_path:str='', use_fp16:bool=False, dropout: float=0.1, 
         glide_model.transformer.requires_grad_(True) # then unfreeze transformer
     else:
         glide_model.requires_grad_(True) # unfreeze everything
+
+    if activation_checkpointing:
+        glide_model.use_checkpoint = True
+
     if len(glide_path) > 0: # user provided checkpoint
         assert os.path.exists(glide_path), 'glide path does not exist'
         weights = th.load(glide_path, map_location='cpu')

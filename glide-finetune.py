@@ -3,8 +3,6 @@ import argparse
 import os
 from typing import Tuple
 
-import bitsandbytes as bnb
-import numpy as np
 import torch as th
 from glide_text2im.respace import SpacedDiffusion
 from glide_text2im.text2im_model import Text2ImUNet
@@ -13,7 +11,7 @@ from tqdm import tqdm
 import util
 from loader import TextImageDataset
 
-@autocast(enabled=True, dtype=th.float16, cache_enabled=True)
+
 def train_step(
     glide_model: Text2ImUNet,
     glide_diffusion: SpacedDiffusion,
@@ -22,14 +20,17 @@ def train_step(
 ):
     batch = [x.detach().clone().to(device) for x in batch]
     tokens, masks, x_imgs = batch
-    x_imgs = x_imgs.permute(0, 3, 1, 2).float() / 127.5 - 1
-    timesteps = th.randint(0, len(glide_diffusion.betas)-1, (x_imgs.shape[0],), device=device)
-    noise = th.randn_like(x_imgs, device=device)
-    x_t = glide_diffusion.q_sample(x_imgs, timesteps, noise=noise)
-    model_output = glide_model(x_t, timesteps, tokens=tokens, mask=masks)
-    epsilon = model_output[..., :3, :, :]
-    util.pred_to_pil(epsilon).save("current_epsilon.png")
-    return th.nn.functional.mse_loss(epsilon, noise.detach())
+    x_imgs = x_imgs.permute(0, 3, 1, 2).float() / 127.5 - 1 # normalize to [-1, 1], shape: [batch_size, channels, side_x, side_y]
+    timesteps = th.randint(0, len(glide_diffusion.betas)-1, (x_imgs.shape[0],), device=device) # random timesteps
+    noise = th.randn_like(x_imgs, device=device) # random noise
+    x_t = glide_diffusion.q_sample(x_imgs, timesteps, noise=noise) # sample from diffusion
+    model_output = glide_model(x_t, timesteps, tokens=tokens, mask=masks) # forward pass
+    epsilon = model_output[..., :3, :, :] # extract epsilon
+    # delta = model_output[..., 3:, :, :] # extract delta
+    # util.pred_to_pil(epsilon).save("current_epsilon.png") # save epsilon
+    # util.pred_to_pil(x_t).save("current_x_t.png") # save x_t
+    # util.pred_to_pil(delta).save("current_delta.png") # save delta
+    return th.nn.functional.mse_loss(epsilon, noise.detach()) # compute loss
 
 
 def run_glide_finetune(
@@ -50,6 +51,7 @@ def run_glide_finetune(
     freeze_diffusion=False,
     weight_decay=0.0,
     project_name="glide_finetune",
+    activation_checkpointing=False,
 ):
     # Create the checkpoint/output directories
     os.makedirs(checkpoints_dir, exist_ok=True)
@@ -76,13 +78,12 @@ def run_glide_finetune(
         dropout=dropout,
         freeze_transformer=freeze_transformer,
         freeze_diffusion=freeze_diffusion,
+        activation_checkpointing=activation_checkpointing,
     )
     glide_model.train()
-    glide_model.requires_grad_(True)
     glide_model.to(device)
-    print("Model setup.")
-    print(glide_options)
 
+    # Data setup
     dataset = TextImageDataset(
         folder=data_dir,
         side_x=side_x,
@@ -93,21 +94,20 @@ def run_glide_finetune(
         tokenizer=glide_model.tokenizer,
         text_ctx_len=glide_options["text_ctx"],
         force_reload=False,
-    )
+    ) 
     assert len(dataset) > 0, "Dataset is empty"
     print(f"Dataset contains {len(dataset)} images")
+
+    # Data loader setup
     dataloader = th.utils.data.DataLoader(
-        dataset, batch_size=batch_size, shuffle=True, num_workers=0
+        dataset, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True
     )
 
     # Optimizer setup
-    #optimizer = th.optim.SGD(  # use bitsandbytes adam, supports 8-bit
-    # optimizer = th.optim.Adam(  # use bitsandbytes adam, supports 8-bit
-    optimizer = bnb.optim.Adam(
+    optimizer = th.optim.SGD(  # use bitsandbytes adam, supports 8-bit
         [x for x in glide_model.parameters() if x.requires_grad],
         lr=learning_rate,
-        #momentum=0.9,
-        #weight_decay=weight_decay,
+        momentum=0.9,
     )
 
     # Training setup
@@ -126,7 +126,6 @@ def run_glide_finetune(
         loss.backward()  # backpropagate the loss
         if train_idx % grad_acc == grad_acc - 1:
             optimizer.step()  # update the model parameters
-            optimizer.zero_grad()
             current_loss /= grad_acc  # finally average the loss over the grad_acc
             accum_losses.append(current_loss)
             wandb_run.log({"loss": current_loss})
@@ -162,6 +161,7 @@ def parse_args():
     parser.add_argument("--freeze_diffusion", action="store_true")
     parser.add_argument("--weight_decay", type=float, default=0.0)
     parser.add_argument("--project_name", type=str, default="glide-finetune")
+    parser.add_argument("--activation_checkpointing", action="store_true")
     return parser.parse_args()
 
 
@@ -191,4 +191,5 @@ if __name__ == "__main__":
         freeze_diffusion=args.freeze_diffusion,
         weight_decay=args.weight_decay,
         project_name=args.project_name,
+        activation_checkpointing=args.activation_checkpointing,
     )
