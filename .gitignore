@@ -7,3 +7,4 @@ glide_model_cache/
 outputs/
 wandb/
 finetune_checkpoints/
+docker_child/
