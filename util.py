@@ -44,6 +44,11 @@ def load_base_model(
     elif freeze_diffusion:
         glide_model.requires_grad_(False) # freeze everything,
         glide_model.transformer.requires_grad_(True) # then unfreeze transformer
+        glide_model.transformer_proj.requires_grad_(True)
+        glide_model.token_embedding.requires_grad_(True)
+        glide_model.positional_embedding.requires_grad_(True)
+        glide_model.padding_embedding.requires_grad_(True)
+        glide_model.final_ln.requires_grad_(True)
     else:
         glide_model.requires_grad_(True) # unfreeze everything
 
@@ -59,7 +64,7 @@ def load_base_model(
     return glide_model, glide_diffusion, options
 
 # Sample from the base model.
-def sample(model, eval_diffusion, options, prompt='', batch_size=1, guidance_scale=4, device='cpu'):
+def sample(model, eval_diffusion, options, side_x, side_y, prompt='', batch_size=1, guidance_scale=4, device='cpu'):
     model.del_cache()
 
     # Create the text tokens to feed to the model.
@@ -101,7 +106,7 @@ def sample(model, eval_diffusion, options, prompt='', batch_size=1, guidance_sca
 
         samples = eval_diffusion.ddim_sample_loop(
             model_fn,
-            (full_batch_size, 3, options['image_size'], options['image_size']),  # only thing that's changed
+            (full_batch_size, 3, side_y, side_x),  # only thing that's changed
             device=device,
             clip_denoised=True,
             progress=True,
@@ -115,7 +120,6 @@ def sample(model, eval_diffusion, options, prompt='', batch_size=1, guidance_sca
 
 def wandb_setup(
     batch_size: int,
-    grad_acc: int,
     side_x: int,
     side_y: int,
     learning_rate: float,
@@ -129,7 +133,6 @@ def wandb_setup(
         project=project_name,
         config={
             "batch_size": batch_size,
-            "grad_acc": grad_acc,
             "side_x": side_x,
             "side_y": side_y,
             "learning_rate": learning_rate,
