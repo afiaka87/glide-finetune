@@ -1,4 +1,3 @@
-from unittest import skip
 from torch.cuda.amp import autocast
 from torch.nn.utils import clip_grad_norm_
 import bitsandbytes as bnb
@@ -32,15 +31,16 @@ def train_step(
             timesteps = timesteps // ( glide_options["diffusion_steps"] // len(glide_diffusion.betas))
         x_t = glide_diffusion.q_sample(x_imgs, timesteps, noise=noise).cpu()  # sample from diffusion
 
-    tokens = tokens.to(device)
-    masks = masks.to(device)
-    timesteps = timesteps.to(device)
-    x_t = x_t.to(device)
+    with autocast(enabled=glide_options["use_fp16"], dtype=th.float16):
+        tokens = tokens.to(device)
+        masks = masks.to(device)
+        timesteps = timesteps.to(device)
+        x_t = x_t.to(device)
 
-    model_output = glide_model( x_t, timesteps, tokens=tokens, mask=masks,)  # forward pass
-    epsilon = model_output[..., :3, :, :]  # extract epsilon
+        model_output = glide_model( x_t, timesteps, tokens=tokens, mask=masks,)  # forward pass
+        epsilon = model_output[..., :3, :, :]  # extract epsilon
 
-    return th.nn.functional.mse_loss(epsilon, noise.to(device))  # compute loss
+        return th.nn.functional.mse_loss(epsilon, noise.to(device))  # compute loss
 
 
 def run_glide_finetune_epoch(
@@ -78,27 +78,25 @@ def run_glide_finetune_epoch(
             tqdm.write(f"loss: {current_loss.item():.4f}")
             log = { **log, 'iter': train_idx, 'loss': current_loss.item() }
 
-        wandb_run.log(log)
         # Sample from the model
         if train_idx % log_frequency == 0:
             with th.no_grad():
                 print(f"Sampling from model at iteration {train_idx}")
-                samples = util.sample(
-                    model=glide_model, eval_diffusion=glide_diffusion,
-                    options=glide_options, side_x=side_x,
-                    side_y=side_y, prompt=prompt,
-                    batch_size=batch_size, guidance_scale=10,
-                    device=device,
-                )
-
-                sample_save_path = os.path.join(outputs_dir, f"{train_idx}.png")
-                util.pred_to_pil(samples).save(sample_save_path)
-                wandb_run.log(
-                    {"samples": [wandb.Image(sample_save_path, caption=prompt)]}
-                )
-                print(f"Saved sample {sample_save_path}")
+                with autocast(enabled=True, dtype=th.float16): # TODO - always use fp16?
+                    samples = util.sample(
+                        model=glide_model, eval_diffusion=glide_diffusion,
+                        options=glide_options, side_x=side_x,
+                        side_y=side_y, prompt=prompt,
+                        batch_size=batch_size, guidance_scale=3,
+                        device=device,
+                    )
+                    sample_save_path = os.path.join(outputs_dir, f"{train_idx}.png")
+                    util.pred_to_pil(samples).save(sample_save_path)
+                    log = { **log, 'iter': train_idx, 'samples': wandb.Image(sample_save_path, caption=prompt) }
+                    print(f"Saved sample {sample_save_path}")
         if train_idx % 5000 == 0 and train_idx > 0:
             save_model(glide_model, checkpoints_dir, train_idx)
+        wandb_run.log(log)
     print(f"Finished training, saving final checkpoint")
     save_model(glide_model, checkpoints_dir, train_idx)
 
@@ -127,7 +125,7 @@ def run_glide_finetune(
     use_captions=True,
     num_epochs=100,
     log_frequency=100,
-    test_prompt="an armchair in the form of an umbrella",
+    test_prompt="opalescent colors textures patterns of the sky",
 ):
     if "~" in data_dir:
         data_dir = os.path.expanduser(data_dir)
@@ -188,6 +186,7 @@ def run_glide_finetune(
     optimizer = th.optim.Adam(  # use bitsandbytes adam, supports 8-bit
         [x for x in glide_model.parameters() if x.requires_grad],
         lr=learning_rate,
+        # weight_decay=1e-8
     )
 
     # Training setup
@@ -203,6 +202,7 @@ def run_glide_finetune(
             optimizer=optimizer,
             dataloader=dataloader,
             prompt=test_prompt,
+            checkpoints_dir=checkpoints_dir,
             outputs_dir=outputs_dir,
             batch_size=batch_size,
             side_x=side_x,
