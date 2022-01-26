@@ -125,7 +125,7 @@ def run_glide_finetune(
     use_captions=True,
     num_epochs=100,
     log_frequency=100,
-    test_prompt="opalescent colors textures patterns of the sky",
+    test_prompt="a group of skiers are preparing to ski down a mountain.",
 ):
     if "~" in data_dir:
         data_dir = os.path.expanduser(data_dir)
@@ -235,6 +235,7 @@ def parse_args():
     parser.add_argument("--activation_checkpointing", "-grad_ckpt", action="store_true")
     parser.add_argument("--use_captions", "-txt", action="store_true")
     parser.add_argument("--epochs", "-epochs", type=int, default=20)
+    parser.add_argument("--test_prompt", "-prompt", type=str, default="a group of skiers are preparing to ski down a mountain.")
     args = parser.parse_args()
     return args 
 
@@ -268,4 +269,5 @@ if __name__ == "__main__":
         activation_checkpointing=args.activation_checkpointing,
         use_captions=args.use_captions,
         num_epochs=args.epochs,
+        test_prompt=args.test_prompt,
     )
