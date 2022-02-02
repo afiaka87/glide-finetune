@@ -10,10 +10,6 @@ Thanks to neverix from the EleutherAI discord for all the help with this!
 
 ---
 
-## Checkpoints
-
-- [glide-eleu-30k-steps.pt](https://www.dropbox.com/s/6htem47spd9cxzv/glide-eleu-30k-steps.pt) - GLIDE (small filtered) finetuned on generations from EleutherAI's #faraday-cage for 30,000 iterations with a batch size of 4.
-
 ## Installation
 
 ```sh
