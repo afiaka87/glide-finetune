@@ -34,16 +34,15 @@ def train_step(
         x_t = glide_diffusion.q_sample(x_start, timesteps, noise=noise)  # sample from diffusion
         B, C = x_t.shape[:2]
 
-    with autocast(enabled=True, dtype=th.float16):
-        tokens = tokens.to(device)
-        masks = masks.to(device)
-        timesteps = timesteps.to(device)
-        x_t = x_t.to(device)
-        noise = noise.to(device)
-        model_output = glide_model(x_t, timesteps, tokens=tokens, mask=masks,) 
-    # assert model_output.shape == (B, C * 2, *x_t.shape[2:])
-        epsilon, _ = th.split(model_output, C, dim=1)
-        return util.mean_flat((noise - epsilon) ** 2)  # compute loss
+    tokens = tokens.to(device)
+    masks = masks.to(device)
+    timesteps = timesteps.to(device)
+    x_t = x_t.to(device)
+    noise = noise.to(device)
+    model_output = glide_model(x_t, timesteps, tokens=tokens, mask=masks,) 
+    assert model_output.shape == (B, C * 2, *x_t.shape[2:])
+    epsilon, _ = th.split(model_output, C, dim=1)
+    return util.mean_flat((noise.detach() - epsilon) ** 2)  # compute loss
 
 
 def run_glide_finetune_epoch(
@@ -63,7 +62,7 @@ def run_glide_finetune_epoch(
     wandb_run = None,
 ):
     os.makedirs(checkpoints_dir, exist_ok=True)
-    trainer = fp16_util.MixedPrecisionTrainer(model=glide_model, use_fp16=False, fp16_scale_growth=0.001)
+    trainer = fp16_util.MixedPrecisionTrainer(model=glide_model, use_fp16=glide_options["use_fp16"], fp16_scale_growth=0.001)
     trainer.zero_grad()
     for train_idx, batch in tqdm(enumerate(dataloader), total=len(dataloader)):
         current_loss = train_step(
@@ -73,7 +72,8 @@ def run_glide_finetune_epoch(
             batch=batch,
             device=device,
         )
-        trainer.backward(current_loss.mean())
+        current_loss = current_loss.mean()
+        trainer.backward(current_loss)
         trainer.optimize(opt=optimizer)
         trainer.zero_grad()  # clear the gradients
 
@@ -86,19 +86,18 @@ def run_glide_finetune_epoch(
         if train_idx % log_frequency == 0:
             with th.no_grad():
                 print(f"Sampling from model at iteration {train_idx}")
-                with autocast(enabled=True, dtype=th.float16): # TODO - always use fp16?
-                    samples = util.sample(
-                        model=glide_model, eval_diffusion=glide_diffusion,
-                        options=glide_options, side_x=side_x,
-                        side_y=side_y, prompt=prompt,
-                        batch_size=batch_size, guidance_scale=6,
-                        device=device,
-                    )
-                    sample_save_path = os.path.join(outputs_dir, f"{train_idx}.png")
-                    util.pred_to_pil(samples).save(sample_save_path)
-                    log = { **log, 'iter': train_idx, 'samples': wandb.Image(sample_save_path, caption=prompt) }
-                    print(f"Saved sample {sample_save_path}")
-        if train_idx % 5000 == 0 and train_idx > 0:
+                samples = util.sample(
+                    model=glide_model, eval_diffusion=glide_diffusion,
+                    options=glide_options, side_x=side_x,
+                    side_y=side_y, prompt=prompt,
+                    batch_size=batch_size, guidance_scale=1,
+                    device=device,
+                )
+                sample_save_path = os.path.join(outputs_dir, f"{train_idx}.png")
+                util.pred_to_pil(samples).save(sample_save_path)
+                log = { **log, 'iter': train_idx, 'samples': wandb.Image(sample_save_path, caption=prompt) }
+                print(f"Saved sample {sample_save_path}")
+        if train_idx % 1000 == 0 and train_idx > 0:
             save_model(glide_model, checkpoints_dir, train_idx)
         wandb_run.log(log)
     print(f"Finished training, saving final checkpoint")
@@ -165,6 +164,8 @@ def run_glide_finetune(
     )
     glide_model.zero_grad()
     glide_model.train()
+    glide_model.to(device)
+    glide_model.requires_grad_(True)
 
     # Data setup
     dataset = TextImageDataset(
@@ -196,7 +197,6 @@ def run_glide_finetune(
         lr=learning_rate,
     )
 
-    glide_model.to(device)
 
     # Training setup
     outputs_dir = "./outputs"
