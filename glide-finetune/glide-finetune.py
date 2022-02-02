@@ -165,9 +165,6 @@ def run_glide_finetune(
     )
     glide_model.zero_grad()
     glide_model.train()
-    glide_model.requires_grad_(True) # TODO - this is a hack to get around the fact that the model is frozen.
-    trainable_params = [p for p in glide_model.parameters() if p.requires_grad]
-    print(f"Number of trainable parameters: {len(trainable_params)}")
 
     # Data setup
     dataset = TextImageDataset(
@@ -193,9 +190,8 @@ def run_glide_finetune(
         pin_memory=True,
     )
 
-    # glide_model_ema = util.EMA(glide_model, decay=0.999)
     # Optimizer setup
-    optimizer = th.optim.SGD(  # use bitsandbytes adam, supports 8-bit
+    optimizer = th.optim.SGD(
         [x for x in glide_model.parameters() if x.requires_grad],
         lr=learning_rate,
     )
