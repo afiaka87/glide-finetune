@@ -1,10 +1,18 @@
-python ../glide-finetune.py \
-    --uncond_p 1.0 \
-    --data_dir '' \
-    --batch_size 4 \
-    --grad_acc 2 \
-    --dropout 0.1 \
-    --checkpoints_dir 'my_checkpoints' \
-    --resume_ckpt '' \
-    --device 'cuda' \
-    --project_name 'glide-finetune'
+python glide-finetune/glide-finetune.py \
+    -bs 1 \
+    -lr '1e-2' \
+    -drop 0.1 \
+    -txt \
+    -respace 27 \
+    -x 64 \
+    -y 64 \
+    -crop 0.9 \
+    -p 0.2 \
+    -dev cuda \
+    -data '/home/<user>/<images_folder>' \
+    -resume '' \
+    -ckpt 'save-path' \
+    -name 'glide-finetune-wandb' \
+    -epochs 1 \
+    -prompt '' \
+    -freq 100
