@@ -38,7 +38,7 @@ usage: glide-finetune.py [-h] [--data_dir DATA_DIR] [--batch_size BATCH_SIZE]
                          [--freeze_transformer] [--freeze_diffusion]
                          [--project_name PROJECT_NAME]
                          [--activation_checkpointing] [--use_captions]
-                         [--epochs EPOCHS]
+                         [--epochs EPOCHS] [--test_prompt TEST_PROMPT]
 
 optional arguments:
   -h, --help            show this help message and exit
@@ -62,5 +62,6 @@ optional arguments:
   --activation_checkpointing, -grad_ckpt
   --use_captions, -txt
   --epochs EPOCHS, -epochs EPOCHS
+  --test_prompt TEST_PROMPT, -prompt TEST_PROMPT
 
 ```
