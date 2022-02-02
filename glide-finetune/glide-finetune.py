@@ -9,6 +9,7 @@ from glide_text2im.respace import SpacedDiffusion
 from glide_text2im.text2im_model import Text2ImUNet
 from tqdm import tqdm
 from wandb import wandb
+import fp16_util
 
 import util
 from loader import TextImageDataset
@@ -22,25 +23,27 @@ def train_step(
     respace: bool = True,
 ):
     with th.no_grad():
-        tokens, masks, x_imgs = batch
-        tokens, masks, x_imgs = tokens.to('cpu'), masks.to('cpu'), x_imgs.to('cpu')
-        x_imgs = ( x_imgs.permute(0, 3, 1, 2).float() / 127.5 - 1).cpu()  # normalize to [-1, 1], shape: [batch_size, channels, side_x, side_y]
-        timesteps = th.randint( 0, len(glide_diffusion.betas) - 1, (x_imgs.shape[0],), device='cpu')  # random timesteps
-        noise = th.randn_like(x_imgs, device='cpu')  # random noise
+        tokens, masks, x_start = batch
+        tokens, masks, x_start = tokens.to('cpu'), masks.to('cpu'), x_start.to('cpu')
+        x_start = ( x_start.permute(0, 3, 1, 2).float() / 127.5 - 1).cpu()  # normalize to [-1, 1], shape: [batch_size, channels, side_x, side_y]
+        timesteps = th.randint(1, len(glide_diffusion.betas) - 1, (x_start.shape[0],), device='cpu')  # random timesteps
+        noise = th.randn_like(x_start, device='cpu')  # random noise
         if respace:
             timesteps = timesteps // ( glide_options["diffusion_steps"] // len(glide_diffusion.betas))
-        x_t = glide_diffusion.q_sample(x_imgs, timesteps, noise=noise).cpu()  # sample from diffusion
+        
+        x_t = glide_diffusion.q_sample(x_start, timesteps, noise=noise)  # sample from diffusion
+        B, C = x_t.shape[:2]
 
-    with autocast(enabled=glide_options["use_fp16"], dtype=th.float16):
+    with autocast(enabled=True, dtype=th.float16):
         tokens = tokens.to(device)
         masks = masks.to(device)
         timesteps = timesteps.to(device)
         x_t = x_t.to(device)
-
-        model_output = glide_model( x_t, timesteps, tokens=tokens, mask=masks,)  # forward pass
-        epsilon = model_output[..., :3, :, :]  # extract epsilon
-
-        return th.nn.functional.mse_loss(epsilon, noise.to(device))  # compute loss
+        noise = noise.to(device)
+        model_output = glide_model(x_t, timesteps, tokens=tokens, mask=masks,) 
+    # assert model_output.shape == (B, C * 2, *x_t.shape[2:])
+        epsilon, _ = th.split(model_output, C, dim=1)
+        return util.mean_flat((noise - epsilon) ** 2)  # compute loss
 
 
 def run_glide_finetune_epoch(
@@ -60,6 +63,8 @@ def run_glide_finetune_epoch(
     wandb_run = None,
 ):
     os.makedirs(checkpoints_dir, exist_ok=True)
+    trainer = fp16_util.MixedPrecisionTrainer(model=glide_model, use_fp16=False, fp16_scale_growth=0.001)
+    trainer.zero_grad()
     for train_idx, batch in tqdm(enumerate(dataloader), total=len(dataloader)):
         current_loss = train_step(
             glide_model=glide_model,
@@ -68,10 +73,9 @@ def run_glide_finetune_epoch(
             batch=batch,
             device=device,
         )
-        current_loss.backward()  # backpropagate the loss
-        clip_grad_norm_(glide_model.parameters(), 1.0)  # clip gradients
-        optimizer.step()  # update the model parameters
-        optimizer.zero_grad(set_to_none=True)  # clear the gradients
+        trainer.backward(current_loss.mean())
+        trainer.optimize(opt=optimizer)
+        trainer.zero_grad()  # clear the gradients
 
         log = {} # 
         if train_idx % 10:
@@ -87,7 +91,7 @@ def run_glide_finetune_epoch(
                         model=glide_model, eval_diffusion=glide_diffusion,
                         options=glide_options, side_x=side_x,
                         side_y=side_y, prompt=prompt,
-                        batch_size=batch_size, guidance_scale=3,
+                        batch_size=batch_size, guidance_scale=6,
                         device=device,
                     )
                     sample_save_path = os.path.join(outputs_dir, f"{train_idx}.png")
@@ -159,8 +163,11 @@ def run_glide_finetune(
         freeze_diffusion=freeze_diffusion,
         activation_checkpointing=activation_checkpointing,
     )
+    glide_model.zero_grad()
     glide_model.train()
-    glide_model.to(device)
+    glide_model.requires_grad_(True) # TODO - this is a hack to get around the fact that the model is frozen.
+    trainable_params = [p for p in glide_model.parameters() if p.requires_grad]
+    print(f"Number of trainable parameters: {len(trainable_params)}")
 
     # Data setup
     dataset = TextImageDataset(
@@ -179,15 +186,21 @@ def run_glide_finetune(
 
     # Data loader setup
     dataloader = th.utils.data.DataLoader(
-        dataset, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True
+        dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=0,
+        pin_memory=True,
     )
 
+    # glide_model_ema = util.EMA(glide_model, decay=0.999)
     # Optimizer setup
-    optimizer = th.optim.Adam(  # use bitsandbytes adam, supports 8-bit
+    optimizer = th.optim.SGD(  # use bitsandbytes adam, supports 8-bit
         [x for x in glide_model.parameters() if x.requires_grad],
         lr=learning_rate,
-        # weight_decay=1e-8
     )
+
+    glide_model.to(device)
 
     # Training setup
     outputs_dir = "./outputs"

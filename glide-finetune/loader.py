@@ -97,7 +97,6 @@ class TextImageDataset(Dataset):
         self.imagepreproc = T.Compose(
             [
                 T.Lambda(lambda img: img.convert("RGB") if img.mode != "RGB" else img),
-                T.RandomAdjustSharpness(sharpness_factor=0, p=0.5),
                 T.RandomResizedCrop(
                     (self.side_x, self.side_y),
                     scale=(self.resize_ratio, 1.0),

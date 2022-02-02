@@ -1,5 +1,4 @@
-from IPython.display import display, clear_output
-from ipywidgets import Output
+import numpy as np
 from PIL import Image
 import wandb
 import torch as th
@@ -9,6 +8,7 @@ from glide_text2im.model_creation import (
     create_model_and_diffusion,
     model_and_diffusion_defaults,
 )
+
 
 def extract_into_tensor(arr, timesteps, broadcast_shape):
     res = th.from_numpy(arr).to(device=timesteps.device)[timesteps].float()
@@ -20,6 +20,12 @@ def pred_to_pil(pred: th.Tensor) -> Image:
     scaled = ((pred + 1) * 127.5).round().clamp(0, 255).to(th.uint8).cpu()
     reshaped = scaled.permute(2, 0, 3, 1).reshape([pred.shape[2], -1, 3])
     return Image.fromarray(reshaped.numpy())
+
+def mean_flat(tensor):
+    """
+    Take the mean over all non-batch dimensions.
+    """
+    return tensor.mean(dim=list(range(1, len(tensor.shape))))
 
 
 def load_base_model(
@@ -36,25 +42,23 @@ def load_base_model(
     options['dropout'] = dropout
     options['timestep_respacing'] = timestep_respacing
     glide_model, glide_diffusion = create_model_and_diffusion(**options)
-    if use_fp16:
-        glide_model.convert_to_fp16()
-    if freeze_transformer:
-        glide_model.requires_grad_(True)
-        glide_model.transformer.requires_grad_(False) # freeze transformer
-    elif freeze_diffusion:
-        glide_model.requires_grad_(False) # freeze everything,
-        glide_model.transformer.requires_grad_(True) # then unfreeze transformer
-        glide_model.transformer_proj.requires_grad_(True)
-        glide_model.token_embedding.requires_grad_(True)
-        glide_model.positional_embedding.requires_grad_(True)
-        glide_model.padding_embedding.requires_grad_(True)
-        glide_model.final_ln.requires_grad_(True)
-    else:
-        glide_model.requires_grad_(True) # unfreeze everything
-
+    # if use_fp16:
+    #     glide_model.convert_to_fp16()
+    # if freeze_transformer:
+    #     glide_model.requires_grad_(True)
+    #     glide_model.transformer.requires_grad_(False) # freeze transformer
+    # elif freeze_diffusion:
+    #     glide_model.requires_grad_(False) # freeze everything,
+    #     glide_model.transformer.requires_grad_(True) # then unfreeze transformer
+    #     glide_model.transformer_proj.requires_grad_(True)
+    #     glide_model.token_embedding.requires_grad_(True)
+    #     glide_model.positional_embedding.requires_grad_(True)
+    #     glide_model.padding_embedding.requires_grad_(True)
+    #     glide_model.final_ln.requires_grad_(True)
+    # else:
     if activation_checkpointing:
         glide_model.use_checkpoint = True
-
+    glide_model.requires_grad_(True) # unfreeze everything
     if len(glide_path) > 0: # user provided checkpoint
         assert os.path.exists(glide_path), 'glide path does not exist'
         weights = th.load(glide_path, map_location='cpu')
@@ -62,6 +66,7 @@ def load_base_model(
     else: # use default checkpoint from openai
         glide_model.load_state_dict(load_checkpoint('base', 'cpu'))
     return glide_model, glide_diffusion, options
+
 
 # Sample from the base model.
 def sample(model, eval_diffusion, options, side_x, side_y, prompt='', batch_size=1, guidance_scale=4, device='cpu'):
@@ -142,3 +147,47 @@ def wandb_setup(
             "base_dir": base_dir,
         },
     )
+
+
+"""Exponential moving average for PyTorch. Adapted from
+https://www.zijianhu.com/post/pytorch/ema/.
+"""
+
+from copy import deepcopy
+
+from torch import nn
+
+
+class EMA(nn.Module):
+    def __init__(self, model, decay):
+        super().__init__()
+        self.model = model
+        self.decay = decay
+        self.average = deepcopy(self.model)
+        for param in self.average.parameters():
+            param.detach_()
+
+    @th.no_grad()
+    def update(self):
+        if not self.training:
+            raise RuntimeError('Update should only be called during training')
+
+        model_params = dict(self.model.named_parameters())
+        average_params = dict(self.average.named_parameters())
+        assert model_params.keys() == average_params.keys()
+
+        for name, param in model_params.items():
+            average_params[name].mul_(self.decay)
+            average_params[name].add_((1 - self.decay) * param)
+
+        model_buffers = dict(self.model.named_buffers())
+        average_buffers = dict(self.average.named_buffers())
+        assert model_buffers.keys() == average_buffers.keys()
+
+        for name, buffer in model_buffers.items():
+            average_buffers[name].copy_(buffer)
+
+    def forward(self, *args, **kwargs):
+        if self.training:
+            return self.model(*args, **kwargs)
+        return self.average(*args, **kwargs)
