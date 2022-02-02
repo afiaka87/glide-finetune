@@ -42,23 +42,23 @@ def load_base_model(
     options['dropout'] = dropout
     options['timestep_respacing'] = timestep_respacing
     glide_model, glide_diffusion = create_model_and_diffusion(**options)
-    # if use_fp16:
-    #     glide_model.convert_to_fp16()
-    # if freeze_transformer:
-    #     glide_model.requires_grad_(True)
-    #     glide_model.transformer.requires_grad_(False) # freeze transformer
-    # elif freeze_diffusion:
-    #     glide_model.requires_grad_(False) # freeze everything,
-    #     glide_model.transformer.requires_grad_(True) # then unfreeze transformer
-    #     glide_model.transformer_proj.requires_grad_(True)
-    #     glide_model.token_embedding.requires_grad_(True)
-    #     glide_model.positional_embedding.requires_grad_(True)
-    #     glide_model.padding_embedding.requires_grad_(True)
-    #     glide_model.final_ln.requires_grad_(True)
-    # else:
+    if use_fp16:
+        glide_model.convert_to_fp16()
+    if freeze_transformer:
+        glide_model.requires_grad_(True)
+        glide_model.transformer.requires_grad_(False) # freeze transformer
+    elif freeze_diffusion:
+        glide_model.requires_grad_(False) # freeze everything,
+        glide_model.transformer.requires_grad_(True) # then unfreeze transformer
+        glide_model.transformer_proj.requires_grad_(True)
+        glide_model.token_embedding.requires_grad_(True)
+        glide_model.positional_embedding.requires_grad_(True)
+        glide_model.padding_embedding.requires_grad_(True)
+        glide_model.final_ln.requires_grad_(True)
+    else:
+        glide_model.requires_grad_(True) # unfreeze everything
     if activation_checkpointing:
         glide_model.use_checkpoint = True
-    glide_model.requires_grad_(True) # unfreeze everything
     if len(glide_path) > 0: # user provided checkpoint
         assert os.path.exists(glide_path), 'glide path does not exist'
         weights = th.load(glide_path, map_location='cpu')
