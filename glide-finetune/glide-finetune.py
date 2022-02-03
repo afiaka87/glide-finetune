@@ -1,3 +1,4 @@
+import time
 from torch.cuda.amp import autocast
 from torch.nn.utils import clip_grad_norm_
 import bitsandbytes as bnb
@@ -14,35 +15,36 @@ import fp16_util
 import util
 from loader import TextImageDataset
 
+
 def train_step(
     glide_model: Text2ImUNet,
     glide_diffusion: SpacedDiffusion,
-    glide_options: dict,
     batch: Tuple[th.Tensor, th.Tensor, th.Tensor],
     device: str,
-    respace: bool = True,
 ):
-    with th.no_grad():
-        tokens, masks, x_start = batch
-        tokens, masks, x_start = tokens.to('cpu'), masks.to('cpu'), x_start.to('cpu')
-        x_start = ( x_start.permute(0, 3, 1, 2).float() / 127.5 - 1).cpu()  # normalize to [-1, 1], shape: [batch_size, channels, side_x, side_y]
-        timesteps = th.randint(1, len(glide_diffusion.betas) - 1, (x_start.shape[0],), device='cpu')  # random timesteps
-        noise = th.randn_like(x_start, device='cpu')  # random noise
-        if respace:
-            timesteps = timesteps // ( glide_options["diffusion_steps"] // len(glide_diffusion.betas))
-        
-        x_t = glide_diffusion.q_sample(x_start, timesteps, noise=noise)  # sample from diffusion
-        B, C = x_t.shape[:2]
-
-    tokens = tokens.to(device)
-    masks = masks.to(device)
-    timesteps = timesteps.to(device)
-    x_t = x_t.to(device)
-    noise = noise.to(device)
-    model_output = glide_model(x_t, timesteps, tokens=tokens, mask=masks,) 
-    assert model_output.shape == (B, C * 2, *x_t.shape[2:])
+    tokens, masks, x_start = [
+        x.to(device) for x in batch
+    ]  # Put the batch on the device
+    timesteps = th.randint(
+        0, len(glide_diffusion.betas) - 1, (x_start.shape[0],), device=device
+    )  # random timesteps
+    noise = th.randn_like(x_start, device=device)  # random noise
+    x_t = glide_diffusion.q_sample(x_start, timesteps, noise=noise).to(
+        device
+    )  # What the image should look like for the given timestep/noise
+    B, C = x_t.shape[:2]
+    model_output = glide_model(
+        x_t.to(device),
+        timesteps.to(device),
+        tokens=tokens.to(device),
+        mask=masks.to(device),
+    ).to(
+        device
+    )  # forward pass
     epsilon, _ = th.split(model_output, C, dim=1)
-    return util.mean_flat((noise.detach() - epsilon) ** 2)  # compute loss
+    return util.mean_flat(
+        (noise.detach().to(device) - epsilon) ** 2
+    ).mean()  # compute loss
 
 
 def run_glide_finetune_epoch(
@@ -51,61 +53,77 @@ def run_glide_finetune_epoch(
     glide_options: dict,
     dataloader: th.utils.data.DataLoader,
     optimizer: th.optim.Optimizer,
-    batch_size: int,
-    prompt: str = "",
+    sample_bs: int,  # batch size for inference, not training
+    sample_gs: float = 4.0,  # guidance scale for inference, not training
+    prompt: str = "",  # prompt for inference, not training
     side_x: int = 64,
     side_y: int = 64,
     outputs_dir: str = "./outputs",
     checkpoints_dir: str = "./finetune_checkpoints",
     device: str = "cpu",
     log_frequency: int = 100,
-    wandb_run = None,
+    wandb_run=None,
 ):
     os.makedirs(checkpoints_dir, exist_ok=True)
-    trainer = fp16_util.MixedPrecisionTrainer(model=glide_model, use_fp16=glide_options["use_fp16"], fp16_scale_growth=0.001)
+    trainer = fp16_util.MixedPrecisionTrainer(
+        model=glide_model, use_fp16=glide_options["use_fp16"], fp16_scale_growth=0.001
+    )
     trainer.zero_grad()
     for train_idx, batch in tqdm(enumerate(dataloader), total=len(dataloader)):
         current_loss = train_step(
             glide_model=glide_model,
             glide_diffusion=glide_diffusion,
-            glide_options=glide_options,
             batch=batch,
             device=device,
         )
-        current_loss = current_loss.mean()
         trainer.backward(current_loss)
         trainer.optimize(opt=optimizer)
         trainer.zero_grad()  # clear the gradients
 
-        log = {} # 
+        log = {}  #
         if train_idx % 10:
             tqdm.write(f"loss: {current_loss.item():.4f}")
-            log = { **log, 'iter': train_idx, 'loss': current_loss.item() }
+            log = {**log, "iter": train_idx, "loss": current_loss.item()}
 
         # Sample from the model
-        if train_idx % log_frequency == 0:
-            with th.no_grad():
-                print(f"Sampling from model at iteration {train_idx}")
-                samples = util.sample(
-                    model=glide_model, eval_diffusion=glide_diffusion,
-                    options=glide_options, side_x=side_x,
-                    side_y=side_y, prompt=prompt,
-                    batch_size=batch_size, guidance_scale=1,
-                    device=device,
-                )
-                sample_save_path = os.path.join(outputs_dir, f"{train_idx}.png")
-                util.pred_to_pil(samples).save(sample_save_path)
-                log = { **log, 'iter': train_idx, 'samples': wandb.Image(sample_save_path, caption=prompt) }
-                print(f"Saved sample {sample_save_path}")
+        if train_idx > 0 and train_idx % log_frequency == 0:
+            print(f"Sampling from model at iteration {train_idx}")
+            samples = util.sample(
+                glide_model=glide_model,
+                glide_options=glide_options,
+                side_x=side_x,
+                side_y=side_y,
+                prompt=prompt,
+                batch_size=sample_bs,
+                guidance_scale=sample_gs,
+                device=device,
+                prediction_respacing='27' # TODO use args
+            )
+            sample_save_path = os.path.join(outputs_dir, f"{train_idx}.png")
+            util.pred_to_pil(samples).save(sample_save_path)
+            log = {
+                **log,
+                "iter": train_idx,
+                "samples": wandb.Image(sample_save_path, caption=prompt),
+            }
+            print(f"Saved sample {sample_save_path}")
         if train_idx % 1000 == 0 and train_idx > 0:
             save_model(glide_model, checkpoints_dir, train_idx)
+            print(
+                f"Saved checkpoint {train_idx} to {checkpoints_dir}/glide-ft-{train_idx}.pt"
+            )
         wandb_run.log(log)
     print(f"Finished training, saving final checkpoint")
     save_model(glide_model, checkpoints_dir, train_idx)
 
+
 def save_model(glide_model: Text2ImUNet, checkpoints_dir: str, train_idx: int):
-    th.save(glide_model.state_dict(), os.path.join(checkpoints_dir, f"glide-ft-{train_idx}.pt"))
+    th.save(
+        glide_model.state_dict(),
+        os.path.join(checkpoints_dir, f"glide-ft-{train_idx}.pt"),
+    )
     print(f"Saved checkpoint {train_idx} to {checkpoints_dir}/glide-ft-{train_idx}.pt")
+
 
 def run_glide_finetune(
     data_dir="./data",
@@ -115,7 +133,6 @@ def run_glide_finetune(
     side_x=64,
     side_y=64,
     resize_ratio=1.0,
-    timestep_respacing="1000",
     uncond_p=0.0,
     resume_ckpt="",
     checkpoints_dir="./finetune_checkpoints",
@@ -129,6 +146,9 @@ def run_glide_finetune(
     num_epochs=100,
     log_frequency=100,
     test_prompt="a group of skiers are preparing to ski down a mountain.",
+    sample_bs=1,
+    sample_gs=4.0,
+    use_sgd=False,
 ):
     if "~" in data_dir:
         data_dir = os.path.expanduser(data_dir)
@@ -157,15 +177,10 @@ def run_glide_finetune(
         glide_path=resume_ckpt,
         use_fp16=use_fp16,
         dropout=dropout,
-        timestep_respacing=timestep_respacing,
         freeze_transformer=freeze_transformer,
         freeze_diffusion=freeze_diffusion,
         activation_checkpointing=activation_checkpointing,
     )
-    glide_model.zero_grad()
-    glide_model.train()
-    glide_model.to(device)
-    glide_model.requires_grad_(True)
 
     # Data setup
     dataset = TextImageDataset(
@@ -192,16 +207,26 @@ def run_glide_finetune(
     )
 
     # Optimizer setup
-    optimizer = th.optim.SGD(
-        [x for x in glide_model.parameters() if x.requires_grad],
-        lr=learning_rate,
-    )
-
+    if use_sgd:
+        optimizer = th.optim.SGD(
+            [x for x in glide_model.parameters() if x.requires_grad],
+            lr=learning_rate,
+            momentum=0.9,
+        )
+    else:
+        optimizer = th.optim.AdamW(
+            [x for x in glide_model.parameters() if x.requires_grad],
+            lr=learning_rate,
+            weight_decay=0.0,
+        )
 
     # Training setup
     outputs_dir = "./outputs"
     os.makedirs(outputs_dir, exist_ok=True)
 
+    glide_model.to(device)
+    glide_model.train()
+    glide_model.zero_grad()
     for epoch in range(num_epochs):
         print(f"Starting epoch {epoch}")
         run_glide_finetune_epoch(
@@ -211,9 +236,10 @@ def run_glide_finetune(
             optimizer=optimizer,
             dataloader=dataloader,
             prompt=test_prompt,
+            sample_bs=sample_bs,
+            sample_gs=sample_gs,
             checkpoints_dir=checkpoints_dir,
             outputs_dir=outputs_dir,
-            batch_size=batch_size,
             side_x=side_x,
             side_y=side_y,
             device=device,
@@ -228,13 +254,14 @@ def parse_args():
     parser.add_argument("--batch_size", "-bs", type=int, default=1)
     parser.add_argument("--learning_rate", "-lr", type=float, default=2e-5)
     parser.add_argument("--dropout", "-drop", type=float, default=0.1)
-    parser.add_argument("--timestep_respacing", "-respace", type=str, default="1000")
     parser.add_argument("--side_x", "-x", type=int, default=64)
     parser.add_argument("--side_y", "-y", type=int, default=64)
     parser.add_argument("--resize_ratio", "-crop", type=float, default=0.8)
     parser.add_argument("--uncond_p", "-p", type=float, default=0.0)
     parser.add_argument("--resume_ckpt", "-resume", type=str, default="")
-    parser.add_argument("--checkpoints_dir", "-ckpt", type=str, default="./glide_checkpoints/")
+    parser.add_argument(
+        "--checkpoints_dir", "-ckpt", type=str, default="./glide_checkpoints/"
+    )
     parser.add_argument("--use_fp16", "-fp16", action="store_true")
     parser.add_argument("--device", "-dev", type=str, default="")
     parser.add_argument("--log_frequency", "-freq", type=int, default=100)
@@ -244,9 +271,17 @@ def parse_args():
     parser.add_argument("--activation_checkpointing", "-grad_ckpt", action="store_true")
     parser.add_argument("--use_captions", "-txt", action="store_true")
     parser.add_argument("--epochs", "-epochs", type=int, default=20)
-    parser.add_argument("--test_prompt", "-prompt", type=str, default="a group of skiers are preparing to ski down a mountain.")
+    parser.add_argument(
+        "--test_prompt",
+        "-prompt",
+        type=str,
+        default="a group of skiers are preparing to ski down a mountain.",
+    )
+    parser.add_argument("--test_batch_size", "-tbs", type=int, default=1, help="Batch size used for model eval, not training.")
+    parser.add_argument("--test_guidance_scale", "-tgs", type=float, default=1.0, help="Guidance scale used during model eval, not training.")
+    parser.add_argument("--use_sgd", "-sgd", action="store_true")
     args = parser.parse_args()
-    return args 
+    return args
 
 
 if __name__ == "__main__":
@@ -257,11 +292,16 @@ if __name__ == "__main__":
     else:
         device = th.device("cpu") if not th.cuda.is_available() else th.device("cuda")
 
+    # Pretty print args
+
+    for arg in vars(args):
+        print(f"{arg}: {getattr(args, arg)}")
+    time.sleep(5)
+
     run_glide_finetune(
         data_dir=args.data_dir,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
-        timestep_respacing=args.timestep_respacing,
         dropout=args.dropout,
         side_x=args.side_x,
         side_y=args.side_y,
@@ -279,4 +319,7 @@ if __name__ == "__main__":
         use_captions=args.use_captions,
         num_epochs=args.epochs,
         test_prompt=args.test_prompt,
+        use_sgd=args.use_sgd,
+        sample_bs=args.test_batch_size,
+        sample_gs=args.test_guidance_scale,
     )

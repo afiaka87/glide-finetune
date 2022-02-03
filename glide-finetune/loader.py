@@ -20,6 +20,7 @@ def get_uncond_tokens_mask(tokenizer: Encoder):
     return th.tensor(uncond_tokens), th.tensor(uncond_mask, dtype=th.bool)
 
 
+@lru_cache(maxsize=16000)
 def get_tokens_and_mask(
     tokenizer: Encoder, prompt: str = ""
 ) -> Tuple[th.tensor, th.tensor]:
@@ -103,6 +104,7 @@ class TextImageDataset(Dataset):
                     ratio=(1.0, 1.0),
                     interpolation=T.InterpolationMode.LANCZOS,
                 ),
+                T.ToTensor()
             ]
         )
 
@@ -148,7 +150,6 @@ class TextImageDataset(Dataset):
             tokens, mask = self.get_caption(ind)
         try:
             x_img = self.imagepreproc(PIL.Image.open(image_file))
-            x_img = np.asarray(self.imagepreproc(x_img))
         except (OSError, ValueError) as e:
             print(f"An exception occurred trying to load file {image_file}.")
             print(f"Skipping index {ind}")

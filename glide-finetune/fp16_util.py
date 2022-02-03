@@ -7,7 +7,7 @@ import torch as th
 import torch.nn as nn
 from torch._utils import _flatten_dense_tensors, _unflatten_dense_tensors
 
-INITIAL_LOG_LOSS_SCALE = 14.0
+INITIAL_LOG_LOSS_SCALE = 20.0 # Default from OpenAI. May wish to change this for finetuning.
 
 
 def convert_module_to_f16(l):
