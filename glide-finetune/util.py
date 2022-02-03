@@ -50,7 +50,7 @@ def load_base_model(
         glide_model.requires_grad_(False)
         glide_model.time_embed.requires_grad_(True)
         glide_model.input_blocks.requires_grad_(True)
-        glide_model.middle_blocks.requires_grad_(True)
+        glide_model.middle_block.requires_grad_(True)
         glide_model.output_blocks.requires_grad_(True)
     elif freeze_diffusion:
         glide_model.requires_grad_(False)
