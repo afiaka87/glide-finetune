@@ -155,6 +155,7 @@ def create_webdataset(
     enable_metadata=False,
     cache_path=None,
     tokenizer=None,
+    uncond_p=0.2,
 ):
     """Create a WebDataset reader, it can read a webdataset of image, text and json"""
     import webdataset as wds  # pylint: disable=import-outside-toplevel
@@ -178,9 +179,12 @@ def create_webdataset(
             x_img = image_transform(PIL.Image.open(io.BytesIO(image_data)))
             x_img = th.from_numpy(np.asarray(x_img)).float().permute(2, 0, 1) / 127.5 - 1.
         if enable_text:
-            text = item[caption_key]
-            caption = text.decode("utf-8")
-            tokens, mask = get_tokens_and_mask(tokenizer, caption)
+            if random() < uncond_p:
+                tokens, mask = get_uncond_tokens_mask(tokenizer)
+            else:
+                text = item[caption_key]
+                caption = text.decode("utf-8")
+                tokens, mask = get_tokens_and_mask(tokenizer, caption)
         else:
             tokens, mask = get_uncond_tokens_mask(tokenizer)
         return tokens, mask, x_img
