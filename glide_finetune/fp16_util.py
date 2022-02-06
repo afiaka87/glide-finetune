@@ -1,14 +1,74 @@
 """
-Helpers to train with 16-bit precision.
+Helpers to train with 16-bit precision. Modified from OpenAI's guided diffusion repo.
 """
 
+from tqdm import tqdm
 import numpy as np
 import torch as th
 import torch.nn as nn
 from torch._utils import _flatten_dense_tensors, _unflatten_dense_tensors
 
 INITIAL_LOG_LOSS_SCALE = 20.0 # Default from OpenAI. May wish to change this for finetuning.
+from copy import deepcopy
 
+import torch
+from torch import nn
+
+# Exponential Moving Average (from https://gist.github.com/crowsonkb/76b94d5238272722290734bf4725d204)
+"""Exponential moving average for PyTorch. Adapted from
+https://www.zijianhu.com/post/pytorch/ema/ by crowsonkb
+"""
+from copy import deepcopy
+
+import torch
+from torch import nn
+
+
+class EMA(nn.Module):
+    def __init__(self, model, decay):
+        super().__init__()
+        self.model = model
+        self.decay = decay
+        self.register_buffer('accum', torch.tensor(1.))
+        self._biased = deepcopy(self.model)
+        self.average = deepcopy(self.model)
+        for param in self._biased.parameters():
+            param.detach_().zero_()
+        for param in self.average.parameters():
+            param.detach_().zero_()
+        self.update()
+
+    @torch.no_grad()
+    def update(self):
+        if not self.training:
+            raise RuntimeError('Update should only be called during training')
+
+        self.accum *= self.decay
+
+        model_params = dict(self.model.named_parameters())
+        biased_params = dict(self._biased.named_parameters())
+        average_params = dict(self.average.named_parameters())
+        assert model_params.keys() == biased_params.keys() == average_params.keys()
+
+        for name, param in model_params.items():
+            biased_params[name].mul_(self.decay)
+            biased_params[name].add_((1 - self.decay) * param)
+            average_params[name].copy_(biased_params[name])
+            average_params[name].div_(1 - self.accum)
+
+        model_buffers = dict(self.model.named_buffers())
+        biased_buffers = dict(self._biased.named_buffers())
+        average_buffers = dict(self.average.named_buffers())
+        assert model_buffers.keys() == biased_buffers.keys() == average_buffers.keys()
+
+        for name, buffer in model_buffers.items():
+            biased_buffers[name].copy_(buffer)
+            average_buffers[name].copy_(buffer)
+
+    def forward(self, *args, **kwargs):
+        if self.training:
+            return self.model(*args, **kwargs)
+        return self.average(*args, **kwargs) 
 
 def convert_module_to_f16(l):
     """
@@ -79,6 +139,9 @@ def unflatten_master_params(param_group, master_param):
 
 def get_param_groups_and_shapes(named_model_params):
     named_model_params = list(named_model_params)
+    named_model_params = [ # TODO added by me
+        (name, param) for (name, param) in named_model_params if param.requires_grad # TODO added by me
+    ]
     scalar_vector_named_params = (
         [(n, p) for (n, p) in named_model_params if p.ndim <= 1],
         (-1),
@@ -114,12 +177,12 @@ def master_params_to_state_dict(
 def state_dict_to_master_params(model, state_dict, use_fp16):
     if use_fp16:
         named_model_params = [
-            (name, state_dict[name]) for name, _ in model.named_parameters()
+            (name, state_dict[name]) for name, param in model.named_parameters() if param.requires_grad
         ]
         param_groups_and_shapes = get_param_groups_and_shapes(named_model_params)
         master_params = make_master_params(param_groups_and_shapes)
     else:
-        master_params = [state_dict[name] for name, _ in model.named_parameters()]
+        master_params = [state_dict[name] for name, param in model.named_parameters() if param.requires_grad]
     return master_params
 
 
@@ -176,8 +239,8 @@ class MixedPrecisionTrainer:
             # loss_scale = 2 ** self.lg_loss_scale
             loss_scale = th.tensor(self.lg_loss_scale).pow(2).to(loss.device)
             loss = loss.mul(loss_scale)
-            loss.backward()
-            # (loss * loss_scale).backward()
+            # loss.backward()
+            # oss * loss_scale).backward()
         else:
             loss.backward()
 
@@ -188,17 +251,17 @@ class MixedPrecisionTrainer:
             return self._optimize_normal(opt)
 
     def _optimize_fp16(self, opt: th.optim.Optimizer):
-        print("lg_loss_scale", self.lg_loss_scale)
+        tqdm.write(f"lg_loss_scale {self.lg_loss_scale}")
         model_grads_to_master_grads(self.param_groups_and_shapes, self.master_params)
         grad_norm, param_norm = self._compute_norms(grad_scale=2 ** self.lg_loss_scale)
         if check_overflow(grad_norm):
             self.lg_loss_scale -= 1
-            print(f"Found NaN, decreased lg_loss_scale to {self.lg_loss_scale}")
+            tqdm.write(f"Found NaN, decreased lg_loss_scale to {self.lg_loss_scale}")
             zero_master_grads(self.master_params)
             return False
 
-        print("grad_norm", grad_norm)
-        print("param_norm", param_norm)
+        tqdm.write(f"grad_norm {grad_norm}")
+        tqdm.write(f"param_norm {param_norm}")
 
         self.master_params[0].grad.mul_(1.0 / (2 ** self.lg_loss_scale))
         opt.step()
@@ -209,8 +272,8 @@ class MixedPrecisionTrainer:
 
     def _optimize_normal(self, opt: th.optim.Optimizer):
         grad_norm, param_norm = self._compute_norms()
-        print("grad_norm", grad_norm)
-        print("param_norm", param_norm)
+        tqdm.write(f"grad_norm: {grad_norm}")
+        tqdm.write(f"param_norm:{param_norm}")
         opt.step()
         return True
 
