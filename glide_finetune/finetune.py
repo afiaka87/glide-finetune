@@ -1,3 +1,5 @@
+from glob import glob
+from torchvision import transforms as T
 from cgitb import enable
 from re import A
 import numpy as np
@@ -10,9 +12,8 @@ from glide_text2im.respace import SpacedDiffusion
 from glide_text2im.text2im_model import Text2ImUNet
 from tqdm import tqdm, trange
 from wandb import wandb
-
 import util
-from loader import TextImageDataset
+from loader import TextImageDataset, create_webdataset
 
 
 def train_step(
@@ -55,7 +56,7 @@ def run_glide_finetune_epoch(
     glide_model.to(device)
     glide_model.train()
     log = {}
-    for train_idx, batch in tqdm(enumerate(dataloader), total=len(dataloader)):
+    for train_idx, batch in tqdm(enumerate(dataloader)):
         accumulated_loss = train_step(
             glide_model=glide_model,
             glide_diffusion=glide_diffusion,
@@ -125,6 +126,9 @@ def run_glide_finetune(
     test_prompt="a group of skiers are preparing to ski down a mountain.",
     sample_bs=1,
     sample_gs=8.0,
+    use_webdataset=False,
+    image_key="jpg",
+    caption_key="txt",
 ):
     if "~" in data_dir:
         data_dir = os.path.expanduser(data_dir)
@@ -162,28 +166,48 @@ def run_glide_finetune(
     print(f"Number of parameters: {number_of_params}")
     number_of_trainable_params = sum(x.numel() for x in glide_model.parameters() if x.requires_grad)
     print(f"Trainable parameters: {number_of_trainable_params}")
+    imagepreproc = T.Compose([
+        T.Lambda(lambda img: img.convert("RGB") if img.mode != "RGB" else img),
+        T.RandomResizedCrop(
+            (side_x, side_y),
+            scale=(resize_ratio, 1.0),
+            ratio=(1.0, 1.0),
+            interpolation=T.InterpolationMode.LANCZOS,
+        ),
+        T.RandomAutocontrast(p=0.5),])
 
     # Data setup
     print("Loading data...")
-    dataset = TextImageDataset(
-        folder=data_dir,
-        side_x=side_x,
-        side_y=side_y,
-        resize_ratio=resize_ratio,
-        uncond_p=uncond_p,
-        shuffle=True,
-        tokenizer=glide_model.tokenizer,
-        text_ctx_len=glide_options["text_ctx"],
-        use_captions=use_captions,
-    )
-    assert len(dataset) > 0, "Dataset is empty"
-    print(f"Dataset contains {len(dataset)} images")
+    if use_webdataset:
+        dataset = create_webdataset(
+            urls=data_dir,
+            image_transform=imagepreproc,
+            caption_key=caption_key,
+            image_key=image_key,
+            enable_image=True,
+            enable_text=True,
+            tokenizer=glide_model.tokenizer,
+            # enable_caption=use_captions, # TODO - figure out how to use uncond token and uncond_p
+        )
+    else:
+        dataset = TextImageDataset(
+            folder=data_dir,
+            side_x=side_x,
+            side_y=side_y,
+            resize_ratio=resize_ratio,
+            uncond_p=uncond_p,
+            shuffle=True,
+            tokenizer=glide_model.tokenizer,
+            text_ctx_len=glide_options["text_ctx"],
+            use_captions=use_captions,
+            imagepreproc=imagepreproc,
+        )
 
     # Data loader setup
     dataloader = th.utils.data.DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=True,
+        shuffle=False,
         num_workers=0,
         pin_memory=(device == "cuda"),
     )
@@ -254,6 +278,9 @@ def parse_args():
     parser.add_argument("--test_batch_size", "-tbs", type=int, default=1, help="Batch size used for model eval, not training.")
     parser.add_argument("--test_guidance_scale", "-tgs", type=float, default=1.0, help="Guidance scale used during model eval, not training.")
     parser.add_argument("--use_sgd", "-sgd", action="store_true")
+    parser.add_argument("--use_webdataset", "-wds", action="store_true")
+    parser.add_argument("--wds_image_key", "-wds_img", type=str, default="jpg")
+    parser.add_argument("--wds_caption_key", "-wds_cap", type=str, default="txt")
     args = parser.parse_args()
     return args
 
@@ -270,9 +297,13 @@ if __name__ == "__main__":
 
     for arg in vars(args):
         print(f"{arg}: {getattr(args, arg)}")
+    
+    if args.use_webdataset:
+        # webdataset uses tars
+        data_dir = glob(os.path.join(args.data_dir, "*.tar"))
 
     run_glide_finetune(
-        data_dir=args.data_dir,
+        data_dir=data_dir,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
         dropout=args.dropout,
@@ -294,4 +325,7 @@ if __name__ == "__main__":
         test_prompt=args.test_prompt,
         sample_bs=args.test_batch_size,
         sample_gs=args.test_guidance_scale,
+        use_webdataset=args.use_webdataset,
+        image_key=args.wds_image_key,
+        caption_key=args.wds_caption_key,
     )

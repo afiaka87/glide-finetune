@@ -1,3 +1,4 @@
+import io
 import time
 from pathlib import Path
 from random import randint, choice, random
@@ -66,6 +67,7 @@ class TextImageDataset(Dataset):
         text_ctx_len=128,
         uncond_p=0.0,
         use_captions=False,
+        imagepreproc=None,
     ):
         super().__init__()
         folder = Path(folder)
@@ -92,18 +94,7 @@ class TextImageDataset(Dataset):
         self.side_y = side_y
         self.tokenizer = tokenizer
         self.uncond_p = uncond_p
-        self.imagepreproc = T.Compose(
-            [
-                T.Lambda(lambda img: img.convert("RGB") if img.mode != "RGB" else img),
-                T.RandomResizedCrop(
-                    (self.side_x, self.side_y),
-                    scale=(self.resize_ratio, 1.0),
-                    ratio=(1.0, 1.0),
-                    interpolation=T.InterpolationMode.LANCZOS,
-                ),
-                T.RandomAutocontrast(p=0.5),
-            ]
-        )
+        self.imagepreproc =  imagepreproc
 
     def __len__(self):
         return len(self.keys)
@@ -153,3 +144,46 @@ class TextImageDataset(Dataset):
             print(f"Skipping index {ind}")
             return self.skip_sample(ind)
         return tokens, mask, x_img
+
+def create_webdataset(
+    urls,
+    image_transform,
+    enable_text=True,
+    enable_image=True,
+    image_key="jpg",
+    caption_key="txt",
+    enable_metadata=False,
+    cache_path=None,
+    tokenizer=None,
+):
+    """Create a WebDataset reader, it can read a webdataset of image, text and json"""
+    import webdataset as wds  # pylint: disable=import-outside-toplevel
+
+    dataset = wds.WebDataset(urls, cache_dir=cache_path, cache_size=10 ** 10, handler=wds.handlers.warn_and_continue)
+    def filter_dataset(item):
+        if enable_text and caption_key not in item:
+            return False
+        if enable_image and image_key not in item:
+            return False
+        if enable_metadata and "json" not in item:
+            return False
+        return True
+
+    filtered_dataset = dataset.select(filter_dataset)
+
+    def preprocess_dataset(item):
+        tokens, mask, x_img = None, None, None
+        if enable_image:
+            image_data = item[image_key]
+            x_img = image_transform(PIL.Image.open(io.BytesIO(image_data)))
+            x_img = th.from_numpy(np.asarray(x_img)).float().permute(2, 0, 1) / 127.5 - 1.
+        if enable_text:
+            text = item[caption_key]
+            caption = text.decode("utf-8")
+            tokens, mask = get_tokens_and_mask(tokenizer, caption)
+        else:
+            tokens, mask = get_uncond_tokens_mask(tokenizer)
+        return tokens, mask, x_img
+
+    transformed_dataset = filtered_dataset.map(preprocess_dataset, handler=wds.handlers.warn_and_stop)
+    return transformed_dataset
