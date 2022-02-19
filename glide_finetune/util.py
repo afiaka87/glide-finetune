@@ -3,18 +3,57 @@ import os
 import torch as th
 import wandb
 from glide_text2im.download import load_checkpoint
-from glide_text2im.model_creation import (create_gaussian_diffusion,
-                                          create_model_and_diffusion,
-                                          model_and_diffusion_defaults)
-from glide_text2im.unet import (AttentionBlock, Downsample, QKVAttention,
-                                ResBlock, TimestepBlock,
-                                TimestepEmbedSequential, Upsample)
-from glide_text2im.xf import (MLP, LayerNorm, MultiheadAttention,
-                              QKVMultiheadAttention, ResidualAttentionBlock,
-                              Transformer)
-transformer_types = (QKVAttention, AttentionBlock, ResidualAttentionBlock, TimestepBlock, TimestepEmbedSequential, MLP, MultiheadAttention, QKVMultiheadAttention, Downsample, Upsample)
+from glide_text2im.model_creation import (
+    create_gaussian_diffusion,
+    create_model_and_diffusion,
+    model_and_diffusion_defaults,
+)
+from glide_text2im.unet import (
+    AttentionBlock,
+    Downsample,
+    QKVAttention,
+    ResBlock,
+    TimestepBlock,
+    TimestepEmbedSequential,
+    Upsample,
+)
+from glide_text2im.xf import (
+    MLP,
+    LayerNorm,
+    MultiheadAttention,
+    QKVMultiheadAttention,
+    ResidualAttentionBlock,
+    Transformer,
+)
+from tqdm import tqdm
+
+transformer_types = (
+    QKVAttention,
+    AttentionBlock,
+    ResidualAttentionBlock,
+    TimestepBlock,
+    TimestepEmbedSequential,
+    MLP,
+    MultiheadAttention,
+    QKVMultiheadAttention,
+    Downsample,
+    Upsample,
+)
 diffusion_types = (LayerNorm, Downsample)
 from PIL import Image
+
+
+def save_model(
+    glide_model: th.nn.Module, checkpoints_dir: str, train_idx: int, epoch: int
+):
+    th.save(
+        glide_model.state_dict(),
+        os.path.join(checkpoints_dir, f"glide-ft-{epoch}x{train_idx}.pt"),
+    )
+    tqdm.write(
+        f"Saved checkpoint {train_idx} to {checkpoints_dir}/glide-ft-{epoch}x{train_idx}.pt"
+    )
+
 
 def pred_to_pil(pred: th.Tensor) -> Image:
     scaled = ((pred + 1) * 127.5).round().clamp(0, 255).to(th.uint8).cpu()
@@ -45,11 +84,12 @@ def load_base_model(
     glide_model.requires_grad_(True)  # unfreeze everything
     if activation_checkpointing:
         glide_model.use_checkpoint = True
-    
+
     glide_model.requires_grad_(True)
     if freeze_transformer:
         for _, module in glide_model.named_modules():
-            if isinstance(module, transformer_types): module.requires_grad_(False)
+            if isinstance(module, transformer_types):
+                module.requires_grad_(False)
         # glide_model.out.requires_grad_(True)
         # glide_model.middle_block.requires_grad_(True)
         # glide_model.input_blocks.requires_grad_(True)
@@ -57,7 +97,8 @@ def load_base_model(
 
     if freeze_diffusion:
         for _, module in glide_model.named_modules():
-            if isinstance(module, diffusion_types): module.requires_grad_(False)
+            if isinstance(module, diffusion_types):
+                module.requires_grad_(False)
     if len(glide_path) > 0:  # user provided checkpoint
         assert os.path.exists(glide_path), "glide path does not exist"
         weights = th.load(glide_path, map_location="cpu")
@@ -114,6 +155,7 @@ def sample(
         ),
     )
     with th.inference_mode():
+
         def model_fn(x_t, ts, **kwargs):
             half = x_t[: len(x_t) // 2]
             combined = th.cat([half, half], dim=0)
@@ -130,7 +172,7 @@ def sample(
             half_eps = uncond_eps + guidance_scale * (cond_eps - uncond_eps)
             eps = th.cat([half_eps, half_eps], dim=0)
             current_prediction_pil = pred_to_pil(
-                (x_t - eps * (beta ** 0.5))[:batch_size]
+                (x_t - eps * (beta**0.5))[:batch_size]
             )
             current_prediction_pil.save("current_prediction.png")
             return th.cat([eps, rest], dim=1)
@@ -163,8 +205,13 @@ def wandb_setup(
     return wandb.init(
         project=project_name,
         config={
-            "batch_size": batch_size, "side_x": side_x, "side_y": side_y,
-            "learning_rate": learning_rate, "use_fp16": use_fp16, "device": device,
-            "data_dir": data_dir, "base_dir": base_dir,
+            "batch_size": batch_size,
+            "side_x": side_x,
+            "side_y": side_y,
+            "learning_rate": learning_rate,
+            "use_fp16": use_fp16,
+            "device": device,
+            "data_dir": data_dir,
+            "base_dir": base_dir,
         },
     )
