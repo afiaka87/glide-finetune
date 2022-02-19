@@ -1,34 +1,39 @@
-from glob import glob
-from torchvision import transforms as T
-from cgitb import enable
-from re import A
-import numpy as np
-import bitsandbytes as bnb
-import argparse
 import os
 from typing import Tuple
+
 import torch as th
+from glide_finetune import util, glide_util
 from glide_text2im.respace import SpacedDiffusion
 from glide_text2im.text2im_model import Text2ImUNet
-from tqdm import tqdm, trange
+from tqdm import tqdm
 from wandb import wandb
-import util
-from loader import TextImageDataset, create_webdataset
-
 
 def train_step(
     glide_model: Text2ImUNet,
     glide_diffusion: SpacedDiffusion,
-    glide_options: dict,
     batch: Tuple[th.Tensor, th.Tensor, th.Tensor],
     device: str,
+    q_sample_device: str = "cuda",
 ):
-    with th.no_grad():
-        tokens, masks, x_start = [ x.to('cpu') for x in batch ]
-        timesteps = th.randint(0, len(glide_diffusion.betas) - 1, (x_start.shape[0],), device='cpu')
-        noise = th.randn_like(x_start, device='cpu')
-        x_t = glide_diffusion.q_sample(x_start, timesteps, noise=noise).to('cpu')
-        _, C = x_t.shape[:2]
+    """
+    Perform a single training step.
+
+        Args:
+            glide_model: The model to train.
+            glide_diffusion: The diffusion to use.
+            batch: A tuple of (tokens, masks, reals) where tokens is a tensor of shape (batch_size, seq_len), masks is a tensor of shape (batch_size, seq_len) and reals is a tensor of shape (batch_size, 3, side_x, side_y) normalized to [-1, 1].
+            device: The device to use for getting model outputs and computing loss.
+            q_sample_device: Calculate noise level for a given timestep t and add it to the image. Defaults to cuda. CPU will use less vram.
+        Returns:
+            The loss.
+    """
+    tokens, masks, reals = [x.to(q_sample_device) for x in batch]
+    timesteps = th.randint(
+        0, len(glide_diffusion.betas) - 1, (reals.shape[0],), device=q_sample_device
+    )
+    noise = th.randn_like(reals, device=q_sample_device)
+    x_t = glide_diffusion.q_sample(reals, timesteps, noise=noise).to(q_sample_device)
+    _, C = x_t.shape[:2]
     model_output = glide_model(
         x_t.to(device),
         timesteps.to(device),
@@ -55,7 +60,7 @@ def run_glide_finetune_epoch(
     device: str = "cpu",
     log_frequency: int = 100,
     wandb_run=None,
-    ga_steps = 1,
+    ga_steps=1,
     epoch: int = 0,
 ):
     os.makedirs(checkpoints_dir, exist_ok=True)
@@ -66,9 +71,9 @@ def run_glide_finetune_epoch(
         accumulated_loss = train_step(
             glide_model=glide_model,
             glide_diffusion=glide_diffusion,
-            glide_options=glide_options,
             batch=batch,
-            device=device,)
+            device=device,
+        )
         accumulated_loss.backward()
         optimizer.step()
         glide_model.zero_grad()
@@ -77,25 +82,31 @@ def run_glide_finetune_epoch(
         # Sample from the model
         if train_idx > 0 and train_idx % log_frequency == 0:
             tqdm.write(f"Sampling from model at iteration {train_idx}")
-            samples = util.sample(
-                glide_model=glide_model, glide_options=glide_options,
-                side_x=side_x, side_y=side_y,
-                prompt=prompt, batch_size=sample_bs,
-                guidance_scale=sample_gs, device=device,
-                prediction_respacing='27' # TODO use args
+            samples = glide_util.sample(
+                glide_model=glide_model,
+                glide_options=glide_options,
+                side_x=side_x,
+                side_y=side_y,
+                prompt=prompt,
+                batch_size=sample_bs,
+                guidance_scale=sample_gs,
+                device=device,
+                prediction_respacing="27",  # TODO use args
             )
             sample_save_path = os.path.join(outputs_dir, f"{train_idx}.png")
             util.pred_to_pil(samples).save(sample_save_path)
-            wandb_run.log({
-                "iter": train_idx,
-                "samples": wandb.Image(sample_save_path, caption=prompt),
-            })
+            wandb_run.log(
+                {
+                    "iter": train_idx,
+                    "samples": wandb.Image(sample_save_path, caption=prompt),
+                }
+            )
             tqdm.write(f"Saved sample {sample_save_path}")
         if train_idx % 5000 == 0 and train_idx > 0:
-            save_model(glide_model, checkpoints_dir, train_idx, epoch)
+            util.save_model(glide_model, checkpoints_dir, train_idx, epoch)
             tqdm.write(
                 f"Saved checkpoint {train_idx} to {checkpoints_dir}/glide-ft-{train_idx}.pt"
             )
         wandb_run.log(log)
     tqdm.write(f"Finished training, saving final checkpoint")
-    save_model(glide_model, checkpoints_dir, train_idx, epoch)
+    util.save_model(glide_model, checkpoints_dir, train_idx, epoch)

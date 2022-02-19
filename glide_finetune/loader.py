@@ -1,37 +1,14 @@
-import io
 import time
 from pathlib import Path
 from random import randint, choice, random
 
-from typing import Tuple
 import PIL
 import numpy as np
 
 import torch as th
 from torch.utils.data import Dataset
 from torchvision import transforms as T
-
-from glide_text2im.tokenizer.bpe import Encoder
-
-
-def get_uncond_tokens_mask(tokenizer: Encoder):
-    uncond_tokens, uncond_mask = tokenizer.padded_tokens_and_mask([], 128)
-    return th.tensor(uncond_tokens), th.tensor(uncond_mask, dtype=th.bool)
-
-
-def get_tokens_and_mask(
-    tokenizer: Encoder, prompt: str = ""
-) -> Tuple[th.tensor, th.tensor]:
-    if len(prompt) == 0:
-        return get_uncond_tokens_mask(tokenizer)
-    else:
-        tokens = tokenizer.encode(prompt)
-        tokens, mask = tokenizer.padded_tokens_and_mask(
-            tokens, 128
-        )  # TODO: make this a parameter
-        tokens = th.tensor(tokens)  # + uncond_tokens)
-        mask = th.tensor(mask, dtype=th.bool)  # + uncond_mask, dtype=th.bool)
-        return tokens, mask
+from glide_finetune.glide_util import get_tokens_and_mask, get_uncond_tokens_mask
 
 
 def get_image_files_dict(base_path):
@@ -144,50 +121,3 @@ class TextImageDataset(Dataset):
             print(f"Skipping index {ind}")
             return self.skip_sample(ind)
         return tokens, mask, x_img
-
-def create_webdataset(
-    urls,
-    image_transform,
-    enable_text=True,
-    enable_image=True,
-    image_key="jpg",
-    caption_key="txt",
-    enable_metadata=False,
-    cache_path=None,
-    tokenizer=None,
-    uncond_p=0.2,
-):
-    """Create a WebDataset reader, it can read a webdataset of image, text and json"""
-    import webdataset as wds  # pylint: disable=import-outside-toplevel
-
-    dataset = wds.WebDataset(urls, cache_dir=cache_path, cache_size=10 ** 10, handler=wds.handlers.warn_and_continue)
-    def filter_dataset(item):
-        if enable_text and caption_key not in item:
-            return False
-        if enable_image and image_key not in item:
-            return False
-        if enable_metadata and "json" not in item:
-            return False
-        return True
-
-    filtered_dataset = dataset.select(filter_dataset)
-
-    def preprocess_dataset(item):
-        tokens, mask, x_img = None, None, None
-        if enable_image:
-            image_data = item[image_key]
-            x_img = image_transform(PIL.Image.open(io.BytesIO(image_data)))
-            x_img = th.from_numpy(np.asarray(x_img)).float().permute(2, 0, 1) / 127.5 - 1.
-        if enable_text:
-            if random() < uncond_p:
-                tokens, mask = get_uncond_tokens_mask(tokenizer)
-            else:
-                text = item[caption_key]
-                caption = text.decode("utf-8")
-                tokens, mask = get_tokens_and_mask(tokenizer, caption)
-        else:
-            tokens, mask = get_uncond_tokens_mask(tokenizer)
-        return tokens, mask, x_img
-
-    transformed_dataset = filtered_dataset.map(preprocess_dataset, handler=wds.handlers.warn_and_stop)
-    return transformed_dataset

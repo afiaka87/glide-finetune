@@ -1,22 +1,15 @@
-from glob import glob
-import webdataset as wds  # pylint: disable=import-outside-toplevel
-from tqdm import tqdm
-from functools import lru_cache
-import json
 import io
-import time
+import json
+from glob import glob
 from pathlib import Path
-from random import randint, choice, random
+from random import choice, randint
 
-from typing import Tuple
-import PIL
 import numpy as np
-
+import PIL
 import torch as th
+import webdataset as wds
 from torch.utils.data import Dataset
-from torchvision import transforms as T
-
-from glide_text2im.tokenizer.bpe import Encoder
+from tqdm import tqdm
 
 
 def get_image_files_dict(base_path):
@@ -61,7 +54,7 @@ class TextImageDataset(Dataset):
 
         self.shuffle = shuffle
         self.prefix = folder
-        self.imagepreproc =  imagepreproc
+        self.imagepreproc = imagepreproc
 
     def __len__(self):
         return len(self.keys)
@@ -108,6 +101,7 @@ class TextImageDataset(Dataset):
             return self.skip_sample(ind)
         return prompt, x_img
 
+
 def create_webdataset(
     urls,
     image_transform,
@@ -122,7 +116,13 @@ def create_webdataset(
     urls = "/mnt/10TB_HDD_OLDER/LAION/laion400m-dat-release/"
     archives = glob(f"{urls}*.tar")
 
-    dataset = wds.WebDataset(archives, cache_dir=cache_path, cache_size=10 ** 10, handler=wds.handlers.warn_and_continue)
+    dataset = wds.WebDataset(
+        archives,
+        cache_dir=cache_path,
+        cache_size=10**10,
+        handler=wds.handlers.warn_and_continue,
+    )
+
     def filter_dataset(item):
         if enable_text and caption_key not in item:
             return False
@@ -145,10 +145,12 @@ def create_webdataset(
         prompt, x_img = None, None
         image_data = item[image_key]
         x_img = image_transform(PIL.Image.open(io.BytesIO(image_data)))
-        x_img = th.from_numpy(np.asarray(x_img)).float().permute(2, 0, 1) / 127.5 - 1.
+        x_img = th.from_numpy(np.asarray(x_img)).float().permute(2, 0, 1) / 127.5 - 1.0
         text = item[caption_key]
         prompt = text.decode("utf-8")
         return prompt, x_img
 
-    transformed_dataset = filtered_dataset.map(preprocess_dataset, handler=wds.handlers.warn_and_stop)
+    transformed_dataset = filtered_dataset.map(
+        preprocess_dataset, handler=wds.handlers.warn_and_stop
+    )
     return transformed_dataset

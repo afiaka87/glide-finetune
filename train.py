@@ -1,5 +1,5 @@
 import argparse
-import glob
+from glob import glob
 import os
 
 import numpy as np
@@ -8,8 +8,10 @@ import torchvision.transforms as T
 from tqdm import trange
 
 from glide_finetune.finetune import run_glide_finetune_epoch
-from glide_finetune.loader import TextImageDataset, create_webdataset
-from glide_finetune.util import load_base_model, wandb_setup
+from glide_finetune.glide_util import load_base_model
+from glide_finetune.loader import TextImageDataset
+from glide_finetune.util import wandb_setup
+from glide_finetune.wds_loader import glide_wds_loader
 
 
 def run_glide_finetune(
@@ -93,7 +95,7 @@ def run_glide_finetune(
     # Data setup
     print("Loading data...")
     if use_webdataset:
-        dataset = create_webdataset(
+        dataset = glide_wds_loader(
             urls=data_dir,
             image_transform=imagepreproc,
             caption_key=caption_key,
