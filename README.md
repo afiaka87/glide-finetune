@@ -1,16 +1,12 @@
 # glide-finetune
 
-[![Neverix Finetuning Notebook](https://kaggle.com/static/images/open-in-kaggle.svg)](https://www.kaggle.com/neverix/glide-tuning)
-Thanks to neverix from the EleutherAI discord for all the help with this!
+Finetune GLIDE-text2im on your own image-text dataset.
 
-Finetune the GLIDE-text2im on your own image-text dataset.
+--- 
 
-New:
-
-- finetune the upsampler as well.
+- finetune the upscaler as well.
 - drop-in support for laion and alamy.
 
----
 
 ## Installation
 
