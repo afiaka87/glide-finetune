@@ -7,7 +7,7 @@ import torch as th
 import torchvision.transforms as T
 from tqdm import trange
 
-from glide_finetune.finetune import run_glide_finetune_epoch
+from glide_finetune.glide_finetune import run_glide_finetune_epoch
 from glide_finetune.glide_util import load_base_model
 from glide_finetune.loader import TextImageDataset
 from glide_finetune.train_util import wandb_setup
