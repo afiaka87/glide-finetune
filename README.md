@@ -18,7 +18,59 @@ source .venv/bin/activate
 (.venv) python -m pip install -r requirements.txt
 ```
 
-## Usage
+## Example usage
+
+### Finetune the base model
+
+
+The base model should be tuned for "classifier free guidance". This means you want to randomly replace captions with an unconditional (empty) token about 20% of the time. This is controlled by the argument `--uncond_p`, which is set to 0.2 by default and should only be disabled for the upsampler.
+
+```sh
+python train_glide.py \
+  --data_dir '/userdir/data/mscoco' \
+  --train_upsample False \
+  --project_name 'base_tuning_wandb' \
+  --batch_size 4 \
+  --learning_rate 1e-04 \
+  --side_x 64 \
+  --side_y 64 \
+  --resize_ratio 1.0 \
+  --uncond_p 0.2 \
+  --resume_ckpt 'ckpt_to_resume_from.pt' \
+  --checkpoints_dir 'my_local_checkpoint_directory' \
+```
+
+### Finetune the prompt-aware super-res model (stage 2 of generating)
+
+Note that the `--side_x` and `--side_y` args here should still be 64. They are scaled to 256 after mutliplying by the upscaling factor (4, by default.)
+
+```sh
+python train_glide.py \
+  --data_dir '/userdir/data/mscoco' \
+  --train_upsample True \
+  --image_to_upsample 'low_res_face.png'
+  --upscale_factor 4 \
+  --side_x 64 \
+  --side_y 64 \
+  --uncond_p 0.0 \
+  --resume_ckpt 'ckpt_to_resume_from.pt' \
+  --checkpoints_dir 'my_local_checkpoint_directory' \
+```
+
+### Finetune on LAION or alamy (webdataset)
+
+I have written data loaders for both LAION2B and Alamy. Other webdatasets may require custom caption/image keys.
+
+```sh
+python train_glide.py \
+  --data_dir '/folder/with/tars/in/it/' \
+  --wds_caption_key 'txt' \
+  --wds_image_key 'jpg' \
+  --wds_dataset_name 'laion' \
+```
+
+
+## Full Usage
 ```
 usage: train.py [-h] [--data_dir DATA_DIR] [--batch_size BATCH_SIZE]
                 [--learning_rate LEARNING_RATE]
