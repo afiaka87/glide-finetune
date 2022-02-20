@@ -112,10 +112,7 @@ def create_webdataset(
     enable_metadata=False,
     cache_path=None,
 ):
-    """Create a WebDataset reader, it can read a webdataset of image, text and json"""
-    urls = "/mnt/10TB_HDD_OLDER/LAION/laion400m-dat-release/"
     archives = glob(f"{urls}*.tar")
-
     dataset = wds.WebDataset(
         archives,
         cache_dir=cache_path,
