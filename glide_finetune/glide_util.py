@@ -1,9 +1,11 @@
+## glide_util.py
 # Utilities for tokenizing, padding, and batching data and sampling from GLIDE.
+
 import os
 from typing import Tuple
 
 import torch as th
-from glide_finetune.util import pred_to_pil
+from glide_finetune.train_util import pred_to_pil
 from glide_text2im.download import load_checkpoint
 from glide_text2im.model_creation import (
     create_gaussian_diffusion,

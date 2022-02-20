@@ -3,12 +3,25 @@ from pathlib import Path
 from random import randint, choice, random
 
 import PIL
-import numpy as np
 
 import torch as th
 from torch.utils.data import Dataset
 from torchvision import transforms as T
 from glide_finetune.glide_util import get_tokens_and_mask, get_uncond_tokens_mask
+from glide_finetune.train_util import pil_image_to_norm_tensor
+
+
+def random_resized_crop(image, shape, resize_ratio=1.0):
+    """
+    Randomly resize and crop an image to a given size.
+
+    Args:
+        image (PIL.Image): The image to be resized and cropped.
+        shape (tuple): The desired output shape.
+        resize_ratio (float): The ratio to resize the image.
+    """
+    image_transform = T.RandomResizedCrop(shape, scale=(resize_ratio, 1.0), ratio=(1.0, 1.0))
+    return image_transform(image)
 
 
 def get_image_files_dict(base_path):
@@ -44,7 +57,8 @@ class TextImageDataset(Dataset):
         text_ctx_len=128,
         uncond_p=0.0,
         use_captions=False,
-        imagepreproc=None,
+        enable_glide_upsample=False,
+        upscale_factor=4,
     ):
         super().__init__()
         folder = Path(folder)
@@ -71,7 +85,8 @@ class TextImageDataset(Dataset):
         self.side_y = side_y
         self.tokenizer = tokenizer
         self.uncond_p = uncond_p
-        self.imagepreproc =  imagepreproc
+        self.enable_upsample = enable_glide_upsample
+        self.upscale_factor = upscale_factor
 
     def __len__(self):
         return len(self.keys)
@@ -96,10 +111,6 @@ class TextImageDataset(Dataset):
         descriptions = list(filter(lambda t: len(t) > 0, descriptions))
         try:
             description = choice(descriptions).strip()
-            if (
-                random() < self.uncond_p
-            ):  # Chance of using uncond caption. OpenAI used 0.2/20%
-                return get_uncond_tokens_mask(self.tokenizer)
             return get_tokens_and_mask(tokenizer=self.tokenizer, prompt=description)
         except IndexError as zero_captions_in_file_ex:
             print(f"An exception occurred trying to load file {text_file}.")
@@ -109,15 +120,28 @@ class TextImageDataset(Dataset):
     def __getitem__(self, ind):
         key = self.keys[ind]
         image_file = self.image_files[key]
-        if self.text_files is None:
+        # Unconditional image generation by encoding the empty list of tokens.
+        # 20% of the time, we generate an image with no caption.
+        # This is useful for training the model on images without captions.
+        # But also makes classifier-free guidance possible (see paper).
+        if self.text_files is None or random() < self.uncond_p:
             tokens, mask = get_uncond_tokens_mask(self.tokenizer)
         else:
             tokens, mask = self.get_caption(ind)
         try:
-            x_img = self.imagepreproc(PIL.Image.open(image_file))
-            x_img = th.from_numpy(np.asarray(x_img)).float().permute(2, 0, 1) / 127.5 - 1.
+            original_pil_image = random_resized_crop(PIL.Image.open(image_file).convert("RGB"))
         except (OSError, ValueError) as e:
             print(f"An exception occurred trying to load file {image_file}.")
             print(f"Skipping index {ind}")
             return self.skip_sample(ind)
-        return tokens, mask, x_img
+        
+        # The base model only needs small 64x64 images. This makes it easier to train.
+        base_pil_image = random_resized_crop(original_pil_image, (self.side_x, self.side_y), resize_ratio=self.resize_ratio)
+        base_tensor = pil_image_to_norm_tensor(base_pil_image)
+
+        # To train glide-upsample, you need the original image cropped to 256, as well as the base image (cropped to 64)
+        if self.enable_upsample: 
+            upsample_pil_image = random_resized_crop(original_pil_image, (self.side_x * self.upscale_factor, self.side_y * self.upscale_factor), resize_ratio=self.resize_ratio)
+            upsample_tensor = pil_image_to_norm_tensor(upsample_pil_image)
+            return th.tensor(tokens), th.tensor(mask, dtype=th.bool), base_tensor, upsample_tensor
+        return th.tensor(tokens), th.tensor(mask, dtype=th.bool), base_tensor
