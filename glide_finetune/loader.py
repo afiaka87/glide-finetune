@@ -120,28 +120,24 @@ class TextImageDataset(Dataset):
     def __getitem__(self, ind):
         key = self.keys[ind]
         image_file = self.image_files[key]
-        # Unconditional image generation by encoding the empty list of tokens.
-        # 20% of the time, we generate an image with no caption.
-        # This is useful for training the model on images without captions.
-        # But also makes classifier-free guidance possible (see paper).
         if self.text_files is None or random() < self.uncond_p:
             tokens, mask = get_uncond_tokens_mask(self.tokenizer)
         else:
             tokens, mask = self.get_caption(ind)
+
         try:
             original_pil_image = random_resized_crop(PIL.Image.open(image_file).convert("RGB"))
         except (OSError, ValueError) as e:
             print(f"An exception occurred trying to load file {image_file}.")
             print(f"Skipping index {ind}")
             return self.skip_sample(ind)
-        
-        # The base model only needs small 64x64 images. This makes it easier to train.
-        base_pil_image = random_resized_crop(original_pil_image, (self.side_x, self.side_y), resize_ratio=self.resize_ratio)
-        base_tensor = pil_image_to_norm_tensor(base_pil_image)
-
-        # To train glide-upsample, you need the original image cropped to 256, as well as the base image (cropped to 64)
-        if self.enable_upsample: 
+        if self.enable_upsample: # the base image used should be derived from the cropped high-resolution image.
             upsample_pil_image = random_resized_crop(original_pil_image, (self.side_x * self.upscale_factor, self.side_y * self.upscale_factor), resize_ratio=self.resize_ratio)
             upsample_tensor = pil_image_to_norm_tensor(upsample_pil_image)
+            base_pil_image = upsample_pil_image.resize((self.side_x, self.side_y), resample=PIL.Image.BICUBIC)
+            base_tensor = pil_image_to_norm_tensor(base_pil_image)
             return th.tensor(tokens), th.tensor(mask, dtype=th.bool), base_tensor, upsample_tensor
+        
+        base_pil_image = random_resized_crop(original_pil_image, (self.side_x, self.side_y), resize_ratio=self.resize_ratio)
+        base_tensor = pil_image_to_norm_tensor(base_pil_image)
         return th.tensor(tokens), th.tensor(mask, dtype=th.bool), base_tensor

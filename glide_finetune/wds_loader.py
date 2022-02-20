@@ -114,7 +114,7 @@ def glide_wds_loader(
         image_data = item[image_key]
         original_pil_image = PIL.Image.open(io.BytesIO(image_data))
 
-        base_pil_image = original_pil_image.resize(base_image_shape).convert("RGB")
+        base_pil_image = original_pil_image.resize(base_image_shape, resample=PIL.Image.BICUBIC).convert("RGB")
         base_tensor = pil_image_to_norm_tensor(base_pil_image)
 
         # The upsample model needs both the base and the upsample images e.g. 64x64 and 256x256.

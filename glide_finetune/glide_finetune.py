@@ -98,6 +98,8 @@ def run_glide_finetune_epoch(
     gradient_accumualation_steps=1,
     epoch: int = 0,
     train_upsample: bool = False,
+    upsample_factor=4,
+    image_to_upsample='low_res_face.png',
 ):
     if train_upsample: train_step = upsample_train_step
     else: train_step = base_train_step
@@ -130,7 +132,9 @@ def run_glide_finetune_epoch(
                 batch_size=sample_bs,
                 guidance_scale=sample_gs,
                 device=device,
-                prediction_respacing=sample_respacing
+                prediction_respacing=sample_respacing,
+                upsample_factor=upsample_factor,
+                image_to_upsample=image_to_upsample,
             )
             sample_save_path = os.path.join(outputs_dir, f"{train_idx}.png")
             train_util.pred_to_pil(samples).save(sample_save_path)

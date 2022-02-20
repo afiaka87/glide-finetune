@@ -8,7 +8,7 @@ import torchvision.transforms as T
 from tqdm import trange
 
 from glide_finetune.glide_finetune import run_glide_finetune_epoch
-from glide_finetune.glide_util import load_base_model
+from glide_finetune.glide_util import load_model
 from glide_finetune.loader import TextImageDataset
 from glide_finetune.train_util import wandb_setup
 from glide_finetune.wds_loader import glide_wds_loader
@@ -32,8 +32,6 @@ def run_glide_finetune(
     project_name="glide_finetune",
     activation_checkpointing=False,
     use_captions=True,
-    enable_upsample=False,
-    upsample_factor=4,
     num_epochs=100,
     log_frequency=100,
     test_prompt="a group of skiers are preparing to ski down a mountain.",
@@ -42,6 +40,9 @@ def run_glide_finetune(
     use_webdataset=False,
     image_key="jpg",
     caption_key="txt",
+    enable_upsample=False,
+    upsample_factor=4,
+    image_to_upsample='low_res_face.png',
 ):
     if "~" in data_dir:
         data_dir = os.path.expanduser(data_dir)
@@ -66,12 +67,13 @@ def run_glide_finetune(
     print("Wandb setup.")
 
     # Model setup
-    glide_model, glide_diffusion, glide_options = load_base_model(
+    glide_model, glide_diffusion, glide_options = load_model(
         glide_path=resume_ckpt,
         use_fp16=use_fp16,
         freeze_transformer=freeze_transformer,
         freeze_diffusion=freeze_diffusion,
         activation_checkpointing=activation_checkpointing,
+        model_type="base" if not enable_upsample else "upsample",
     )
     glide_model.train()
     number_of_params = sum(x.numel() for x in glide_model.parameters())
@@ -132,7 +134,6 @@ def run_glide_finetune(
         [x for x in glide_model.parameters() if x.requires_grad],
         lr=learning_rate,
         weight_decay=adam_weight_decay,
-        amsgrad=True,
     )
 
     # Training setup
@@ -158,7 +159,6 @@ def run_glide_finetune(
             log_frequency=log_frequency,
             epoch=epoch,
             gradient_accumualation_steps=1,
-            use_webdataset=use_webdataset,
             train_upsample=enable_upsample,
         )
 
@@ -263,7 +263,9 @@ def parse_args():
     parser.add_argument(
         "--upscale_factor", "-upscale", type=int, default=4, help="Upscale factor for training the upsampling model only"
     )
+    parser.add_argument("--image_to_upsample", "-lowres", type=str, default="low_res_face.png")
     args = parser.parse_args()
+
     return args
 
 
@@ -280,12 +282,12 @@ if __name__ == "__main__":
     th.backends.cudnn.benchmark = args.cudnn_benchmark
 
     for arg in vars(args):
-        print(f"{arg}: {getattr(args, arg)}")
+        print(f"--{arg}: {getattr(args, arg)}")
 
     if args.use_webdataset:
         # webdataset uses tars
         data_dir = glob(os.path.join(args.data_dir, "*.tar"))
-
+    
     run_glide_finetune(
         data_dir=data_dir,
         batch_size=args.batch_size,
@@ -314,5 +316,5 @@ if __name__ == "__main__":
         caption_key=args.wds_caption_key,
         enable_upsample=args.train_upsample,
         upsample_factor=args.upscale_factor,
-        wds_dataset_name=args.wds_dataset_name,
+        image_to_upsample=args.image_to_upsample,
     )
