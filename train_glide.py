@@ -282,7 +282,7 @@ if __name__ == "__main__":
     th.backends.cudnn.benchmark = args.cudnn_benchmark
 
     for arg in vars(args):
-        print(f"--{arg}: {getattr(args, arg)}")
+        print(f"--{arg} {getattr(args, arg)}")
 
     if args.use_webdataset:
         # webdataset uses tars
