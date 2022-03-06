@@ -133,7 +133,6 @@ def run_glide_finetune_epoch(
                 guidance_scale=sample_gs,
                 device=device,
                 prediction_respacing=sample_respacing,
-                upsample_factor=upsample_factor,
                 image_to_upsample=image_to_upsample,
             )
             sample_save_path = os.path.join(outputs_dir, f"{train_idx}.png")
