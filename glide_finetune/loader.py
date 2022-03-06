@@ -126,7 +126,7 @@ class TextImageDataset(Dataset):
             tokens, mask = self.get_caption(ind)
 
         try:
-            original_pil_image = random_resized_crop(PIL.Image.open(image_file).convert("RGB"))
+            original_pil_image = PIL.Image.open(image_file).convert("RGB")
         except (OSError, ValueError) as e:
             print(f"An exception occurred trying to load file {image_file}.")
             print(f"Skipping index {ind}")
