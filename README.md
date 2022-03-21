@@ -1,5 +1,7 @@
 # glide-finetune
 
+[colab](https://github.com/eliohead/glide-finetune-colab)
+
 Finetune GLIDE-text2im on your own image-text dataset.
 
 --- 
