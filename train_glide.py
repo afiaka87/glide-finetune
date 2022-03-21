@@ -287,9 +287,11 @@ if __name__ == "__main__":
     if args.use_webdataset:
         # webdataset uses tars
         data_dir = glob(os.path.join(args.data_dir, "*.tar"))
+    else:
+        data_dir = args.data_dir
     
     run_glide_finetune(
-        data_dir=data_dir,
+        data_dir=args.data_dir,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
         adam_weight_decay=args.adam_weight_decay,
