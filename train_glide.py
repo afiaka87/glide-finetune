@@ -230,7 +230,7 @@ def parse_args():
         "--test_guidance_scale",
         "-tgs",
         type=float,
-        default=1.0,
+        default=4.0,
         help="Guidance scale used during model eval, not training.",
     )
     parser.add_argument(
