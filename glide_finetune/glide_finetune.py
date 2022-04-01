@@ -103,7 +103,12 @@ def run_glide_finetune_epoch(
     if train_upsample: train_step = upsample_train_step
     else: train_step = base_train_step
 
-    os.makedirs(checkpoints_dir, exist_ok=True)
+    existing_runs = [ sub_dir for sub_dir in os.listdir(checkpoints_dir) if os.path.isdir(os.path.join(checkpoints_dir, sub_dir))]
+    existing_runs_int = sorted([int(x) for x in existing_runs])
+    next_run = 0 if len(existing_runs) ==0 else existing_runs_int[-1] + 1
+    current_run_ckpt_dir = os.path.join(checkpoints_dir, str(next_run).zfill(4))
+
+    os.makedirs(current_run_ckpt_dir, exist_ok=True)
     glide_model.to(device)
     glide_model.train()
     log = {}
@@ -145,10 +150,10 @@ def run_glide_finetune_epoch(
             )
             print(f"Saved sample {sample_save_path}")
         if train_idx % 5000 == 0 and train_idx > 0:
-            train_util.save_model(glide_model, checkpoints_dir, train_idx, epoch)
+            train_util.save_model(glide_model, current_run_ckpt_dir, train_idx, epoch)
             print(
-                f"Saved checkpoint {train_idx} to {checkpoints_dir}/glide-ft-{train_idx}.pt"
+                f"Saved checkpoint {train_idx} to {current_run_ckpt_dir}/glide-ft-{train_idx}.pt"
             )
         wandb_run.log(log)
     print(f"Finished training, saving final checkpoint")
-    train_util.save_model(glide_model, checkpoints_dir, train_idx, epoch)
+    train_util.save_model(glide_model, current_run_ckpt_dir, train_idx, epoch)
