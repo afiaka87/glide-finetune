@@ -148,7 +148,14 @@ def run_glide_finetune(
     os.makedirs(outputs_dir, exist_ok=True)
 
     existing_runs = [ sub_dir for sub_dir in os.listdir(checkpoints_dir) if os.path.isdir(os.path.join(checkpoints_dir, sub_dir))]
-    existing_runs_int = sorted([int(x) for x in existing_runs])
+    existing_runs_int = []
+    for x in existing_runs:
+        try:
+            existing_runs_int.append(int(x))
+        except:
+            print("unexpected directory naming scheme")
+            #ignore
+    existing_runs_int = sorted(existing_runs_int)
     next_run = 0 if len(existing_runs) == 0 else existing_runs_int[-1] + 1
     current_run_ckpt_dir = os.path.join(checkpoints_dir, str(next_run).zfill(4))
 
