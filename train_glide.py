@@ -136,9 +136,31 @@ def run_glide_finetune(
         weight_decay=adam_weight_decay,
     )
 
+    if not freeze_transformer: # if we want to train the transformer, we need to backpropagate through the diffusion model.
+        glide_model.out.requires_grad_(True)
+        glide_model.input_blocks.requires_grad_(True)
+        glide_model.middle_block.requires_grad_(True)
+        glide_model.output_blocks.requires_grad_(True)
+
+
     # Training setup
     outputs_dir = "./outputs"
     os.makedirs(outputs_dir, exist_ok=True)
+
+    existing_runs = [ sub_dir for sub_dir in os.listdir(checkpoints_dir) if os.path.isdir(os.path.join(checkpoints_dir, sub_dir))]
+    existing_runs_int = []
+    for x in existing_runs:
+        try:
+            existing_runs_int.append(int(x))
+        except:
+            print("unexpected directory naming scheme")
+            #ignore
+    existing_runs_int = sorted(existing_runs_int)
+    next_run = 0 if len(existing_runs) == 0 else existing_runs_int[-1] + 1
+    current_run_ckpt_dir = os.path.join(checkpoints_dir, str(next_run).zfill(4))
+
+    os.makedirs(current_run_ckpt_dir, exist_ok=True)
+
     for epoch in trange(num_epochs):
         print(f"Starting epoch {epoch}")
         run_glide_finetune_epoch(
@@ -150,7 +172,7 @@ def run_glide_finetune(
             prompt=test_prompt,
             sample_bs=sample_bs,
             sample_gs=sample_gs,
-            checkpoints_dir=checkpoints_dir,
+            checkpoints_dir=current_run_ckpt_dir,
             outputs_dir=outputs_dir,
             side_x=side_x,
             side_y=side_y,
@@ -223,7 +245,7 @@ def parse_args():
         "--test_guidance_scale",
         "-tgs",
         type=float,
-        default=1.0,
+        default=4.0,
         help="Guidance scale used during model eval, not training.",
     )
     parser.add_argument(
@@ -287,9 +309,11 @@ if __name__ == "__main__":
     if args.use_webdataset:
         # webdataset uses tars
         data_dir = glob(os.path.join(args.data_dir, "*.tar"))
+    else:
+        data_dir = args.data_dir
     
     run_glide_finetune(
-        data_dir=data_dir,
+        data_dir=args.data_dir,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
         adam_weight_decay=args.adam_weight_decay,

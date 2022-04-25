@@ -20,5 +20,6 @@ tqdm==4.62.3
 typing_extensions==4.0.1
 urllib3==1.26.7
 wandb==0.12.9
+webdataset==0.1.103
 -e git+https://git@github.com/crowsonkb/glide-text2im.git#egg=glide_text2im
 -e git+https://git@github.com/openai/guided-diffusion.git@main#egg=guided_diffusion
