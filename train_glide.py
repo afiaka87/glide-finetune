@@ -135,7 +135,13 @@ def run_glide_finetune(
         lr=learning_rate,
         weight_decay=adam_weight_decay,
     )
-
+    if use_fp16:
+        optimizer = th.optim.AdamW(
+            [x for x in glide_model.parameters() if x.requires_grad],
+            lr=learning_rate,
+            weight_decay=adam_weight_decay,
+            eps=1e-4,
+        )
     if not freeze_transformer: # if we want to train the transformer, we need to backpropagate through the diffusion model.
         glide_model.out.requires_grad_(True)
         glide_model.input_blocks.requires_grad_(True)
