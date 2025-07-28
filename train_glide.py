@@ -44,6 +44,7 @@ def run_glide_finetune(
     upsample_factor=4,
     image_to_upsample="low_res_face.png",
     use_8bit_adam=False,
+    early_stop=0,
 ):
     if "~" in data_dir:
         data_dir = os.path.expanduser(data_dir)
@@ -53,19 +54,27 @@ def run_glide_finetune(
     # Create the checkpoint/output directories
     os.makedirs(checkpoints_dir, exist_ok=True)
 
-    # Start wandb logging
-    wandb_run = wandb_setup(
-        batch_size=batch_size,
-        side_x=side_x,
-        side_y=side_y,
-        learning_rate=learning_rate,
-        use_fp16=use_fp16,
-        device=device,
-        data_dir=data_dir,
-        base_dir=checkpoints_dir,
-        project_name=project_name,
-    )
-    print("Wandb setup.")
+    # Start wandb logging (disabled for early_stop test runs)
+    if early_stop > 0:
+        print("Early stopping enabled - disabling wandb logging")
+        # Create a mock wandb run object that does nothing
+        class MockWandbRun:
+            def log(self, *args, **kwargs):
+                pass
+        wandb_run = MockWandbRun()
+    else:
+        wandb_run = wandb_setup(
+            batch_size=batch_size,
+            side_x=side_x,
+            side_y=side_y,
+            learning_rate=learning_rate,
+            use_fp16=use_fp16,
+            device=device,
+            data_dir=data_dir,
+            base_dir=checkpoints_dir,
+            project_name=project_name,
+        )
+        print("Wandb setup.")
 
     # Model setup
     glide_model, glide_diffusion, glide_options = load_model(
@@ -187,6 +196,7 @@ def run_glide_finetune(
             epoch=epoch,
             gradient_accumualation_steps=1,
             train_upsample=enable_upsample,
+            early_stop=early_stop,
         )
 
 
@@ -310,6 +320,12 @@ def parse_args():
         action="store_true",
         help="Enable TF32 on Ampere GPUs for faster training with slightly reduced precision",
     )
+    parser.add_argument(
+        "--early_stop",
+        type=int,
+        default=0,
+        help="Stop training after this many steps (0 = disabled). Useful for testing.",
+    )
     args = parser.parse_args()
 
     return args
@@ -372,4 +388,5 @@ if __name__ == "__main__":
         upsample_factor=args.upscale_factor,
         image_to_upsample=args.image_to_upsample,
         use_8bit_adam=args.use_8bit_adam,
+        early_stop=args.early_stop,
     )

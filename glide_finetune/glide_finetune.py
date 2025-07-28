@@ -113,6 +113,7 @@ def run_glide_finetune_epoch(
     train_upsample: bool = False,
     upsample_factor=4,
     image_to_upsample="low_res_face.png",
+    early_stop: int = 0,
 ):
     train_step: Any
     if train_upsample:
@@ -124,6 +125,11 @@ def run_glide_finetune_epoch(
     glide_model.train()
     log: dict[str, float] = {}
     for train_idx, batch in enumerate(dataloader):
+        # Early stopping check
+        if early_stop > 0 and train_idx >= early_stop:
+            print(f"Early stopping at step {train_idx} (early_stop={early_stop})")
+            break
+            
         accumulated_loss = train_step(
             glide_model=glide_model,
             glide_diffusion=glide_diffusion,
@@ -156,13 +162,18 @@ def run_glide_finetune_epoch(
             )
             sample_save_path = os.path.join(outputs_dir, f"{train_idx}.png")
             train_util.pred_to_pil(samples).save(sample_save_path)
-            wandb_run.log(
-                {
-                    **log,
-                    "iter": train_idx,
-                    "samples": wandb.Image(sample_save_path, caption=prompt),
-                }
-            )
+            # Handle wandb logging (may be mocked for early_stop runs)
+            if hasattr(wandb_run, "__class__") and wandb_run.__class__.__name__ == "MockWandbRun":
+                # Skip wandb.Image for mocked runs
+                wandb_run.log({**log, "iter": train_idx})
+            else:
+                wandb_run.log(
+                    {
+                        **log,
+                        "iter": train_idx,
+                        "samples": wandb.Image(sample_save_path, caption=prompt),
+                    }
+                )
             print(f"Saved sample {sample_save_path}")
         if train_idx % 5000 == 0 and train_idx > 0:
             train_util.save_model(glide_model, checkpoints_dir, train_idx, epoch)
