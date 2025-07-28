@@ -25,4 +25,5 @@ uv run python train_glide.py \
     --test_guidance_scale 4.0 \
     --log_frequency 100 \
     --use_8bit_adam \
-    --activation_checkpointing
+    --activation_checkpointing \
+    --use_tf32

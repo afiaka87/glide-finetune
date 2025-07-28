@@ -304,6 +304,12 @@ def parse_args():
         action="store_true",
         help="Use 8-bit AdamW optimizer to save memory (requires bitsandbytes)",
     )
+    parser.add_argument(
+        "--use_tf32",
+        "-tf32",
+        action="store_true",
+        help="Enable TF32 on Ampere GPUs for faster training with slightly reduced precision",
+    )
     args = parser.parse_args()
 
     return args
@@ -320,6 +326,12 @@ if __name__ == "__main__":
     th.manual_seed(args.seed)
     np.random.seed(args.seed)
     th.backends.cudnn.benchmark = args.cudnn_benchmark
+    
+    # Enable TF32 on Ampere GPUs
+    if args.use_tf32:
+        th.backends.cuda.matmul.allow_tf32 = True
+        th.backends.cudnn.allow_tf32 = True
+        print("TF32 enabled for matrix multiplications and cuDNN operations")
 
     for arg in vars(args):
         print(f"--{arg} {getattr(args, arg)}")
