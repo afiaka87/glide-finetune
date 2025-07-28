@@ -8,6 +8,7 @@ from wandb import wandb
 
 from glide_finetune import glide_util, train_util
 
+
 def base_train_step(
     glide_model: Text2ImUNet,
     glide_diffusion: SpacedDiffusion,
@@ -41,6 +42,7 @@ def base_train_step(
     epsilon, _ = th.split(model_output, C, dim=1)
     return th.nn.functional.mse_loss(epsilon, noise.to(device).detach())
 
+
 def upsample_train_step(
     glide_model: Text2ImUNet,
     glide_diffusion: SpacedDiffusion,
@@ -53,8 +55,8 @@ def upsample_train_step(
         Args:
             glide_model: The model to train.
             glide_diffusion: The diffusion to use.
-            batch: A tuple of (tokens, masks, low_res, high_res) where 
-                - tokens is a tensor of shape (batch_size, seq_len), 
+            batch: A tuple of (tokens, masks, low_res, high_res) where
+                - tokens is a tensor of shape (batch_size, seq_len),
                 - masks is a tensor of shape (batch_size, seq_len) with dtype torch.bool
                 - low_res is a tensor of shape (batch_size, 3, base_x, base_y), normalized to [-1, 1]
                 - high_res is a tensor of shape (batch_size, 3, base_x*4, base_y*4), normalized to [-1, 1]
@@ -62,17 +64,24 @@ def upsample_train_step(
         Returns:
             The loss.
     """
-    tokens, masks, low_res_image, high_res_image = [ x.to(device) for x in batch ]
-    timesteps = th.randint(0, len(glide_diffusion.betas) - 1, (low_res_image.shape[0],), device=device)
-    noise = th.randn_like(high_res_image, device=device) # Noise should be shape of output i think
-    noised_high_res_image = glide_diffusion.q_sample(high_res_image, timesteps, noise=noise).to(device)
+    tokens, masks, low_res_image, high_res_image = [x.to(device) for x in batch]
+    timesteps = th.randint(
+        0, len(glide_diffusion.betas) - 1, (low_res_image.shape[0],), device=device
+    )
+    noise = th.randn_like(
+        high_res_image, device=device
+    )  # Noise should be shape of output i think
+    noised_high_res_image = glide_diffusion.q_sample(
+        high_res_image, timesteps, noise=noise
+    ).to(device)
     _, C = noised_high_res_image.shape[:2]
     model_output = glide_model(
         noised_high_res_image.to(device),
         timesteps.to(device),
         low_res=low_res_image.to(device),
         tokens=tokens.to(device),
-        mask=masks.to(device))
+        mask=masks.to(device),
+    )
     epsilon, _ = th.split(model_output, C, dim=1)
     return th.nn.functional.mse_loss(epsilon, noise.to(device).detach())
 
@@ -85,7 +94,7 @@ def run_glide_finetune_epoch(
     optimizer: th.optim.Optimizer,
     sample_bs: int,  # batch size for inference
     sample_gs: float = 4.0,  # guidance scale for inference
-    sample_respacing: str = '100', # respacing for inference
+    sample_respacing: str = "100",  # respacing for inference
     prompt: str = "",  # prompt for inference, not training
     side_x: int = 64,
     side_y: int = 64,
@@ -98,10 +107,12 @@ def run_glide_finetune_epoch(
     epoch: int = 0,
     train_upsample: bool = False,
     upsample_factor=4,
-    image_to_upsample='low_res_face.png',
+    image_to_upsample="low_res_face.png",
 ):
-    if train_upsample: train_step = upsample_train_step
-    else: train_step = base_train_step
+    if train_upsample:
+        train_step = upsample_train_step
+    else:
+        train_step = base_train_step
 
     glide_model.to(device)
     glide_model.train()
@@ -116,7 +127,11 @@ def run_glide_finetune_epoch(
         accumulated_loss.backward()
         optimizer.step()
         glide_model.zero_grad()
-        log = {**log, "iter": train_idx, "loss": accumulated_loss.item() / gradient_accumualation_steps}
+        log = {
+            **log,
+            "iter": train_idx,
+            "loss": accumulated_loss.item() / gradient_accumualation_steps,
+        }
         # Sample from the model
         if train_idx > 0 and train_idx % log_frequency == 0:
             print(f"loss: {accumulated_loss.item():.4f}")

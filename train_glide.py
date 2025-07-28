@@ -42,7 +42,7 @@ def run_glide_finetune(
     caption_key="txt",
     enable_upsample=False,
     upsample_factor=4,
-    image_to_upsample='low_res_face.png',
+    image_to_upsample="low_res_face.png",
 ):
     if "~" in data_dir:
         data_dir = os.path.expanduser(data_dir)
@@ -136,25 +136,28 @@ def run_glide_finetune(
         weight_decay=adam_weight_decay,
     )
 
-    if not freeze_transformer: # if we want to train the transformer, we need to backpropagate through the diffusion model.
+    if not freeze_transformer:  # if we want to train the transformer, we need to backpropagate through the diffusion model.
         glide_model.out.requires_grad_(True)
         glide_model.input_blocks.requires_grad_(True)
         glide_model.middle_block.requires_grad_(True)
         glide_model.output_blocks.requires_grad_(True)
 
-
     # Training setup
     outputs_dir = "./outputs"
     os.makedirs(outputs_dir, exist_ok=True)
 
-    existing_runs = [ sub_dir for sub_dir in os.listdir(checkpoints_dir) if os.path.isdir(os.path.join(checkpoints_dir, sub_dir))]
+    existing_runs = [
+        sub_dir
+        for sub_dir in os.listdir(checkpoints_dir)
+        if os.path.isdir(os.path.join(checkpoints_dir, sub_dir))
+    ]
     existing_runs_int = []
     for x in existing_runs:
         try:
             existing_runs_int.append(int(x))
         except:
             print("unexpected directory naming scheme")
-            #ignore
+            # ignore
     existing_runs_int = sorted(existing_runs_int)
     next_run = 0 if len(existing_runs) == 0 else existing_runs_int[-1] + 1
     current_run_ckpt_dir = os.path.join(checkpoints_dir, str(next_run).zfill(4))
@@ -283,9 +286,15 @@ def parse_args():
         help="Enable cudnn benchmarking. May improve performance. (may not)",
     )
     parser.add_argument(
-        "--upscale_factor", "-upscale", type=int, default=4, help="Upscale factor for training the upsampling model only"
+        "--upscale_factor",
+        "-upscale",
+        type=int,
+        default=4,
+        help="Upscale factor for training the upsampling model only",
     )
-    parser.add_argument("--image_to_upsample", "-lowres", type=str, default="low_res_face.png")
+    parser.add_argument(
+        "--image_to_upsample", "-lowres", type=str, default="low_res_face.png"
+    )
     args = parser.parse_args()
 
     return args
@@ -311,7 +320,7 @@ if __name__ == "__main__":
         data_dir = glob(os.path.join(args.data_dir, "*.tar"))
     else:
         data_dir = args.data_dir
-    
+
     run_glide_finetune(
         data_dir=args.data_dir,
         batch_size=args.batch_size,

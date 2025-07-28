@@ -3,7 +3,7 @@ name = "glide-finetune"
 version = "0.1.0"
 description = "Finetune GLIDE-text2im on your own image-text dataset"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.13"
 license = {file = "LICENSE"}
 dependencies = [
     "aiohttp>=3.9.3",

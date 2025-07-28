@@ -84,13 +84,16 @@ def load_model(
         print("Converted to fp16, likely gradients will explode")
     return glide_model, glide_diffusion, options
 
+
 def read_image(path: str, shape: Tuple[int, int]):
-    pil_img = PIL.Image.open(path).convert('RGB')
+    pil_img = PIL.Image.open(path).convert("RGB")
     pil_img = pil_img.resize(shape, resample=PIL.Image.BICUBIC)
     img = np.array(pil_img)
     return th.from_numpy(img)[None].permute(0, 3, 1, 2).float() / 127.5 - 1
 
+
 # Sample from the base model.
+
 
 @th.inference_mode()
 def sample(
@@ -104,7 +107,7 @@ def sample(
     device="cpu",
     prediction_respacing="100",
     upsample_enabled=False,
-    image_to_upsample='',
+    image_to_upsample="",
     upsample_temp=0.997,
 ):
     glide_model.del_cache()
@@ -121,7 +124,9 @@ def sample(
 
     # Create the classifier-free guidance tokens (empty)
     full_batch_size = batch_size * 2
-    uncond_tokens, uncond_mask = glide_model.tokenizer.padded_tokens_and_mask( [], glide_options["text_ctx"])
+    uncond_tokens, uncond_mask = glide_model.tokenizer.padded_tokens_and_mask(
+        [], glide_options["text_ctx"]
+    )
 
     # Pack the tokens together into model kwargs.
     model_kwargs = dict(
@@ -132,7 +137,7 @@ def sample(
             [mask] * batch_size + [uncond_mask] * batch_size,
             dtype=th.bool,
             device=device,
-        )
+        ),
     )
 
     def cfg_model_fn(x_t, ts, **kwargs):
@@ -150,20 +155,20 @@ def sample(
         ]
         half_eps = uncond_eps + guidance_scale * (cond_eps - uncond_eps)
         eps = th.cat([half_eps, half_eps], dim=0)
-        current_prediction_pil = pred_to_pil(
-            (x_t - eps * (beta**0.5))[:batch_size]
-        )
+        current_prediction_pil = pred_to_pil((x_t - eps * (beta**0.5))[:batch_size])
         current_prediction_pil.save("current_prediction.png")
         return th.cat([eps, rest], dim=1)
 
-    model_fn = cfg_model_fn # so we use CFG for the base model.
+    model_fn = cfg_model_fn  # so we use CFG for the base model.
     if upsample_enabled:
-        assert image_to_upsample != '', "You must specify a path to an image to upsample."
+        assert image_to_upsample != "", (
+            "You must specify a path to an image to upsample."
+        )
         low_res_samples = read_image(image_to_upsample, size=(side_x, side_y))
-        model_kwargs['low_res'] = low_res_samples
+        model_kwargs["low_res"] = low_res_samples
         noise = th.randn((batch_size, 3, side_y, side_x), device=device) * upsample_temp
-        model_kwargs['noise'] = noise
-        model_fn = glide_model # just use the base model, no need for CFG.
+        model_kwargs["noise"] = noise
+        model_fn = glide_model  # just use the base model, no need for CFG.
 
     samples = eval_diffusion.plms_sample_loop(
         model_fn,

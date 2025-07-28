@@ -6,8 +6,7 @@ import PIL
 import torch as th
 import webdataset as wds
 
-from glide_finetune.glide_util import (get_tokens_and_mask,
-                                       get_uncond_tokens_mask)
+from glide_finetune.glide_util import get_tokens_and_mask, get_uncond_tokens_mask
 from glide_finetune.train_util import pil_image_to_norm_tensor
 
 
@@ -36,7 +35,6 @@ def glide_wds_loader(
     dataset_name="laion",  # can be laion, alamy.
     upscale_factor=4,
 ):
-
     base_image_shape = (base_x, base_y)
     upsample_image_shape = (int(base_x * upscale_factor), int(base_y * upscale_factor))
     dataset = wds.WebDataset(
@@ -114,7 +112,9 @@ def glide_wds_loader(
         image_data = item[image_key]
         original_pil_image = PIL.Image.open(io.BytesIO(image_data))
 
-        base_pil_image = original_pil_image.resize(base_image_shape, resample=PIL.Image.BICUBIC).convert("RGB")
+        base_pil_image = original_pil_image.resize(
+            base_image_shape, resample=PIL.Image.BICUBIC
+        ).convert("RGB")
         base_tensor = pil_image_to_norm_tensor(base_pil_image)
 
         # The upsample model needs both the base and the upsample images e.g. 64x64 and 256x256.
