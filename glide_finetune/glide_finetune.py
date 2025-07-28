@@ -116,6 +116,10 @@ def run_glide_finetune_epoch(
     early_stop: int = 0,
     sampler_name: str = "plms",
     test_steps: int = 100,
+    warmup_steps: int = 0,
+    warmup_type: str = "linear",
+    base_lr: float = 1e-5,
+    epoch_offset: int = 0,
 ):
     train_step: Any
     if train_upsample:
@@ -126,11 +130,34 @@ def run_glide_finetune_epoch(
     glide_model.to(device)
     glide_model.train()
     log: dict[str, float] = {}
+    
+    # Warmup scheduler helper
+    def get_warmup_lr(step, base_lr, warmup_steps, warmup_type):
+        """Calculate learning rate during warmup period."""
+        if warmup_steps == 0 or step >= warmup_steps:
+            return base_lr
+        
+        if warmup_type == "linear":
+            return base_lr * (step / warmup_steps)
+        elif warmup_type == "cosine":
+            import math
+            return base_lr * 0.5 * (1.0 + math.cos(math.pi * (1.0 - step / warmup_steps)))
+        else:
+            return base_lr
+    
     for train_idx, batch in enumerate(dataloader):
         # Early stopping check
         if early_stop > 0 and train_idx >= early_stop:
             print(f"Early stopping at step {train_idx} (early_stop={early_stop})")
             break
+        
+        # Calculate global step for warmup
+        global_step = epoch_offset + train_idx
+        
+        # Apply learning rate warmup
+        current_lr = get_warmup_lr(global_step, base_lr, warmup_steps, warmup_type)
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = current_lr
             
         accumulated_loss = train_step(
             glide_model=glide_model,
@@ -145,10 +172,13 @@ def run_glide_finetune_epoch(
             **log,
             "iter": train_idx,
             "loss": accumulated_loss.item() / gradient_accumualation_steps,
+            "lr": current_lr,
         }
         # Sample from the model
         if train_idx > 0 and train_idx % log_frequency == 0:
-            print(f"loss: {accumulated_loss.item():.4f}")
+            print(f"Step {global_step}: loss: {accumulated_loss.item():.4f}, lr: {current_lr:.2e}")
+            if warmup_steps > 0 and global_step < warmup_steps:
+                print(f"  Warmup progress: {global_step}/{warmup_steps} ({global_step/warmup_steps*100:.1f}%)")
             print(f"Sampling from model at iteration {train_idx}")
             samples = glide_util.sample(
                 glide_model=glide_model,

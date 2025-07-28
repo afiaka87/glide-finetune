@@ -34,8 +34,9 @@ def glide_wds_loader(
     words_to_skip=[],
     dataset_name="laion",  # can be laion, alamy.
     upscale_factor=4,
+    laion_no_filter=False,
 ):
-    print(f"[WebDataset] Creating loader with dataset_name='{dataset_name}'")
+    print(f"[WebDataset] Creating loader with dataset_name='{dataset_name}', laion_no_filter={laion_no_filter}")
     print(f"[WebDataset] URLs: {urls[:3] if isinstance(urls, list) else urls} (total: {len(urls) if isinstance(urls, list) else 'unknown'} files)")
     
     base_image_shape = (base_x, base_y)
@@ -96,8 +97,12 @@ def glide_wds_loader(
         return True  # all good
 
     print(f"[WebDataset] Applying filtering for dataset_name='{dataset_name}'...")
-    if dataset_name == "laion":
+    if dataset_name == "laion" and not laion_no_filter:
         filtered_dataset = dataset.select(filter_dataset_laion)
+    elif dataset_name == "laion" and laion_no_filter:
+        # Skip LAION filtering when laion_no_filter is True
+        print("[WebDataset] LAION filtering disabled (--laion_no_filter)")
+        filtered_dataset = dataset
     elif dataset_name == "alamy":
         filtered_dataset = dataset.select(filter_dataset_alamy)
     elif dataset_name == "webdataset":

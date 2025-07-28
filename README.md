@@ -13,6 +13,7 @@ Finetune GLIDE-text2im on your own image-text dataset.
 - TensorFloat-32 (TF32) support for faster training on Ampere GPUs
 - WebDataset support with custom filtering modes
 - Gradient checkpointing for reduced memory usage
+- Learning rate warmup (linear or cosine) for stable training
 - Early stopping for testing and integration
 - Built-in Weights & Biases (wandb) logging
 - Drop-in support for LAION and Alamy datasets
@@ -182,7 +183,8 @@ usage: train_glide.py [-h] [--data_dir DATA_DIR] [--batch_size BATCH_SIZE]
                       [--image_to_upsample IMAGE_TO_UPSAMPLE]
                       [--use_8bit_adam] [--use_tf32] [--early_stop EARLY_STOP]
                       [--sampler {plms,ddim,euler,euler_a,dpm++_2m,dpm++_2m_karras}]
-                      [--test_steps TEST_STEPS]
+                      [--test_steps TEST_STEPS] [--laion_no_filter]
+                      [--warmup_steps WARMUP_STEPS] [--warmup_type {linear,cosine}]
 
 options:
   -h, --help            show this help message and exit
@@ -271,4 +273,11 @@ options:
   --test_steps TEST_STEPS
                         Number of sampling steps for test image generation
                         (default: 100)
+  --laion_no_filter     Skip LAION metadata filtering (faster loading, no
+                        metadata requirements)
+  --warmup_steps WARMUP_STEPS
+                        Number of warmup steps for learning rate scheduler
+                        (0 = no warmup)
+  --warmup_type {linear,cosine}
+                        Type of warmup schedule
 ```

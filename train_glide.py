@@ -48,6 +48,9 @@ def run_glide_finetune(
     wds_dataset_name="laion",
     sampler_name="plms",
     test_steps=100,
+    laion_no_filter=False,
+    warmup_steps=0,
+    warmup_type="linear",
 ):
     if "~" in data_dir:
         data_dir = os.path.expanduser(data_dir)
@@ -107,6 +110,9 @@ def run_glide_finetune(
             enable_text=use_captions,
             enable_upsample=enable_upsample,
             tokenizer=glide_model.tokenizer,
+            base_x=side_x,
+            base_y=side_y,
+            uncond_p=uncond_p,
             ar_lower=0.5,
             ar_upper=2.0,
             min_original_height=side_x * upsample_factor,
@@ -117,6 +123,7 @@ def run_glide_finetune(
             similarity_threshold_lower=0.5,
             words_to_skip=[],
             dataset_name=wds_dataset_name,
+            laion_no_filter=laion_no_filter,
         )
     else:
         dataset = TextImageDataset(
@@ -169,6 +176,20 @@ def run_glide_finetune(
     # Note: The freezing logic is already handled in load_model()
     # We don't need to modify gradients here as it would override the freezing settings
 
+    # Learning rate scheduler setup
+    def get_warmup_lr(step, base_lr, warmup_steps, warmup_type):
+        """Calculate learning rate during warmup period."""
+        if step >= warmup_steps:
+            return base_lr
+        
+        if warmup_type == "linear":
+            return base_lr * (step / warmup_steps)
+        elif warmup_type == "cosine":
+            import math
+            return base_lr * 0.5 * (1.0 + math.cos(math.pi * (1.0 - step / warmup_steps)))
+        else:
+            return base_lr
+    
     # Training setup
     outputs_dir = "./outputs"
     os.makedirs(outputs_dir, exist_ok=True)
@@ -191,6 +212,9 @@ def run_glide_finetune(
 
     os.makedirs(current_run_ckpt_dir, exist_ok=True)
 
+    # Calculate steps per epoch for warmup
+    steps_per_epoch = len(dataloader)
+    
     for epoch in trange(num_epochs):
         print(f"Starting epoch {epoch}")
         run_glide_finetune_epoch(
@@ -215,6 +239,10 @@ def run_glide_finetune(
             early_stop=early_stop,
             sampler_name=sampler_name,
             test_steps=test_steps,
+            warmup_steps=warmup_steps,
+            warmup_type=warmup_type,
+            base_lr=learning_rate,
+            epoch_offset=epoch * steps_per_epoch,
         )
 
 
@@ -224,6 +252,19 @@ def parse_args():
     parser.add_argument("--batch_size", "-bs", type=int, default=1)
     parser.add_argument("--learning_rate", "-lr", type=float, default=2e-5)
     parser.add_argument("--adam_weight_decay", "-adam_wd", type=float, default=0.0)
+    parser.add_argument(
+        "--warmup_steps",
+        type=int,
+        default=0,
+        help="Number of warmup steps for learning rate scheduler (0 = no warmup)",
+    )
+    parser.add_argument(
+        "--warmup_type",
+        type=str,
+        default="linear",
+        choices=["linear", "cosine"],
+        help="Type of warmup schedule",
+    )
     parser.add_argument("--side_x", "-x", type=int, default=64)
     parser.add_argument("--side_y", "-y", type=int, default=64)
     parser.add_argument(
@@ -364,6 +405,11 @@ def parse_args():
         default=100,
         help="Number of sampling steps for test image generation (default: 100)",
     )
+    parser.add_argument(
+        "--laion_no_filter",
+        action="store_true",
+        help="Skip LAION metadata filtering (faster loading, no metadata requirements)",
+    )
     args = parser.parse_args()
 
     return args
@@ -430,4 +476,7 @@ if __name__ == "__main__":
         wds_dataset_name=args.wds_dataset_name,
         sampler_name=args.sampler,
         test_steps=args.test_steps,
+        laion_no_filter=args.laion_no_filter,
+        warmup_steps=args.warmup_steps,
+        warmup_type=args.warmup_type,
     )
