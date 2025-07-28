@@ -45,6 +45,7 @@ def run_glide_finetune(
     image_to_upsample="low_res_face.png",
     use_8bit_adam=False,
     early_stop=0,
+    wds_dataset_name="laion",
 ):
     if "~" in data_dir:
         data_dir = os.path.expanduser(data_dir)
@@ -113,7 +114,7 @@ def run_glide_finetune(
             similarity_threshold_upper=0.0,
             similarity_threshold_lower=0.5,
             words_to_skip=[],
-            dataset_name="laion",  # can be laion, alamy.
+            dataset_name=wds_dataset_name,
         )
     else:
         dataset = TextImageDataset(
@@ -129,15 +130,31 @@ def run_glide_finetune(
             enable_glide_upsample=enable_upsample,
             upscale_factor=upsample_factor,  # TODO: make this a parameter
         )
+    
+    print(f"[Main] Dataset created: {dataset}")
 
     # Data loader setup
-    dataloader = th.utils.data.DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=not use_webdataset,
-        num_workers=0,
-        pin_memory=(device == "cuda"),
-    )
+    print("[Main] Creating DataLoader...")
+    if use_webdataset:
+        # WebDataset needs to be batched before DataLoader
+        print(f"[Main] Batching WebDataset with batch_size={batch_size}")
+        dataset = dataset.batched(batch_size)
+        dataloader = th.utils.data.DataLoader(
+            dataset,
+            batch_size=None,  # WebDataset handles batching
+            shuffle=False,
+            num_workers=0,
+            pin_memory=(device == "cuda"),
+        )
+    else:
+        dataloader = th.utils.data.DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=0,
+            pin_memory=(device == "cuda"),
+        )
+    print("[Main] DataLoader created")
 
     # Optimizer setup
     optimizer = create_optimizer(
@@ -289,7 +306,7 @@ def parse_args():
         "-wds_name",
         type=str,
         default="laion",
-        help="Name of the webdataset to use (laion or alamy)",
+        help="Name of the webdataset to use (laion, alamy, or webdataset for no filtering)",
     )
     parser.add_argument("--seed", "-seed", type=int, default=0)
     parser.add_argument(
@@ -389,4 +406,5 @@ if __name__ == "__main__":
         image_to_upsample=args.image_to_upsample,
         use_8bit_adam=args.use_8bit_adam,
         early_stop=args.early_stop,
+        wds_dataset_name=args.wds_dataset_name,
     )

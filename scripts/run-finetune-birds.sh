@@ -7,7 +7,7 @@ uv run python train_glide.py \
     --use_webdataset \
     --wds_caption_key 'txt' \
     --wds_image_key 'png' \
-    --wds_dataset_name 'laion' \
+    --wds_dataset_name 'webdataset' \
     --batch_size 4 \
     --learning_rate 1e-04 \
     --adam_weight_decay 0.0 \

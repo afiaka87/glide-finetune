@@ -35,14 +35,20 @@ def glide_wds_loader(
     dataset_name="laion",  # can be laion, alamy.
     upscale_factor=4,
 ):
+    print(f"[WebDataset] Creating loader with dataset_name='{dataset_name}'")
+    print(f"[WebDataset] URLs: {urls[:3] if isinstance(urls, list) else urls} (total: {len(urls) if isinstance(urls, list) else 'unknown'} files)")
+    
     base_image_shape = (base_x, base_y)
     upsample_image_shape = (int(base_x * upscale_factor), int(base_y * upscale_factor))
+    
+    print("[WebDataset] Creating WebDataset object...")
     dataset = wds.WebDataset(
         urls,
         cache_dir=cache_path,
         cache_size=10**10,
         handler=wds.handlers.reraise_exception,
     )
+    print("[WebDataset] WebDataset object created")
 
     def filter_dataset_laion(item):
         if enable_text and caption_key not in item:
@@ -89,14 +95,20 @@ def glide_wds_loader(
             return False
         return True  # all good
 
+    print(f"[WebDataset] Applying filtering for dataset_name='{dataset_name}'...")
     if dataset_name == "laion":
         filtered_dataset = dataset.select(filter_dataset_laion)
     elif dataset_name == "alamy":
         filtered_dataset = dataset.select(filter_dataset_alamy)
+    elif dataset_name == "webdataset":
+        # No filtering - use dataset as-is
+        print("[WebDataset] No filtering applied (webdataset mode)")
+        filtered_dataset = dataset
     else:
         raise ValueError(
-            f"Unknown dataset: {dataset_name}. Must be one of 'laion' or 'alamy'."
+            f"Unknown dataset: {dataset_name}. Must be one of 'laion', 'alamy', or 'webdataset'."
         )
+    print("[WebDataset] Filtering complete")
 
     def preprocess_dataset(item):
         tokens, mask, base_tensor, upsample_tensor = None, None, None, None
@@ -131,7 +143,9 @@ def glide_wds_loader(
             )
         return th.tensor(tokens), th.tensor(mask, dtype=th.bool), base_tensor
 
+    print("[WebDataset] Applying preprocessing transform...")
     transformed_dataset = filtered_dataset.map(
         preprocess_dataset, handler=wds.handlers.reraise_exception
     )
+    print("[WebDataset] Preprocessing transform applied")
     return transformed_dataset
