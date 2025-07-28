@@ -242,7 +242,7 @@ def run_glide_finetune_epoch(
         
         # Calculate total samples processed
         samples_processed = (global_step + 1) * batch_size
-        log["samples"] = samples_processed
+        log["samples_seen"] = samples_processed
         
         # Calculate parameter norm (cheap operation)
         param_norm = 0.0
