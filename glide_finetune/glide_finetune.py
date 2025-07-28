@@ -312,3 +312,6 @@ def run_glide_finetune_epoch(
         wandb_run.log(log)
     print("Finished training, saving final checkpoint")
     train_util.save_model(glide_model, checkpoints_dir, train_idx, epoch)
+    
+    # Return the number of steps taken in this epoch
+    return train_idx + 1

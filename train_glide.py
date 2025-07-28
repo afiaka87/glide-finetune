@@ -213,11 +213,17 @@ def run_glide_finetune(
     os.makedirs(current_run_ckpt_dir, exist_ok=True)
 
     # Calculate steps per epoch for warmup
-    steps_per_epoch = len(dataloader)
+    # WebDataset doesn't have a length, so we'll track steps during training
+    steps_per_epoch = None
+    if not use_webdataset:
+        steps_per_epoch = len(dataloader)
+    
+    # Track global step for WebDataset
+    global_step_counter = 0
     
     for epoch in trange(num_epochs):
         print(f"Starting epoch {epoch}")
-        run_glide_finetune_epoch(
+        steps_taken = run_glide_finetune_epoch(
             glide_model=glide_model,
             glide_diffusion=glide_diffusion,
             glide_options=glide_options,
@@ -242,9 +248,13 @@ def run_glide_finetune(
             warmup_steps=warmup_steps,
             warmup_type=warmup_type,
             base_lr=learning_rate,
-            epoch_offset=epoch * steps_per_epoch,
+            epoch_offset=global_step_counter if use_webdataset else epoch * steps_per_epoch,
             batch_size=batch_size,
         )
+        
+        # Update global step counter for WebDataset
+        if use_webdataset:
+            global_step_counter += steps_taken
 
 
 def parse_args():
