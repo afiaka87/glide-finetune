@@ -216,9 +216,9 @@ options:
   --log_frequency LOG_FREQUENCY, -freq LOG_FREQUENCY
                         How often to log training progress
   --freeze_transformer, -fz_xt
-                        Freeze transformer weights during training
+                        Freeze transformer weights during training (text processing components)
   --freeze_diffusion, -fz_unet
-                        Freeze diffusion model weights during training
+                        Freeze diffusion/UNet weights during training (image generation backbone)
   --project_name PROJECT_NAME, -name PROJECT_NAME
                         Weights & Biases project name
   --activation_checkpointing, -grad_ckpt

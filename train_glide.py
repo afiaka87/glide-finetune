@@ -166,11 +166,8 @@ def run_glide_finetune(
         use_8bit=use_8bit_adam,
     )
 
-    if not freeze_transformer:  # training transformer needs backprop through diffusion
-        glide_model.out.requires_grad_(True)
-        glide_model.input_blocks.requires_grad_(True)
-        glide_model.middle_block.requires_grad_(True)
-        glide_model.output_blocks.requires_grad_(True)
+    # Note: The freezing logic is already handled in load_model()
+    # We don't need to modify gradients here as it would override the freezing settings
 
     # Training setup
     outputs_dir = "./outputs"

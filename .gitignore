@@ -11,3 +11,4 @@ docker_child/
 CLAUDE.md
 current_prediction.png
 glide_checkpoints/
+.scratch/

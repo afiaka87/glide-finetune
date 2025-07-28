@@ -60,18 +60,39 @@ def load_model(
     if activation_checkpointing:
         glide_model.use_checkpoint = True
 
+    # Start with all parameters trainable
     glide_model.requires_grad_(True)
+    
+    # Freeze transformer components (text processing)
     if freeze_transformer:
-        glide_model.transformer.requires_grad_(False)
-        glide_model.transformer_proj.requires_grad_(False)
-        glide_model.token_embedding.requires_grad_(False)
-        glide_model.padding_embedding.requires_grad_(False)
-        glide_model.positional_embedding.requires_grad_(False)
+        # Core transformer and embeddings
+        if hasattr(glide_model, 'transformer') and glide_model.transformer is not None:
+            glide_model.transformer.requires_grad_(False)
+        if hasattr(glide_model, 'transformer_proj') and glide_model.transformer_proj is not None:
+            glide_model.transformer_proj.requires_grad_(False)
+        if hasattr(glide_model, 'token_embedding') and glide_model.token_embedding is not None:
+            glide_model.token_embedding.requires_grad_(False)
+        if hasattr(glide_model, 'positional_embedding') and glide_model.positional_embedding is not None:
+            glide_model.positional_embedding.requires_grad = False
+        if hasattr(glide_model, 'padding_embedding') and glide_model.padding_embedding is not None:
+            glide_model.padding_embedding.requires_grad = False
+        # Final layer norm is part of transformer output processing
+        if hasattr(glide_model, 'final_ln') and glide_model.final_ln is not None:
+            glide_model.final_ln.requires_grad_(False)
+    
+    # Freeze diffusion/UNet components
     if freeze_diffusion:
-        glide_model.out.requires_grad_(False)
-        glide_model.input_blocks.requires_grad_(False)
-        glide_model.middle_block.requires_grad_(False)
-        glide_model.output_blocks.requires_grad_(False)
+        # UNet blocks
+        if hasattr(glide_model, 'input_blocks') and glide_model.input_blocks is not None:
+            glide_model.input_blocks.requires_grad_(False)
+        if hasattr(glide_model, 'middle_block') and glide_model.middle_block is not None:
+            glide_model.middle_block.requires_grad_(False)
+        if hasattr(glide_model, 'output_blocks') and glide_model.output_blocks is not None:
+            glide_model.output_blocks.requires_grad_(False)
+        if hasattr(glide_model, 'out') and glide_model.out is not None:
+            glide_model.out.requires_grad_(False)
+        # Note: We intentionally keep time_embed trainable as it's needed for
+        # adapting the diffusion process to new domains
     if len(glide_path) > 0:  # user provided checkpoint
         assert os.path.exists(glide_path), "glide path does not exist"
         weights = th.load(glide_path, map_location="cpu")
@@ -83,6 +104,23 @@ def load_model(
     if use_fp16:
         glide_model.convert_to_fp16()
         print("Converted to fp16, likely gradients will explode")
+    
+    # Report freezing status
+    if freeze_transformer or freeze_diffusion:
+        total_params = sum(p.numel() for p in glide_model.parameters())
+        trainable_params = sum(p.numel() for p in glide_model.parameters() if p.requires_grad)
+        frozen_params = total_params - trainable_params
+        
+        print(f"\nModel parameter summary:")
+        print(f"  Total parameters: {total_params:,}")
+        print(f"  Trainable parameters: {trainable_params:,} ({trainable_params/total_params*100:.1f}%)")
+        print(f"  Frozen parameters: {frozen_params:,} ({frozen_params/total_params*100:.1f}%)")
+        
+        if freeze_transformer:
+            print("  ✓ Transformer components frozen (text processing)")
+        if freeze_diffusion:
+            print("  ✓ Diffusion/UNet components frozen (image generation backbone)")
+    
     return glide_model, glide_diffusion, options
 
 
