@@ -23,6 +23,8 @@ https://www.zijianhu.com/post/pytorch/ema/ by crowsonkb
 
 
 class EMA(nn.Module):
+    accum: torch.Tensor
+    
     def __init__(self, model, decay):
         super().__init__()
         self.model = model

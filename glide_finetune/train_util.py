@@ -21,7 +21,7 @@ def save_model(
     )
 
 
-def pred_to_pil(pred: th.Tensor) -> PIL.Image:
+def pred_to_pil(pred: th.Tensor) -> PIL.Image.Image:
     scaled = ((pred + 1) * 127.5).round().clamp(0, 255).to(th.uint8).cpu()
     reshaped = scaled.permute(2, 0, 3, 1).reshape([pred.shape[2], -1, 3])
     return PIL.Image.fromarray(reshaped.numpy())

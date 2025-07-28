@@ -1,10 +1,10 @@
 import os
-from typing import Tuple
+from typing import Any, Tuple
 
 import torch as th
 from glide_text2im.respace import SpacedDiffusion
 from glide_text2im.text2im_model import Text2ImUNet
-from wandb import wandb
+import wandb
 
 from glide_finetune import glide_util, train_util
 
@@ -114,6 +114,7 @@ def run_glide_finetune_epoch(
     upsample_factor=4,
     image_to_upsample="low_res_face.png",
 ):
+    train_step: Any
     if train_upsample:
         train_step = upsample_train_step
     else:
@@ -121,7 +122,7 @@ def run_glide_finetune_epoch(
 
     glide_model.to(device)
     glide_model.train()
-    log = {}
+    log: dict[str, float] = {}
     for train_idx, batch in enumerate(dataloader):
         accumulated_loss = train_step(
             glide_model=glide_model,

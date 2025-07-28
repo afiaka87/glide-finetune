@@ -21,14 +21,14 @@ from glide_finetune.train_util import pred_to_pil
 MODEL_TYPES = ["base", "upsample", "base-inpaint", "upsample-inpaint"]
 
 
-def get_uncond_tokens_mask(tokenizer: Encoder):
+def get_uncond_tokens_mask(tokenizer: Encoder) -> Tuple[th.Tensor, th.Tensor]:
     uncond_tokens, uncond_mask = tokenizer.padded_tokens_and_mask([], 128)
     return th.tensor(uncond_tokens), th.tensor(uncond_mask, dtype=th.bool)
 
 
 def get_tokens_and_mask(
     tokenizer: Encoder, prompt: str = "", context_len: int = 128
-) -> Tuple[th.tensor, th.tensor]:
+) -> Tuple[th.Tensor, th.Tensor]:
     if len(prompt) == 0:
         return get_uncond_tokens_mask(tokenizer)
     else:
@@ -165,7 +165,7 @@ def sample(
         assert image_to_upsample != "", (
             "You must specify a path to an image to upsample."
         )
-        low_res_samples = read_image(image_to_upsample, size=(side_x, side_y))
+        low_res_samples = read_image(image_to_upsample, shape=(side_x, side_y))
         model_kwargs["low_res"] = low_res_samples
         noise = th.randn((batch_size, 3, side_y, side_x), device=device) * upsample_temp
         model_kwargs["noise"] = noise
