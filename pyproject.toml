@@ -1,0 +1,64 @@
+[project]
+name = "glide-finetune"
+version = "0.1.0"
+description = "Finetune GLIDE-text2im on your own image-text dataset"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {file = "LICENSE"}
+dependencies = [
+    "aiohttp>=3.9.3",
+    "einops>=0.8.0",
+    "ftfy>=6.2.0",
+    "matplotlib>=3.8.3",
+    "mpi4py>=3.1.5",
+    "numpy>=1.24.4",
+    "omegaconf>=2.3.0",
+    "packaging>=24.0",
+    "pillow>=10.2.0",
+    "pytorch-lightning>=2.2.1",
+    "pyyaml>=6.0.1",
+    "regex>=2023.12.25",
+    "requests>=2.31.0",
+    "termcolor>=2.4.0",
+    "toml>=0.10.2",
+    "torch>=2.2.1",
+    "torchvision>=0.17.1",
+    "tornado>=6.4",
+    "tqdm>=4.66.2",
+    "typing-extensions>=4.10.0",
+    "urllib3>=2.2.1",
+    "wandb>=0.16.4",
+    "webdataset>=0.2.86",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.2",
+    "ruff>=0.3.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8.0.2",
+    "ruff>=0.3.0",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py38"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+ignore = []
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.uv.sources]
+glide-text2im = { git = "https://github.com/crowsonkb/glide-text2im.git" }
+guided-diffusion = { git = "https://github.com/openai/guided-diffusion.git", branch = "main" }

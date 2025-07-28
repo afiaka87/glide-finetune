@@ -15,10 +15,15 @@ Finetune GLIDE-text2im on your own image-text dataset.
 ```sh
 git clone https://github.com/afiaka87/glide-finetune.git
 cd glide-finetune/
-python3 -m venv .venv # create a virtual environment to keep global install clean.
-source .venv/bin/activate
-(.venv) # optionally install pytorch manually for your own specific env first...
-(.venv) python -m pip install -r requirements.txt
+
+# Install uv if you haven't already
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Install dependencies
+uv sync
+
+# To run commands, use uv run:
+# uv run python train_glide.py --help
 ```
 
 ## Example usage
@@ -29,7 +34,7 @@ source .venv/bin/activate
 The base model should be tuned for "classifier free guidance". This means you want to randomly replace captions with an unconditional (empty) token about 20% of the time. This is controlled by the argument `--uncond_p`, which is set to 0.2 by default and should only be disabled for the upsampler.
 
 ```sh
-python train_glide.py \
+uv run python train_glide.py \
   --data_dir '/userdir/data/mscoco' \
   --train_upsample False \
   --project_name 'base_tuning_wandb' \
@@ -48,7 +53,7 @@ python train_glide.py \
 Note that the `--side_x` and `--side_y` args here should still be 64. They are scaled to 256 after mutliplying by the upscaling factor (4, by default.)
 
 ```sh
-python train_glide.py \
+uv run python train_glide.py \
   --data_dir '/userdir/data/mscoco' \
   --train_upsample True \
   --image_to_upsample 'low_res_face.png'
@@ -65,7 +70,7 @@ python train_glide.py \
 I have written data loaders for both LAION2B and Alamy. Other webdatasets may require custom caption/image keys.
 
 ```sh
-python train_glide.py \
+uv run python train_glide.py \
   --data_dir '/folder/with/tars/in/it/' \
   --wds_caption_key 'txt' \
   --wds_image_key 'jpg' \
