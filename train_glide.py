@@ -34,6 +34,7 @@ def run_glide_finetune(
     use_captions=True,
     num_epochs=100,
     log_frequency=100,
+    sample_interval=1000,
     test_prompt="a group of skiers are preparing to ski down a mountain.",
     sample_bs=1,
     sample_gs=8.0,
@@ -239,6 +240,7 @@ def run_glide_finetune(
             device=device,
             wandb_run=wandb_run,
             log_frequency=log_frequency,
+            sample_interval=sample_interval,
             epoch=epoch,
             gradient_accumualation_steps=1,
             train_upsample=enable_upsample,
@@ -308,6 +310,12 @@ def parse_args():
     parser.add_argument("--use_fp16", "-fp16", action="store_true")
     parser.add_argument("--device", "-dev", type=str, default="")
     parser.add_argument("--log_frequency", "-freq", type=int, default=100)
+    parser.add_argument(
+        "--sample_interval",
+        type=int,
+        default=1000,
+        help="How often to generate sample images (default: 1000 steps)",
+    )
     parser.add_argument("--freeze_transformer", "-fz_xt", action="store_true")
     parser.add_argument("--freeze_diffusion", "-fz_unet", action="store_true")
     parser.add_argument("--project_name", "-name", type=str, default="glide-finetune")
@@ -467,6 +475,7 @@ if __name__ == "__main__":
         use_fp16=args.use_fp16,
         device=device,
         log_frequency=args.log_frequency,
+        sample_interval=args.sample_interval,
         freeze_transformer=args.freeze_transformer,
         freeze_diffusion=args.freeze_diffusion,
         project_name=args.project_name,

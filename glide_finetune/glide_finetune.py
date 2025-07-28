@@ -165,6 +165,7 @@ def run_glide_finetune_epoch(
     checkpoints_dir: str = "./finetune_checkpoints",
     device: str = "cpu",
     log_frequency: int = 100,
+    sample_interval: int = 1000,
     wandb_run=None,
     gradient_accumualation_steps=1,
     epoch: int = 0,
@@ -250,7 +251,11 @@ def run_glide_finetune_epoch(
                 param_norm += p.data.norm(2).item() ** 2
         param_norm = param_norm ** 0.5
         log["param_norm"] = param_norm
-        # Sample from the model
+        
+        # Log metrics to wandb every iteration
+        wandb_run.log(log)
+        
+        # Console output at log_frequency intervals
         if train_idx > 0 and train_idx % log_frequency == 0:
             if first_log:
                 print("\n=== Metrics Legend ===")
@@ -274,7 +279,10 @@ def run_glide_finetune_epoch(
             
             if warmup_steps > 0 and global_step < warmup_steps:
                 print(f"  Warmup progress: {global_step}/{warmup_steps} ({global_step/warmup_steps*100:.1f}%)")
-            print(f"Sampling from model at iteration {train_idx}")
+        
+        # Sample generation at sample_interval intervals
+        if train_idx > 0 and train_idx % sample_interval == 0:
+            print(f"Generating sample at step {global_step}...")
             samples = glide_util.sample(
                 glide_model=glide_model,
                 glide_options=glide_options,
@@ -290,26 +298,23 @@ def run_glide_finetune_epoch(
             )
             sample_save_path = os.path.join(outputs_dir, f"{train_idx}.png")
             train_util.pred_to_pil(samples).save(sample_save_path)
-            # Handle wandb logging (may be mocked for early_stop runs)
+            # Log sample image to wandb (may be mocked for early_stop runs)
             if hasattr(wandb_run, "__class__") and wandb_run.__class__.__name__ == "MockWandbRun":
                 # Skip wandb.Image for mocked runs
-                wandb_run.log({**log, "iter": train_idx})
+                pass
             else:
-                wandb_run.log(
-                    {
-                        **log,
-                        "iter": train_idx,
-                        "samples": wandb.Image(sample_save_path, caption=prompt),
-                    }
-                )
+                wandb_run.log({
+                    "samples": wandb.Image(sample_save_path, caption=prompt),
+                })
             print(f"Saved sample {sample_save_path}")
+        
+        # Checkpoint saving
         if train_idx % 5000 == 0 and train_idx > 0:
             train_util.save_model(glide_model, checkpoints_dir, train_idx, epoch)
             print(
                 f"Saved checkpoint {train_idx} to "
                 f"{checkpoints_dir}/glide-ft-{train_idx}.pt"
             )
-        wandb_run.log(log)
     print("Finished training, saving final checkpoint")
     train_util.save_model(glide_model, checkpoints_dir, train_idx, epoch)
     
