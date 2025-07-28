@@ -1,12 +1,12 @@
 import time
 from pathlib import Path
-from random import randint, choice, random
+from random import choice, randint, random
 
 import PIL
-
 import torch as th
 from torch.utils.data import Dataset
 from torchvision import transforms as T
+
 from glide_finetune.glide_util import get_tokens_and_mask, get_uncond_tokens_mask
 from glide_finetune.train_util import pil_image_to_norm_tensor
 
@@ -75,7 +75,7 @@ class TextImageDataset(Dataset):
             self.text_files = None
             self.keys = list(self.image_files.keys())
             print(f"Found {len(self.keys)} images.")
-            print(f"NOT using text files. Restart with --use_captions to enable...")
+            print("NOT using text files. Restart with --use_captions to enable...")
             time.sleep(3)
 
         self.resize_ratio = resize_ratio
@@ -114,7 +114,7 @@ class TextImageDataset(Dataset):
         try:
             description = choice(descriptions).strip()
             return get_tokens_and_mask(tokenizer=self.tokenizer, prompt=description)
-        except IndexError as zero_captions_in_file_ex:
+        except IndexError:
             print(f"An exception occurred trying to load file {text_file}.")
             print(f"Skipping index {ind}")
             return self.skip_sample(ind)
@@ -129,11 +129,11 @@ class TextImageDataset(Dataset):
 
         try:
             original_pil_image = PIL.Image.open(image_file).convert("RGB")
-        except (OSError, ValueError) as e:
+        except (OSError, ValueError):
             print(f"An exception occurred trying to load file {image_file}.")
             print(f"Skipping index {ind}")
             return self.skip_sample(ind)
-        if self.enable_upsample:  # the base image used should be derived from the cropped high-resolution image.
+        if self.enable_upsample:  # base image from cropped high-res image
             upsample_pil_image = random_resized_crop(
                 original_pil_image,
                 (self.side_x * self.upscale_factor, self.side_y * self.upscale_factor),

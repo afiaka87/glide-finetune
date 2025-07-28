@@ -1,10 +1,9 @@
 import argparse
-from glob import glob
 import os
+from glob import glob
 
 import numpy as np
 import torch as th
-import torchvision.transforms as T
 from tqdm import trange
 
 from glide_finetune.glide_finetune import run_glide_finetune_epoch
@@ -25,7 +24,7 @@ def run_glide_finetune(
     uncond_p=0.0,
     resume_ckpt="",
     checkpoints_dir="./finetune_checkpoints",
-    use_fp16=False,  # Tends to cause issues,not sure why as the paper states fp16 is stable.
+    use_fp16=False,  # Tends to cause issues, not sure why as paper states fp16 stable
     device="cpu",
     freeze_transformer=False,
     freeze_diffusion=False,
@@ -136,7 +135,7 @@ def run_glide_finetune(
         weight_decay=adam_weight_decay,
     )
 
-    if not freeze_transformer:  # if we want to train the transformer, we need to backpropagate through the diffusion model.
+    if not freeze_transformer:  # training transformer needs backprop through diffusion
         glide_model.out.requires_grad_(True)
         glide_model.input_blocks.requires_grad_(True)
         glide_model.middle_block.requires_grad_(True)
@@ -155,7 +154,7 @@ def run_glide_finetune(
     for x in existing_runs:
         try:
             existing_runs_int.append(int(x))
-        except:
+        except ValueError:
             print("unexpected directory naming scheme")
             # ignore
     existing_runs_int = sorted(existing_runs_int)
@@ -204,7 +203,8 @@ def parse_args():
         "-p",
         type=float,
         default=0.2,
-        help="Probability of using the empty/unconditional token instead of a caption. OpenAI used 0.2 for their finetune.",
+        help="Probability of using empty/unconditional token instead of caption. "
+        "OpenAI used 0.2 for their finetune.",
     )
     parser.add_argument(
         "--train_upsample",

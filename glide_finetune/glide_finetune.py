@@ -21,7 +21,10 @@ def base_train_step(
         Args:
             glide_model: The model to train.
             glide_diffusion: The diffusion to use.
-            batch: A tuple of (tokens, masks, reals) where tokens is a tensor of shape (batch_size, seq_len), masks is a tensor of shape (batch_size, seq_len) and reals is a tensor of shape (batch_size, 3, side_x, side_y) normalized to [-1, 1].
+            batch: A tuple of (tokens, masks, reals) where tokens is a tensor of shape
+                (batch_size, seq_len), masks is a tensor of shape (batch_size, seq_len)
+                and reals is a tensor of shape (batch_size, 3, side_x, side_y)
+                normalized to [-1, 1].
             device: The device to use for getting model outputs and computing loss.
         Returns:
             The loss.
@@ -58,8 +61,10 @@ def upsample_train_step(
             batch: A tuple of (tokens, masks, low_res, high_res) where
                 - tokens is a tensor of shape (batch_size, seq_len),
                 - masks is a tensor of shape (batch_size, seq_len) with dtype torch.bool
-                - low_res is a tensor of shape (batch_size, 3, base_x, base_y), normalized to [-1, 1]
-                - high_res is a tensor of shape (batch_size, 3, base_x*4, base_y*4), normalized to [-1, 1]
+                - low_res is a tensor of shape (batch_size, 3, base_x, base_y),
+                  normalized to [-1, 1]
+                - high_res is a tensor of shape (batch_size, 3, base_x*4, base_y*4),
+                  normalized to [-1, 1]
             device: The device to use for getting model outputs and computing loss.
         Returns:
             The loss.
@@ -161,8 +166,9 @@ def run_glide_finetune_epoch(
         if train_idx % 5000 == 0 and train_idx > 0:
             train_util.save_model(glide_model, checkpoints_dir, train_idx, epoch)
             print(
-                f"Saved checkpoint {train_idx} to {checkpoints_dir}/glide-ft-{train_idx}.pt"
+                f"Saved checkpoint {train_idx} to "
+                f"{checkpoints_dir}/glide-ft-{train_idx}.pt"
             )
         wandb_run.log(log)
-    print(f"Finished training, saving final checkpoint")
+    print("Finished training, saving final checkpoint")
     train_util.save_model(glide_model, checkpoints_dir, train_idx, epoch)

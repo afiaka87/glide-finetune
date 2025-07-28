@@ -117,7 +117,7 @@ def glide_wds_loader(
         ).convert("RGB")
         base_tensor = pil_image_to_norm_tensor(base_pil_image)
 
-        # The upsample model needs both the base and the upsample images e.g. 64x64 and 256x256.
+        # Upsample model needs both base and upsample images e.g. 64x64 and 256x256
         if enable_upsample:
             upsample_pil_image = original_pil_image.resize(
                 upsample_image_shape

@@ -16,7 +16,8 @@ def save_model(
         os.path.join(checkpoints_dir, f"glide-ft-{epoch}x{train_idx}.pt"),
     )
     tqdm.write(
-        f"Saved checkpoint {train_idx} to {checkpoints_dir}/glide-ft-{epoch}x{train_idx}.pt"
+        f"Saved checkpoint {train_idx} to "
+        f"{checkpoints_dir}/glide-ft-{epoch}x{train_idx}.pt"
     )
 
 
@@ -28,7 +29,8 @@ def pred_to_pil(pred: th.Tensor) -> PIL.Image:
 
 def pil_image_to_norm_tensor(pil_image):
     """
-    Convert a PIL image to a PyTorch tensor normalized to [-1, 1] with shape [B, C, H, W].
+    Convert a PIL image to a PyTorch tensor normalized to [-1, 1] with shape
+    [B, C, H, W].
     """
     return th.from_numpy(np.asarray(pil_image)).float().permute(2, 0, 1) / 127.5 - 1.0
 
@@ -37,7 +39,8 @@ def resize_for_upsample(
     original, low_res_x, low_res_y, upscale_factor: int = 4
 ) -> Tuple[th.Tensor, th.Tensor]:
     """
-    Resize/Crop an image to the size of the low resolution image. This is useful for upsampling.
+    Resize/Crop an image to the size of the low resolution image. This is useful for
+    upsampling.
 
     Args:
         original: A PIL.Image object to be cropped.
@@ -46,7 +49,8 @@ def resize_for_upsample(
         upscale_factor: The factor by which to upsample the image.
 
     Returns:
-        The downsampled image and the corresponding upscaled version cropped according to upscale_factor.
+        The downsampled image and the corresponding upscaled version cropped according
+        to upscale_factor.
     """
     high_res_x, high_res_y = low_res_x * upscale_factor, low_res_y * upscale_factor
     high_res_image = original.resize((high_res_x, high_res_y), PIL.Image.LANCZOS)

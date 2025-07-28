@@ -4,7 +4,6 @@ import torch as th
 from glide_text2im.clip.model_creation import CLIPModel
 from glide_text2im.respace import SpacedDiffusion
 from torch.nn.functional import cross_entropy
-from torchvision import transforms as T
 
 
 def train_step(

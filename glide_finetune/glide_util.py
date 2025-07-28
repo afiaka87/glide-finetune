@@ -4,10 +4,9 @@
 import os
 from typing import Tuple
 
-import PIL
 import numpy as np
+import PIL
 import torch as th
-from glide_finetune.train_util import pred_to_pil
 from glide_text2im.download import load_checkpoint
 from glide_text2im.model_creation import (
     create_gaussian_diffusion,
@@ -16,6 +15,8 @@ from glide_text2im.model_creation import (
     model_and_diffusion_defaults_upsampler,
 )
 from glide_text2im.tokenizer.bpe import Encoder
+
+from glide_finetune.train_util import pred_to_pil
 
 MODEL_TYPES = ["base", "upsample", "base-inpaint", "upsample-inpaint"]
 

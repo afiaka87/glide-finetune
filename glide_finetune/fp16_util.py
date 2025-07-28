@@ -2,28 +2,24 @@
 Helpers to train with 16-bit precision. Modified from OpenAI's guided diffusion repo.
 """
 
-from tqdm import tqdm
+from copy import deepcopy
+
 import numpy as np
+import torch
 import torch as th
 import torch.nn as nn
 from torch._utils import _flatten_dense_tensors, _unflatten_dense_tensors
+from tqdm import tqdm
 
 INITIAL_LOG_LOSS_SCALE = (
     20.0  # Default from OpenAI. May wish to change this for finetuning.
 )
-from copy import deepcopy
-
-import torch
-from torch import nn
 
 # Exponential Moving Average (from https://gist.github.com/crowsonkb/76b94d5238272722290734bf4725d204)
 """Exponential moving average for PyTorch. Adapted from
 https://www.zijianhu.com/post/pytorch/ema/ by crowsonkb
 """
-from copy import deepcopy
 
-import torch
-from torch import nn
 
 
 class EMA(nn.Module):
@@ -73,24 +69,24 @@ class EMA(nn.Module):
         return self.average(*args, **kwargs)
 
 
-def convert_module_to_f16(l):
+def convert_module_to_f16(layer):
     """
     Convert primitive modules to float16.
     """
-    if isinstance(l, (nn.Conv1d, nn.Conv2d, nn.Conv3d)):
-        l.weight.data = l.weight.data.half()
-        if l.bias is not None:
-            l.bias.data = l.bias.data.half()
+    if isinstance(layer, (nn.Conv1d, nn.Conv2d, nn.Conv3d)):
+        layer.weight.data = layer.weight.data.half()
+        if layer.bias is not None:
+            layer.bias.data = layer.bias.data.half()
 
 
-def convert_module_to_f32(l):
+def convert_module_to_f32(layer):
     """
     Convert primitive modules to float32, undoing convert_module_to_f16().
     """
-    if isinstance(l, (nn.Conv1d, nn.Conv2d, nn.Conv3d)):
-        l.weight.data = l.weight.data.float()
-        if l.bias is not None:
-            l.bias.data = l.bias.data.float()
+    if isinstance(layer, (nn.Conv1d, nn.Conv2d, nn.Conv3d)):
+        layer.weight.data = layer.weight.data.float()
+        if layer.bias is not None:
+            layer.bias.data = layer.bias.data.float()
 
 
 def make_master_params(param_groups_and_shapes):
