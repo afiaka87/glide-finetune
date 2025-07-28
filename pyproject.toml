@@ -7,8 +7,11 @@ requires-python = ">=3.13"
 license = {file = "LICENSE"}
 dependencies = [
     "aiohttp>=3.9.3",
+    "bitsandbytes>=0.41.0",
     "einops>=0.8.0",
     "ftfy>=6.2.0",
+    "glide-text2im",
+    "guided-diffusion",
     "matplotlib>=3.8.3",
     "mpi4py>=3.1.5",
     "numpy>=1.24.4",
@@ -91,9 +94,10 @@ module = [
     "pytorch_lightning.*",
     "mpi4py.*",
     "torchvision.*",
+    "bitsandbytes.*",
 ]
 ignore_missing_imports = true
 
 [tool.uv.sources]
 glide-text2im = { git = "https://github.com/crowsonkb/glide-text2im.git" }
-guided-diffusion = { git = "https://github.com/openai/guided-diffusion.git", branch = "main" }
+guided-diffusion = { git = "https://github.com/crowsonkb/guided-diffusion.git" }

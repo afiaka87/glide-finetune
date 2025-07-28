@@ -9,6 +9,7 @@ from tqdm import trange
 from glide_finetune.glide_finetune import run_glide_finetune_epoch
 from glide_finetune.glide_util import load_model
 from glide_finetune.loader import TextImageDataset
+from glide_finetune.optimizer_util import create_optimizer
 from glide_finetune.train_util import wandb_setup
 from glide_finetune.wds_loader import glide_wds_loader
 
@@ -42,6 +43,7 @@ def run_glide_finetune(
     enable_upsample=False,
     upsample_factor=4,
     image_to_upsample="low_res_face.png",
+    use_8bit_adam=False,
 ):
     if "~" in data_dir:
         data_dir = os.path.expanduser(data_dir)
@@ -129,10 +131,11 @@ def run_glide_finetune(
     )
 
     # Optimizer setup
-    optimizer = th.optim.AdamW(
-        [x for x in glide_model.parameters() if x.requires_grad],
-        lr=learning_rate,
+    optimizer = create_optimizer(
+        params=[x for x in glide_model.parameters() if x.requires_grad],
+        learning_rate=learning_rate,
         weight_decay=adam_weight_decay,
+        use_8bit=use_8bit_adam,
     )
 
     if not freeze_transformer:  # training transformer needs backprop through diffusion
@@ -295,6 +298,12 @@ def parse_args():
     parser.add_argument(
         "--image_to_upsample", "-lowres", type=str, default="low_res_face.png"
     )
+    parser.add_argument(
+        "--use_8bit_adam",
+        "-8bit",
+        action="store_true",
+        help="Use 8-bit AdamW optimizer to save memory (requires bitsandbytes)",
+    )
     args = parser.parse_args()
 
     return args
@@ -322,7 +331,7 @@ if __name__ == "__main__":
         data_dir = args.data_dir
 
     run_glide_finetune(
-        data_dir=args.data_dir,
+        data_dir=data_dir,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
         adam_weight_decay=args.adam_weight_decay,
@@ -350,4 +359,5 @@ if __name__ == "__main__":
         enable_upsample=args.train_upsample,
         upsample_factor=args.upscale_factor,
         image_to_upsample=args.image_to_upsample,
+        use_8bit_adam=args.use_8bit_adam,
     )

@@ -2,9 +2,9 @@ import os
 from typing import Any, Tuple
 
 import torch as th
+import wandb
 from glide_text2im.respace import SpacedDiffusion
 from glide_text2im.text2im_model import Text2ImUNet
-import wandb
 
 from glide_finetune import glide_util, train_util
 
