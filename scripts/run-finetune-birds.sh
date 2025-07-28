@@ -26,4 +26,6 @@ uv run python train_glide.py \
     --log_frequency 100 \
     --use_8bit_adam \
     --activation_checkpointing \
-    --use_tf32
+    --use_tf32 \
+    --sampler dpm++_2m_karras \
+    --test_steps 20

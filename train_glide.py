@@ -47,6 +47,7 @@ def run_glide_finetune(
     early_stop=0,
     wds_dataset_name="laion",
     sampler_name="plms",
+    test_steps=100,
 ):
     if "~" in data_dir:
         data_dir = os.path.expanduser(data_dir)
@@ -216,6 +217,7 @@ def run_glide_finetune(
             train_upsample=enable_upsample,
             early_stop=early_stop,
             sampler_name=sampler_name,
+            test_steps=test_steps,
         )
 
 
@@ -359,6 +361,12 @@ def parse_args():
         "dpm++_2m - second-order solver, good quality/speed balance; "
         "dpm++_2m_karras - dpm++_2m with improved schedule for low step counts",
     )
+    parser.add_argument(
+        "--test_steps",
+        type=int,
+        default=100,
+        help="Number of sampling steps for test image generation (default: 100)",
+    )
     args = parser.parse_args()
 
     return args
@@ -424,4 +432,5 @@ if __name__ == "__main__":
         early_stop=args.early_stop,
         wds_dataset_name=args.wds_dataset_name,
         sampler_name=args.sampler,
+        test_steps=args.test_steps,
     )

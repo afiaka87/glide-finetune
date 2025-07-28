@@ -115,6 +115,7 @@ def run_glide_finetune_epoch(
     image_to_upsample="low_res_face.png",
     early_stop: int = 0,
     sampler_name: str = "plms",
+    test_steps: int = 100,
 ):
     train_step: Any
     if train_upsample:
@@ -158,7 +159,7 @@ def run_glide_finetune_epoch(
                 batch_size=sample_bs,
                 guidance_scale=sample_gs,
                 device=device,
-                prediction_respacing=sample_respacing,
+                prediction_respacing=str(test_steps),
                 image_to_upsample=image_to_upsample,
                 sampler_name=sampler_name,
             )

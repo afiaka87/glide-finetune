@@ -147,13 +147,15 @@ The project includes several modern diffusion sampling algorithms:
 uv run python train_glide.py \
   --data_dir '/path/to/data' \
   --sampler euler \
-  --test_guidance_scale 3.0
+  --test_guidance_scale 3.0 \
+  --test_steps 50
 
 # Train with DPM++ 2M Karras for best quality evaluation
 uv run python train_glide.py \
   --data_dir '/path/to/data' \
   --sampler dpm++_2m_karras \
-  --test_guidance_scale 4.0
+  --test_guidance_scale 4.0 \
+  --test_steps 20
 ```
 
 
@@ -180,6 +182,7 @@ usage: train_glide.py [-h] [--data_dir DATA_DIR] [--batch_size BATCH_SIZE]
                       [--image_to_upsample IMAGE_TO_UPSAMPLE]
                       [--use_8bit_adam] [--use_tf32] [--early_stop EARLY_STOP]
                       [--sampler {plms,ddim,euler,euler_a,dpm++_2m,dpm++_2m_karras}]
+                      [--test_steps TEST_STEPS]
 
 options:
   -h, --help            show this help message and exit
@@ -265,4 +268,7 @@ options:
                         variation but non-convergent; dpm++_2m - second-order
                         solver, good quality/speed balance; dpm++_2m_karras -
                         dpm++_2m with improved schedule for low step counts
+  --test_steps TEST_STEPS
+                        Number of sampling steps for test image generation
+                        (default: 100)
 ```
