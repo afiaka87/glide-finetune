@@ -36,8 +36,13 @@ def glide_wds_loader(
     upscale_factor=4,
     laion_no_filter=False,
 ):
-    print(f"[WebDataset] Creating loader with dataset_name='{dataset_name}', laion_no_filter={laion_no_filter}")
-    print(f"[WebDataset] URLs: {urls[:3] if isinstance(urls, list) else urls} (total: {len(urls) if isinstance(urls, list) else 'unknown'} files)")
+    print(
+        f"[WebDataset] Creating loader with dataset_name='{dataset_name}', "
+        f"laion_no_filter={laion_no_filter}"
+    )
+    total_files = len(urls) if isinstance(urls, list) else 'unknown'
+    sample_urls = urls[:3] if isinstance(urls, list) else urls
+    print(f"[WebDataset] URLs: {sample_urls} (total: {total_files} files)")
     
     base_image_shape = (base_x, base_y)
     upsample_image_shape = (int(base_x * upscale_factor), int(base_y * upscale_factor))
@@ -111,7 +116,8 @@ def glide_wds_loader(
         filtered_dataset = dataset
     else:
         raise ValueError(
-            f"Unknown dataset: {dataset_name}. Must be one of 'laion', 'alamy', or 'webdataset'."
+            f"Unknown dataset: {dataset_name}. "
+            "Must be one of 'laion', 'alamy', or 'webdataset'."
         )
     print("[WebDataset] Filtering complete")
 
@@ -123,8 +129,16 @@ def glide_wds_loader(
         if not enable_text or random() < uncond_p:
             tokens, mask = get_uncond_tokens_mask(tokenizer)
         else:
-            caption = item[caption_key].decode("utf-8")
-            tokens, mask = get_tokens_and_mask(tokenizer, caption)
+            # If caption key is missing, use unconditional tokens instead
+            if caption_key not in item:
+                print(
+                    f"[WebDataset] Warning: Missing caption key '{caption_key}', "
+                    "using unconditional tokens"
+                )
+                tokens, mask = get_uncond_tokens_mask(tokenizer)
+            else:
+                caption = item[caption_key].decode("utf-8")
+                tokens, mask = get_tokens_and_mask(tokenizer, caption)
 
         image_data = item[image_key]
         original_pil_image = PIL.Image.open(io.BytesIO(image_data))
@@ -149,8 +163,9 @@ def glide_wds_loader(
         return th.tensor(tokens), th.tensor(mask, dtype=th.bool), base_tensor
 
     print("[WebDataset] Applying preprocessing transform...")
+    # Use warn_and_continue handler to skip bad samples and continue
     transformed_dataset = filtered_dataset.map(
-        preprocess_dataset, handler=wds.handlers.reraise_exception
+        preprocess_dataset, handler=wds.handlers.warn_and_continue
     )
     print("[WebDataset] Preprocessing transform applied")
     return transformed_dataset
