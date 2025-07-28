@@ -21,6 +21,7 @@ Finetune GLIDE-text2im on your own image-text dataset.
 - Comprehensive checkpoint system with automatic saves and full training state
 - Graceful interruption handling (Ctrl+C saves checkpoint before exit)
 - Automatic emergency checkpoints on crashes
+- Multi-prompt evaluation with grid visualization
 
 
 ## Installation
@@ -248,6 +249,34 @@ uv run python train_glide.py \
   --test_steps 20
 ```
 
+## Multi-Prompt Evaluation
+
+Evaluate your model on multiple prompts simultaneously with grid visualization:
+
+```sh
+# Create evaluation prompts file (must have 2, 4, 8, 16, or 32 lines)
+cat > eval_prompts.txt << EOF
+a red apple on a wooden table
+a blue car on a highway at sunset
+a golden retriever playing in snow
+a modern house with large windows
+EOF
+
+# Use during training
+uv run python train_glide.py \
+  --data_dir '/path/to/data' \
+  --eval_prompts_file eval_prompts.txt \
+  --sample_interval 1000  # Generate grid every 1000 steps
+
+# Note: Cannot use both --test_prompt and --eval_prompts_file
+```
+
+The evaluation grid:
+- Generates images for all prompts at each sampling interval
+- Creates a square grid (2x2 for 4 prompts, 4x4 for 16 prompts, etc.)
+- Saves as `eval_grid_{step}.png` in outputs directory
+- Automatically logged to wandb for easy comparison
+
 
 ## Full Usage
 ```
@@ -263,6 +292,7 @@ usage: train_glide.py [-h] [--data_dir DATA_DIR] [--batch_size BATCH_SIZE]
                       [--project_name PROJECT_NAME]
                       [--activation_checkpointing] [--use_captions]
                       [--epochs EPOCHS] [--test_prompt TEST_PROMPT]
+                      [--eval_prompts_file EVAL_PROMPTS_FILE]
                       [--test_batch_size TEST_BATCH_SIZE]
                       [--test_guidance_scale TEST_GUIDANCE_SCALE]
                       [--use_webdataset] [--wds_image_key WDS_IMAGE_KEY]
@@ -319,6 +349,9 @@ options:
                         Number of epochs to train (default: 20)
   --test_prompt TEST_PROMPT, -prompt TEST_PROMPT
                         Prompt to use for generating test images
+  --eval_prompts_file EVAL_PROMPTS_FILE
+                        File containing line-separated prompts for evaluation
+                        (must have 2,4,8,16, or 32 lines)
   --test_batch_size TEST_BATCH_SIZE, -tbs TEST_BATCH_SIZE
                         Batch size used for model eval, not training.
   --test_guidance_scale TEST_GUIDANCE_SCALE, -tgs TEST_GUIDANCE_SCALE
@@ -369,4 +402,6 @@ options:
                         (0 = no warmup)
   --warmup_type {linear,cosine}
                         Type of warmup schedule
+  --sample_interval SAMPLE_INTERVAL
+                        Steps between generating sample images (default: 1000)
 ```

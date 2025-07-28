@@ -1,5 +1,6 @@
 import argparse
 import os
+import sys
 from glob import glob
 
 import numpy as np
@@ -13,6 +14,38 @@ from glide_finetune.loader import TextImageDataset
 from glide_finetune.optimizer_util import create_optimizer
 from glide_finetune.train_util import wandb_setup
 from glide_finetune.wds_loader import glide_wds_loader
+
+# Constants
+UNCOND_LENGTH = 0
+
+
+def load_eval_prompts(filepath):
+    """Load and validate evaluation prompts from file.
+    
+    Args:
+        filepath: Path to file containing line-separated prompts
+        
+    Returns:
+        List of prompts if valid, None if file not provided
+        
+    Raises:
+        ValueError: If prompt count is not a power of 2 or exceeds 32
+    """
+    if filepath is None:
+        return None
+        
+    with open(filepath, 'r') as f:
+        prompts = [line.strip() for line in f if line.strip()]
+    
+    # Check if count is power of 2 and <= 32
+    valid_counts = [2, 4, 8, 16, 32]
+    if len(prompts) not in valid_counts:
+        raise ValueError(
+            f"Evaluation prompts file must contain exactly {', '.join(map(str, valid_counts))} prompts. "
+            f"Found {len(prompts)} prompts."
+        )
+    
+    return prompts
 
 
 def run_glide_finetune(
@@ -53,6 +86,7 @@ def run_glide_finetune(
     laion_no_filter=False,
     warmup_steps=0,
     warmup_type="linear",
+    eval_prompts_file=None,
 ):
     if "~" in data_dir:
         data_dir = os.path.expanduser(data_dir)
@@ -229,6 +263,19 @@ def run_glide_finetune(
             # Model-only checkpoint - start fresh training
             print("Model weights loaded, starting fresh training")
     
+    # Load evaluation prompts if provided
+    eval_prompts = load_eval_prompts(eval_prompts_file)
+    if eval_prompts:
+        print(f"Loaded {len(eval_prompts)} evaluation prompts from {eval_prompts_file}")
+    
+    # Check for conflicting options
+    if eval_prompts and len(test_prompt) > UNCOND_LENGTH:
+        print("Error: Both --test_prompt and --eval_prompts_file were specified.")
+        print("Please use only one of these options:")
+        print("  --test_prompt: For evaluating with a single prompt")
+        print("  --eval_prompts_file: For evaluating with multiple prompts in a grid")
+        sys.exit(1)
+    
     # Calculate steps per epoch for warmup
     # WebDataset doesn't have a length, so we'll track steps during training
     steps_per_epoch = None
@@ -267,6 +314,7 @@ def run_glide_finetune(
             epoch_offset=global_step_counter if use_webdataset else epoch * steps_per_epoch,
             batch_size=batch_size,
             checkpoint_manager=checkpoint_manager,
+            eval_prompts=eval_prompts,
         )
         
         # Update global step counter for WebDataset
@@ -341,7 +389,13 @@ def parse_args():
         "--test_prompt",
         "-prompt",
         type=str,
-        default="a group of skiers are preparing to ski down a mountain.",
+        default="",
+    )
+    parser.add_argument(
+        "--eval_prompts_file",
+        type=str,
+        default=None,
+        help="File containing line-separated prompts for evaluation (must have 2,4,8,16, or 32 lines)",
     )
     parser.add_argument(
         "--test_batch_size",
@@ -514,4 +568,5 @@ if __name__ == "__main__":
         laion_no_filter=args.laion_no_filter,
         warmup_steps=args.warmup_steps,
         warmup_type=args.warmup_type,
+        eval_prompts_file=args.eval_prompts_file,
     )

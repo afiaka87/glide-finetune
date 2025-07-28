@@ -1,8 +1,9 @@
 import os
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Tuple, List
 
 import torch as th
 import wandb
+import PIL.Image
 from glide_text2im.respace import SpacedDiffusion
 from glide_text2im.text2im_model import Text2ImUNet
 
@@ -300,13 +301,23 @@ def training_loop(
             
             # Sample generation
             if train_idx > 0 and train_idx % config["sample_interval"] == 0:
-                generate_sample(
-                    glide_model,
-                    glide_options,
-                    config,
-                    train_idx,
-                    global_step,
-                )
+                if config.get("eval_prompts"):
+                    generate_eval_grid(
+                        glide_model,
+                        glide_options,
+                        config,
+                        config["eval_prompts"],
+                        train_idx,
+                        global_step,
+                    )
+                else:
+                    generate_sample(
+                        glide_model,
+                        glide_options,
+                        config,
+                        train_idx,
+                        global_step,
+                    )
             
             # Checkpoint saving
             if train_idx % 5000 == 0 and train_idx > 0:
@@ -424,6 +435,91 @@ def print_metrics(
         print(f"  Warmup progress: {global_step}/{warmup_steps} ({global_step/warmup_steps*100:.1f}%)")
 
 
+def create_image_grid(images: List[PIL.Image.Image], grid_size: int) -> PIL.Image.Image:
+    """Create a square grid from a list of images.
+    
+    Args:
+        images: List of PIL images
+        grid_size: Number of images per row/column (must be sqrt of len(images))
+        
+    Returns:
+        PIL Image containing the grid
+    """
+    if len(images) != grid_size * grid_size:
+        raise ValueError(f"Expected {grid_size * grid_size} images, got {len(images)}")
+    
+    # Get dimensions from first image
+    img_width, img_height = images[0].size
+    
+    # Create new image for grid
+    grid_width = img_width * grid_size
+    grid_height = img_height * grid_size
+    grid_img = PIL.Image.new('RGB', (grid_width, grid_height))
+    
+    # Paste images into grid
+    for idx, img in enumerate(images):
+        row = idx // grid_size
+        col = idx % grid_size
+        x = col * img_width
+        y = row * img_height
+        grid_img.paste(img, (x, y))
+    
+    return grid_img
+
+
+def generate_eval_grid(
+    glide_model: th.nn.Module,
+    glide_options: dict,
+    config: Dict[str, Any],
+    prompts: List[str],
+    train_idx: int,
+    global_step: int,
+) -> None:
+    """Generate and save a grid of images from multiple evaluation prompts."""
+    print(f"Generating evaluation grid with {len(prompts)} prompts at step {global_step}...")
+    
+    # Calculate grid size
+    grid_size = int(len(prompts) ** 0.5)
+    
+    # Generate images for all prompts
+    all_images = []
+    for i, prompt in enumerate(prompts):
+        print(f"  Generating image {i+1}/{len(prompts)}: {prompt[:50]}...")
+        samples = glide_util.sample(
+            glide_model=glide_model,
+            glide_options=glide_options,
+            side_x=config["side_x"],
+            side_y=config["side_y"],
+            prompt=prompt,
+            batch_size=1,  # Generate one at a time for memory efficiency
+            guidance_scale=config["sample_gs"],
+            device=config["device"],
+            prediction_respacing=str(config["test_steps"]),
+            image_to_upsample=config["image_to_upsample"],
+            sampler_name=config["sampler_name"],
+        )
+        # Convert to PIL and add to list
+        img = train_util.pred_to_pil(samples)
+        all_images.append(img)
+    
+    # Create grid
+    grid_img = create_image_grid(all_images, grid_size)
+    
+    # Save grid
+    grid_save_path = os.path.join(config["outputs_dir"], f"eval_grid_{train_idx}.png")
+    grid_img.save(grid_save_path)
+    print(f"Saved evaluation grid to {grid_save_path}")
+    
+    # Log to wandb
+    if hasattr(config["wandb_run"], "__class__") and config["wandb_run"].__class__.__name__ == "MockWandbRun":
+        # Skip wandb.Image for mocked runs
+        pass
+    else:
+        config["wandb_run"].log({
+            "eval_grid": wandb.Image(grid_save_path, caption=f"Evaluation grid at step {global_step}"),
+        })
+
+
 def generate_sample(
     glide_model: th.nn.Module,
     glide_options: dict,
@@ -492,6 +588,7 @@ def run_glide_finetune_epoch(
     epoch_offset: int = 0,
     batch_size: int = 1,
     checkpoint_manager: CheckpointManager = None,
+    eval_prompts: list = None,
 ):
     """Run a single epoch of GLIDE fine-tuning with error handling and checkpointing."""
     # Select training step function
@@ -530,6 +627,7 @@ def run_glide_finetune_epoch(
         "wandb_run": wandb_run,
         "log": {},
         "first_log": True,
+        "eval_prompts": eval_prompts,
     }
     
     # Run training loop
