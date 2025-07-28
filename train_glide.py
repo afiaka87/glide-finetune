@@ -6,6 +6,7 @@ import numpy as np
 import torch as th
 from tqdm import trange
 
+from glide_finetune.checkpoint_utils import CheckpointManager
 from glide_finetune.glide_finetune import run_glide_finetune_epoch
 from glide_finetune.glide_util import load_model
 from glide_finetune.loader import TextImageDataset
@@ -84,8 +85,10 @@ def run_glide_finetune(
         print("Wandb setup.")
 
     # Model setup
+    # First load the base model or from OpenAI checkpoint
+    initial_checkpoint = "" if resume_ckpt else ""  # Use OpenAI checkpoint if not resuming
     glide_model, glide_diffusion, glide_options = load_model(
-        glide_path=resume_ckpt,
+        glide_path=initial_checkpoint,
         use_fp16=use_fp16,
         freeze_transformer=freeze_transformer,
         freeze_diffusion=freeze_diffusion,
@@ -173,23 +176,6 @@ def run_glide_finetune(
         weight_decay=adam_weight_decay,
         use_8bit=use_8bit_adam,
     )
-
-    # Note: The freezing logic is already handled in load_model()
-    # We don't need to modify gradients here as it would override the freezing settings
-
-    # Learning rate scheduler setup
-    def get_warmup_lr(step, base_lr, warmup_steps, warmup_type):
-        """Calculate learning rate during warmup period."""
-        if step >= warmup_steps:
-            return base_lr
-        
-        if warmup_type == "linear":
-            return base_lr * (step / warmup_steps)
-        elif warmup_type == "cosine":
-            import math
-            return base_lr * 0.5 * (1.0 + math.cos(math.pi * (1.0 - step / warmup_steps)))
-        else:
-            return base_lr
     
     # Training setup
     outputs_dir = "./outputs"
@@ -213,17 +199,45 @@ def run_glide_finetune(
 
     os.makedirs(current_run_ckpt_dir, exist_ok=True)
 
+    # Create checkpoint manager
+    checkpoint_manager = CheckpointManager(current_run_ckpt_dir)
+    
+    # Initialize training state
+    start_epoch = 0
+    start_step = 0
+    global_step_counter = 0
+    
+    # Resume from checkpoint if provided
+    if resume_ckpt:
+        print(f"\nResuming from checkpoint: {resume_ckpt}")
+        resume_state = checkpoint_manager.load_checkpoint(
+            checkpoint_path=resume_ckpt,
+            model=glide_model,
+            optimizer=optimizer,
+        )
+        
+        if resume_state["has_optimizer_state"] and resume_state["has_metadata"]:
+            # Full resume - continue from next epoch to keep things simple
+            # TODO: Add support for resuming within an epoch
+            start_epoch = resume_state["epoch"] + 1  # Start from next epoch
+            global_step_counter = resume_state["global_step"] + 1
+            warmup_steps = resume_state.get("warmup_steps", warmup_steps)
+            warmup_type = resume_state.get("warmup_type", warmup_type)
+            learning_rate = resume_state.get("base_lr", learning_rate)
+            print(f"Resuming training from epoch {start_epoch} (continuing after completed epoch {resume_state['epoch']})")
+        else:
+            # Model-only checkpoint - start fresh training
+            print("Model weights loaded, starting fresh training")
+    
     # Calculate steps per epoch for warmup
     # WebDataset doesn't have a length, so we'll track steps during training
     steps_per_epoch = None
     if not use_webdataset:
         steps_per_epoch = len(dataloader)
     
-    # Track global step for WebDataset
-    global_step_counter = 0
-    
-    for epoch in trange(num_epochs):
+    for epoch in trange(start_epoch, num_epochs):
         print(f"Starting epoch {epoch}")
+        
         steps_taken = run_glide_finetune_epoch(
             glide_model=glide_model,
             glide_diffusion=glide_diffusion,
@@ -252,6 +266,7 @@ def run_glide_finetune(
             base_lr=learning_rate,
             epoch_offset=global_step_counter if use_webdataset else epoch * steps_per_epoch,
             batch_size=batch_size,
+            checkpoint_manager=checkpoint_manager,
         )
         
         # Update global step counter for WebDataset

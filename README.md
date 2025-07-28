@@ -18,6 +18,9 @@ Finetune GLIDE-text2im on your own image-text dataset.
 - Built-in Weights & Biases (wandb) logging
 - Drop-in support for LAION and Alamy datasets
 - Modern diffusion samplers with memory-optimized implementations
+- Comprehensive checkpoint system with automatic saves and full training state
+- Graceful interruption handling (Ctrl+C saves checkpoint before exit)
+- Automatic emergency checkpoints on crashes
 
 
 ## Installation
@@ -71,13 +74,19 @@ Note that the `--side_x` and `--side_y` args here should still be 64. They are s
 uv run python train_glide.py \
   --data_dir '/userdir/data/mscoco' \
   --train_upsample True \
-  --image_to_upsample 'low_res_face.png'
+  --image_to_upsample 'low_res_face.png' \
   --upscale_factor 4 \
   --side_x 64 \
   --side_y 64 \
   --uncond_p 0.0 \
-  --resume_ckpt 'ckpt_to_resume_from.pt' \
-  --checkpoints_dir 'my_local_checkpoint_directory' \
+  --checkpoints_dir 'my_local_checkpoint_directory'
+
+# Resume from a previous upsampler training run
+uv run python train_glide.py \
+  --data_dir '/userdir/data/mscoco' \
+  --train_upsample True \
+  --resume_ckpt './checkpoints/0000/glide-ft-3x1000.pt' \
+  --checkpoints_dir 'my_local_checkpoint_directory'
 ```
 
 ### Finetune on WebDataset (LAION, Alamy, or custom)
@@ -101,6 +110,86 @@ uv run python train_glide.py \
   --wds_image_key 'png' \
   --wds_dataset_name 'webdataset'
 ```
+
+### Training Tips
+
+1. **Memory optimization**: If you run out of GPU memory, try:
+   - `--use_8bit_adam` to reduce optimizer memory by ~50%
+   - `--activation_checkpointing` for gradient checkpointing
+   - Reduce `--batch_size` (can go as low as 1)
+   - `--freeze_transformer` or `--freeze_diffusion` to train fewer parameters
+
+2. **Speed optimization**: For faster training on Ampere GPUs (RTX 30xx, A100):
+   - `--use_tf32` for up to 3x speedup with minimal precision loss
+
+3. **Wandb logging**: The training automatically logs to Weights & Biases unless `--early_stop` is set
+
+## Checkpointing and Resuming
+
+The project automatically saves comprehensive checkpoints that include everything needed to resume training exactly where you left off.
+
+### What Gets Saved
+
+Every checkpoint consists of three files with the same basename:
+- `basename.pt` - Model weights
+- `basename.optimizer.pt` - Complete optimizer state (including momentum buffers)
+- `basename.json` - Training metadata (epoch, step, learning rate, etc.)
+
+### When Checkpoints Are Saved
+
+1. **Regular checkpoints**: Every 5000 training steps
+2. **End of epoch**: After each complete epoch
+3. **On interruption**: Press Ctrl+C to gracefully save and exit
+4. **On error**: Emergency checkpoint saved if training crashes
+
+### Resuming Training
+
+To resume from a checkpoint, use the `--resume_ckpt` flag with any of the checkpoint files:
+
+```sh
+# Resume using model weights file (recommended)
+uv run python train_glide.py \
+  --resume_ckpt './finetune_checkpoints/0000/glide-ft-2x1500.pt' \
+  --data_dir '/path/to/data' \
+  # ... other arguments
+
+# Or use the JSON file
+uv run python train_glide.py \
+  --resume_ckpt './finetune_checkpoints/0000/glide-ft-2x1500.json' \
+  --data_dir '/path/to/data' \
+  # ... other arguments
+```
+
+The system will automatically find all associated files and restore:
+- Model weights
+- Optimizer state (learning rate, momentum, etc.)
+- Training position (epoch and step)
+- Learning rate schedule progress
+- Random number generator states for reproducibility
+
+**Note**: Training resumes from the beginning of the next epoch after the checkpoint to keep things simple.
+
+### Checkpoint Organization
+
+Checkpoints are organized in numbered run directories:
+```
+checkpoints_dir/
+├── 0000/  # First run
+│   ├── glide-ft-0x5000.pt
+│   ├── glide-ft-0x5000.optimizer.pt
+│   ├── glide-ft-0x5000.json
+│   └── ...
+├── 0001/  # Second run
+│   └── ...
+```
+
+### Emergency Recovery
+
+If training crashes unexpectedly, look for emergency checkpoint files:
+- `emergency_checkpoint_epoch{N}_step{M}_{timestamp}.pt` (and associated files)
+- `interrupted_checkpoint_epoch{N}_step{M}.pt` (for Ctrl+C interruptions)
+
+These can be used with `--resume_ckpt` just like regular checkpoints.
 
 ## Diffusion Samplers
 
