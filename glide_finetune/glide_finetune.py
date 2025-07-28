@@ -114,6 +114,7 @@ def run_glide_finetune_epoch(
     upsample_factor=4,
     image_to_upsample="low_res_face.png",
     early_stop: int = 0,
+    sampler_name: str = "plms",
 ):
     train_step: Any
     if train_upsample:
@@ -159,6 +160,7 @@ def run_glide_finetune_epoch(
                 device=device,
                 prediction_respacing=sample_respacing,
                 image_to_upsample=image_to_upsample,
+                sampler_name=sampler_name,
             )
             sample_save_path = os.path.join(outputs_dir, f"{train_idx}.png")
             train_util.pred_to_pil(samples).save(sample_save_path)

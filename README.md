@@ -16,6 +16,7 @@ Finetune GLIDE-text2im on your own image-text dataset.
 - Early stopping for testing and integration
 - Built-in Weights & Biases (wandb) logging
 - Drop-in support for LAION and Alamy datasets
+- Modern diffusion samplers with memory-optimized implementations
 
 
 ## Installation
@@ -100,6 +101,61 @@ uv run python train_glide.py \
   --wds_dataset_name 'webdataset'
 ```
 
+## Diffusion Samplers
+
+The project includes several modern diffusion sampling algorithms:
+
+### Available Samplers
+
+- **`plms`** (default): Pseudo Linear Multi-Step method
+  - ✓ Stable and well-tested with GLIDE
+  - ✓ Good quality at reasonable step counts
+  - ✗ Not the fastest option available
+
+- **`ddim`**: Denoising Diffusion Implicit Models
+  - ✓ Deterministic when eta=0 (reproducible results)
+  - ✓ Good for testing and comparisons
+  - ✗ Can be slower than newer methods
+
+- **`euler`**: Euler method (first-order ODE solver)
+  - ✓ Fast generation
+  - ✓ Good quality with 20-50 steps
+  - ✓ Low memory usage
+  - ✗ Less stable at very low step counts
+
+- **`euler_a`**: Euler Ancestral (adds noise at each step)
+  - ✓ More variation and "creativity" in outputs
+  - ✓ Good for exploration and diverse results
+  - ✗ Non-convergent (more steps ≠ better quality)
+  - ✗ Results vary even with same seed
+
+- **`dpm++_2m`**: DPM++ 2nd order multistep
+  - ✓ Excellent quality/speed balance
+  - ✓ Stable at low step counts (10-20 steps)
+  - ✗ Slightly higher memory usage than Euler
+
+- **`dpm++_2m_karras`**: DPM++ 2M with Karras noise schedule
+  - ✓ Best quality at very low step counts (10-15 steps)
+  - ✓ Improved color and detail preservation
+  - ✓ Recommended for fast inference
+  - ✗ Slightly higher computational cost
+
+### Usage Example
+
+```sh
+# Train with Euler sampler for faster iteration during development
+uv run python train_glide.py \
+  --data_dir '/path/to/data' \
+  --sampler euler \
+  --test_guidance_scale 3.0
+
+# Train with DPM++ 2M Karras for best quality evaluation
+uv run python train_glide.py \
+  --data_dir '/path/to/data' \
+  --sampler dpm++_2m_karras \
+  --test_guidance_scale 4.0
+```
+
 
 ## Full Usage
 ```
@@ -123,6 +179,7 @@ usage: train_glide.py [-h] [--data_dir DATA_DIR] [--batch_size BATCH_SIZE]
                       [--cudnn_benchmark] [--upscale_factor UPSCALE_FACTOR]
                       [--image_to_upsample IMAGE_TO_UPSAMPLE]
                       [--use_8bit_adam] [--use_tf32] [--early_stop EARLY_STOP]
+                      [--sampler {plms,ddim,euler,euler_a,dpm++_2m,dpm++_2m_karras}]
 
 options:
   -h, --help            show this help message and exit
@@ -199,4 +256,13 @@ options:
   --early_stop EARLY_STOP
                         Stop training after this many steps (0 = disabled).
                         Useful for testing.
+  --sampler {plms,ddim,euler,euler_a,dpm++_2m,dpm++_2m_karras}
+                        Sampler to use for generating test images during
+                        training. Options: plms (default) - stable, original
+                        GLIDE sampler; ddim - deterministic when eta=0, good
+                        for reproducibility; euler - fast first-order solver,
+                        good quality; euler_a - euler with added noise, more
+                        variation but non-convergent; dpm++_2m - second-order
+                        solver, good quality/speed balance; dpm++_2m_karras -
+                        dpm++_2m with improved schedule for low step counts
 ```

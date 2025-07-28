@@ -110,6 +110,8 @@ def sample(
     upsample_enabled=False,
     image_to_upsample="",
     upsample_temp=0.997,
+    sampler_name="plms",
+    sampler_kwargs=None,
 ):
     glide_model.del_cache()
     eval_diffusion = create_gaussian_diffusion(
@@ -171,14 +173,28 @@ def sample(
         model_kwargs["noise"] = noise
         model_fn = glide_model  # just use the base model, no need for CFG.
 
-    samples = eval_diffusion.plms_sample_loop(
-        model_fn,
-        (full_batch_size, 3, side_y, side_x),  # only thing that's changed
+    # Use the new sampler system
+    from glide_finetune.samplers import SamplerRegistry
+    
+    sampler_kwargs = sampler_kwargs or {}
+    shape = (full_batch_size, 3, side_y, side_x)
+    
+    # Get sampler class and instantiate
+    sampler_class = SamplerRegistry.get_sampler(sampler_name)
+    sampler = sampler_class(
+        diffusion=eval_diffusion,
+        model_fn=model_fn,
+        shape=shape,
         device=device,
         clip_denoised=True,
-        progress=True,
         model_kwargs=model_kwargs,
-        cond_fn=None,
-    )[:batch_size]
+    )
+    
+    # Get number of steps from respacing
+    num_steps = int(prediction_respacing) if prediction_respacing.isdigit() else 100
+    
+    # Sample
+    samples = sampler.sample(num_steps=num_steps, progress=True, **sampler_kwargs)[:batch_size]
+    
     glide_model.del_cache()
     return samples

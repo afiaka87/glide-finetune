@@ -46,6 +46,7 @@ def run_glide_finetune(
     use_8bit_adam=False,
     early_stop=0,
     wds_dataset_name="laion",
+    sampler_name="plms",
 ):
     if "~" in data_dir:
         data_dir = os.path.expanduser(data_dir)
@@ -214,6 +215,7 @@ def run_glide_finetune(
             gradient_accumualation_steps=1,
             train_upsample=enable_upsample,
             early_stop=early_stop,
+            sampler_name=sampler_name,
         )
 
 
@@ -343,6 +345,20 @@ def parse_args():
         default=0,
         help="Stop training after this many steps (0 = disabled). Useful for testing.",
     )
+    parser.add_argument(
+        "--sampler",
+        type=str,
+        default="plms",
+        choices=["plms", "ddim", "euler", "euler_a", "dpm++_2m", "dpm++_2m_karras"],
+        help="Sampler to use for generating test images during training. "
+        "Options: "
+        "plms (default) - stable, original GLIDE sampler; "
+        "ddim - deterministic when eta=0, good for reproducibility; "
+        "euler - fast first-order solver, good quality; "
+        "euler_a - euler with added noise, more variation but non-convergent; "
+        "dpm++_2m - second-order solver, good quality/speed balance; "
+        "dpm++_2m_karras - dpm++_2m with improved schedule for low step counts",
+    )
     args = parser.parse_args()
 
     return args
@@ -407,4 +423,5 @@ if __name__ == "__main__":
         use_8bit_adam=args.use_8bit_adam,
         early_stop=args.early_stop,
         wds_dataset_name=args.wds_dataset_name,
+        sampler_name=args.sampler,
     )
