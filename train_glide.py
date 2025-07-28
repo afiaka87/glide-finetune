@@ -243,6 +243,7 @@ def run_glide_finetune(
             warmup_type=warmup_type,
             base_lr=learning_rate,
             epoch_offset=epoch * steps_per_epoch,
+            batch_size=batch_size,
         )
 
 

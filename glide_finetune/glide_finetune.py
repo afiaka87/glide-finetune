@@ -27,7 +27,7 @@ def base_train_step(
                 normalized to [-1, 1].
             device: The device to use for getting model outputs and computing loss.
         Returns:
-            The loss.
+            A tuple of (loss, metrics_dict) where metrics_dict contains detailed metrics.
     """
     tokens, masks, reals = [x.to(device) for x in batch]
     timesteps = th.randint(
@@ -43,7 +43,36 @@ def base_train_step(
         mask=masks.to(device),
     )
     epsilon, _ = th.split(model_output, C, dim=1)
-    return th.nn.functional.mse_loss(epsilon, noise.to(device).detach())
+    
+    # Compute per-sample MSE for quartile analysis
+    per_sample_mse = th.nn.functional.mse_loss(
+        epsilon, noise.to(device).detach(), reduction='none'
+    ).mean(dim=[1, 2, 3])  # Average over C, H, W dimensions
+    
+    # Overall loss
+    loss = per_sample_mse.mean()
+    
+    # Compute quartile losses based on timesteps
+    num_timesteps = len(glide_diffusion.betas)
+    quartile_size = num_timesteps // 4
+    
+    metrics = {"mse": loss.item()}
+    
+    # Calculate losses for each quartile
+    for q in range(4):
+        q_start = q * quartile_size
+        q_end = (q + 1) * quartile_size if q < 3 else num_timesteps
+        q_mask = (timesteps >= q_start) & (timesteps < q_end)
+        
+        if q_mask.any():
+            q_loss = per_sample_mse[q_mask].mean().item()
+            metrics[f"loss_q{q}"] = q_loss
+            metrics[f"mse_q{q}"] = q_loss  # MSE and loss are the same in this case
+        else:
+            metrics[f"loss_q{q}"] = 0.0
+            metrics[f"mse_q{q}"] = 0.0
+    
+    return loss, metrics
 
 
 def upsample_train_step(
@@ -67,7 +96,7 @@ def upsample_train_step(
                   normalized to [-1, 1]
             device: The device to use for getting model outputs and computing loss.
         Returns:
-            The loss.
+            A tuple of (loss, metrics_dict) where metrics_dict contains detailed metrics.
     """
     tokens, masks, low_res_image, high_res_image = [x.to(device) for x in batch]
     timesteps = th.randint(
@@ -88,7 +117,36 @@ def upsample_train_step(
         mask=masks.to(device),
     )
     epsilon, _ = th.split(model_output, C, dim=1)
-    return th.nn.functional.mse_loss(epsilon, noise.to(device).detach())
+    
+    # Compute per-sample MSE for quartile analysis
+    per_sample_mse = th.nn.functional.mse_loss(
+        epsilon, noise.to(device).detach(), reduction='none'
+    ).mean(dim=[1, 2, 3])  # Average over C, H, W dimensions
+    
+    # Overall loss
+    loss = per_sample_mse.mean()
+    
+    # Compute quartile losses based on timesteps
+    num_timesteps = len(glide_diffusion.betas)
+    quartile_size = num_timesteps // 4
+    
+    metrics = {"mse": loss.item()}
+    
+    # Calculate losses for each quartile
+    for q in range(4):
+        q_start = q * quartile_size
+        q_end = (q + 1) * quartile_size if q < 3 else num_timesteps
+        q_mask = (timesteps >= q_start) & (timesteps < q_end)
+        
+        if q_mask.any():
+            q_loss = per_sample_mse[q_mask].mean().item()
+            metrics[f"loss_q{q}"] = q_loss
+            metrics[f"mse_q{q}"] = q_loss  # MSE and loss are the same in this case
+        else:
+            metrics[f"loss_q{q}"] = 0.0
+            metrics[f"mse_q{q}"] = 0.0
+    
+    return loss, metrics
 
 
 def run_glide_finetune_epoch(
@@ -120,6 +178,7 @@ def run_glide_finetune_epoch(
     warmup_type: str = "linear",
     base_lr: float = 1e-5,
     epoch_offset: int = 0,
+    batch_size: int = 1,
 ):
     train_step: Any
     if train_upsample:
@@ -130,6 +189,7 @@ def run_glide_finetune_epoch(
     glide_model.to(device)
     glide_model.train()
     log: dict[str, float] = {}
+    first_log = True
     
     # Warmup scheduler helper
     def get_warmup_lr(step, base_lr, warmup_steps, warmup_type):
@@ -159,7 +219,7 @@ def run_glide_finetune_epoch(
         for param_group in optimizer.param_groups:
             param_group['lr'] = current_lr
             
-        accumulated_loss = train_step(
+        accumulated_loss, step_metrics = train_step(
             glide_model=glide_model,
             glide_diffusion=glide_diffusion,
             batch=batch,
@@ -168,15 +228,50 @@ def run_glide_finetune_epoch(
         accumulated_loss.backward()
         optimizer.step()
         glide_model.zero_grad()
+        
+        # Combine all metrics
         log = {
             **log,
+            "step": global_step,
             "iter": train_idx,
             "loss": accumulated_loss.item() / gradient_accumualation_steps,
             "lr": current_lr,
+            **step_metrics,  # Add all quartile metrics
         }
+        
+        # Calculate total samples processed
+        samples_processed = (global_step + 1) * batch_size
+        log["samples"] = samples_processed
+        
+        # Calculate parameter norm (cheap operation)
+        param_norm = 0.0
+        for p in glide_model.parameters():
+            if p.requires_grad:
+                param_norm += p.data.norm(2).item() ** 2
+        param_norm = param_norm ** 0.5
+        log["param_norm"] = param_norm
         # Sample from the model
         if train_idx > 0 and train_idx % log_frequency == 0:
-            print(f"Step {global_step}: loss: {accumulated_loss.item():.4f}, lr: {current_lr:.2e}")
+            if first_log:
+                print("\n=== Metrics Legend ===")
+                print("Quartiles (q0-q3) represent loss at different denoising stages:")
+                print("  q0: Early denoising (t=0-250) - removing large-scale noise")
+                print("  q1: Mid-early (t=250-500) - refining basic structure")
+                print("  q2: Mid-late (t=500-750) - adding details")
+                print("  q3: Late denoising (t=750-1000) - final refinements")
+                print("Lower values = better performance at that stage\n")
+                first_log = False
+            
+            # Create metrics display
+            metrics_str = f"Step {global_step}: loss: {accumulated_loss.item():.4f}"
+            metrics_str += f", lr: {current_lr:.2e}"
+            
+            # Add quartile losses
+            q_losses = [f"q{i}: {step_metrics.get(f'loss_q{i}', 0.0):.4f}" for i in range(4)]
+            metrics_str += f" | Quartiles: {' '.join(q_losses)}"
+            
+            print(metrics_str)
+            
             if warmup_steps > 0 and global_step < warmup_steps:
                 print(f"  Warmup progress: {global_step}/{warmup_steps} ({global_step/warmup_steps*100:.1f}%)")
             print(f"Sampling from model at iteration {train_idx}")
