@@ -386,7 +386,7 @@ class TestSamplerComparison:
         # Try to use a basic font
         try:
             font = ImageFont.load_default()
-        except:
+        except OSError:
             font = None
 
         # Add sampler names at top

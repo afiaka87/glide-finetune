@@ -92,7 +92,7 @@ print("TF32 enabled successfully")
 
             # Warmup
             for _ in range(5):
-                c = torch.matmul(a, b)
+                torch.matmul(a, b)
             torch.cuda.synchronize()
 
             # Time with TF32 disabled
