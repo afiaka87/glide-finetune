@@ -40,8 +40,9 @@ def load_eval_prompts(filepath):
     # Check if count is power of 2 and <= 32
     valid_counts = [2, 4, 8, 16, 32]
     if len(prompts) not in valid_counts:
+        valid_counts_str = ', '.join(map(str, valid_counts))
         raise ValueError(
-            f"Evaluation prompts file must contain exactly {', '.join(map(str, valid_counts))} prompts. "
+            f"Evaluation prompts file must contain exactly {valid_counts_str} prompts. "
             f"Found {len(prompts)} prompts."
         )
 
@@ -249,7 +250,6 @@ def run_glide_finetune(
 
     # Initialize training state
     start_epoch = 0
-    start_step = 0
     global_step_counter = 0
 
     # Resume from checkpoint if provided
@@ -269,9 +269,11 @@ def run_glide_finetune(
             warmup_steps = resume_state.get("warmup_steps", warmup_steps)
             warmup_type = resume_state.get("warmup_type", warmup_type)
             learning_rate = resume_state.get("base_lr", learning_rate)
-            print(
-                f"Resuming training from epoch {start_epoch} (continuing after completed epoch {resume_state['epoch']})"
+            resume_msg = (
+                f"Resuming training from epoch {start_epoch} "
+                f"(continuing after completed epoch {resume_state['epoch']})"
             )
+            print(resume_msg)
         else:
             # Model-only checkpoint - start fresh training
             print("Model weights loaded, starting fresh training")
@@ -423,7 +425,7 @@ def parse_args():
         "--eval_prompts_file",
         type=str,
         default=None,
-        help="File containing line-separated prompts for evaluation (must have 2,4,8,16, or 32 lines)",
+        help="File with line-separated prompts for evaluation (must have 2,4,8,16, or 32 lines)",
     )
     parser.add_argument(
         "--test_batch_size",
@@ -464,7 +466,7 @@ def parse_args():
         "-wds_name",
         type=str,
         default="laion",
-        help="Name of the webdataset to use (laion, alamy, or webdataset for no filtering)",
+        help="Name of webdataset to use (laion, alamy, or webdataset for no filtering)",
     )
     parser.add_argument("--seed", "-seed", type=int, default=0)
     parser.add_argument(
@@ -493,7 +495,7 @@ def parse_args():
         "--use_tf32",
         "-tf32",
         action="store_true",
-        help="Enable TF32 on Ampere GPUs for faster training with slightly reduced precision",
+        help="Enable TF32 on Ampere GPUs for faster training with reduced precision",
     )
     parser.add_argument(
         "--torch_compile",
@@ -505,7 +507,7 @@ def parse_args():
         type=str,
         default="default",
         choices=["default", "reduce-overhead", "max-autotune"],
-        help="torch.compile mode: default (balanced), reduce-overhead (lower latency), max-autotune (maximum performance)",
+        help="torch.compile mode: default/reduce-overhead/max-autotune",
     )
     parser.add_argument(
         "--early_stop",

@@ -1,10 +1,11 @@
-import pytest
-import torch
+import os
 import subprocess
 import sys
-import os
 import tempfile
 from pathlib import Path
+
+import pytest
+import torch
 
 
 class TestGPUTraining:

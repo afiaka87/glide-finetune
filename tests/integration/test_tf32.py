@@ -1,7 +1,8 @@
-import pytest
-import torch
 import subprocess
 import sys
+
+import pytest
+import torch
 
 
 class TestTF32Support:
@@ -101,7 +102,7 @@ print("TF32 enabled successfully")
 
             start_event.record()
             for _ in range(10):
-                c = torch.matmul(a, b)
+                torch.matmul(a, b)
             end_event.record()
             torch.cuda.synchronize()
             time_fp32 = start_event.elapsed_time(end_event)
@@ -110,7 +111,7 @@ print("TF32 enabled successfully")
             torch.backends.cuda.matmul.allow_tf32 = True
             start_event.record()
             for _ in range(10):
-                c = torch.matmul(a, b)
+                torch.matmul(a, b)
             end_event.record()
             torch.cuda.synchronize()
             time_tf32 = start_event.elapsed_time(end_event)

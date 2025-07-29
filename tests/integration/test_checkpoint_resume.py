@@ -1,13 +1,12 @@
 """Integration test for checkpoint resuming functionality."""
 
-import os
 import json
-import tempfile
+import os
 import shutil
+import tempfile
 from unittest.mock import Mock, patch
 
 import pytest
-import torch
 import torch.nn as nn
 import torch.optim as optim
 

@@ -14,10 +14,10 @@ import random
 from typing import Tuple, Union
 
 import PIL
-from PIL import Image
 import torch as th
 import torchvision.transforms.functional as TF
 import webdataset as wds
+from PIL import Image
 
 from glide_finetune.glide_util import get_tokens_and_mask, get_uncond_tokens_mask
 from glide_finetune.train_util import pil_image_to_norm_tensor

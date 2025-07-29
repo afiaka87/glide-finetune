@@ -1,25 +1,23 @@
 """Integration test for glide_finetune module."""
 
 import os
-import tempfile
 import shutil
-from unittest.mock import Mock, MagicMock, patch
+import tempfile
+from unittest.mock import Mock, patch
 
 import pytest
 import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from glide_finetune.glide_finetune import (
-    run_glide_finetune_epoch,
-    base_train_step,
-    upsample_train_step,
-    get_warmup_lr,
-    update_metrics,
-    training_loop,
-    handle_training_error,
-)
 from glide_finetune.checkpoint_utils import CheckpointManager
+from glide_finetune.glide_finetune import (
+    base_train_step,
+    get_warmup_lr,
+    run_glide_finetune_epoch,
+    update_metrics,
+    upsample_train_step,
+)
 
 
 class MockGlideModel(nn.Module):

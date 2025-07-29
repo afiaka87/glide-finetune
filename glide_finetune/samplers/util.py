@@ -8,9 +8,10 @@ to work with GLIDE's training setup, including:
 - Noise prediction to denoised sample conversion
 """
 
+from typing import Callable, Tuple
+
 import numpy as np
 import torch as th
-from typing import Callable, Optional, Tuple
 
 
 def get_glide_cosine_schedule(

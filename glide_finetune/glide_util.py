@@ -136,7 +136,7 @@ def load_model(
         )
         frozen_params = total_params - trainable_params
 
-        print(f"\nModel parameter summary:")
+        print("\nModel parameter summary:")
         print(f"  Total parameters: {total_params:,}")
         print(
             f"  Trainable parameters: {trainable_params:,} ({trainable_params / total_params * 100:.1f}%)"

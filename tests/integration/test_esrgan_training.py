@@ -1,17 +1,16 @@
 """Integration test for ESRGAN upsampling during training."""
 
-import os
 import tempfile
-import torch
-import pytest
 from pathlib import Path
+
+import pytest
+import torch
 from PIL import Image
-import numpy as np
 
 from glide_finetune import glide_finetune
+from glide_finetune.checkpoint_utils import CheckpointManager
 from glide_finetune.glide_util import load_model
 from glide_finetune.loader import TextImageDataset
-from glide_finetune.checkpoint_utils import CheckpointManager
 
 
 def create_dummy_dataset(data_dir: Path, num_samples: int = 4):
@@ -139,7 +138,7 @@ def test_esrgan_training_vram():
             max_vram = torch.cuda.max_memory_allocated() / 1024**3
             total_vram = torch.cuda.get_device_properties(0).total_memory / 1024**3
 
-            print(f"\n=== VRAM Summary ===")
+            print("\n=== VRAM Summary ===")
             print(f"After epoch: {post_epoch_vram:.2f} GB")
             print(f"Max allocated: {max_vram:.2f} GB")
             print(f"Total available: {total_vram:.2f} GB")
@@ -216,7 +215,7 @@ def test_esrgan_memory_efficiency():
     torch.cuda.reset_peak_memory_stats()
     baseline_vram = torch.cuda.memory_allocated() / 1024**3
 
-    print(f"\n=== ESRGAN Memory Test ===")
+    print("\n=== ESRGAN Memory Test ===")
     print(f"Baseline VRAM: {baseline_vram:.3f} GB")
 
     # Initialize ESRGAN

@@ -1,11 +1,11 @@
 """Comprehensive integration tests for all GLIDE samplers."""
 
+from pathlib import Path
+
+import numpy as np
 import pytest
 import torch
-import numpy as np
-from pathlib import Path
 from PIL import Image
-import os
 
 from glide_finetune.glide_util import load_model, sample
 from glide_finetune.samplers import SamplerRegistry
@@ -557,5 +557,5 @@ class TestFinalVerification:
         # Final assertion
         assert all_success, "Some samplers failed or produced poor quality output"
 
-        print(f"\n✅ ALL SAMPLERS WORKING CORRECTLY!")
+        print("\n✅ ALL SAMPLERS WORKING CORRECTLY!")
         print(f"All outputs saved to: {output_dir}/")

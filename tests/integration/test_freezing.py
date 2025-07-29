@@ -1,12 +1,11 @@
 """Integration tests for freezing strategies."""
 
+
 import pytest
 import torch as th
 import torch.nn.functional as F
-from pathlib import Path
 
 from glide_finetune.glide_util import load_model
-from glide_finetune.loader import TextImageDataset
 
 
 @pytest.mark.gpu
@@ -43,7 +42,7 @@ class TestFreezing:
 
         actual_ratio = trainable_params / total_params
 
-        print(f"\nParameter summary:")
+        print("\nParameter summary:")
         print(f"  Total: {total_params:,}")
         print(f"  Trainable: {trainable_params:,} ({actual_ratio * 100:.1f}%)")
         print(

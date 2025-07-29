@@ -2,7 +2,6 @@
 """Script for sampling from GLIDE models with various samplers and options."""
 
 import argparse
-import os
 import time
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -11,9 +10,8 @@ import numpy as np
 import torch
 from PIL import Image
 
-from glide_finetune.glide_util import load_model, sample
-from glide_finetune.samplers import SamplerRegistry
 from glide_finetune.esrgan import ESRGANUpsampler
+from glide_finetune.glide_util import load_model, sample
 
 
 def get_vram_usage() -> dict:
@@ -163,11 +161,11 @@ def sample_single(
     # Upsample with ESRGAN if requested
     upsampled_images = []
     if esrgan is not None:
-        print_vram_usage(f"Before ESRGAN upsampling")
+        print_vram_usage("Before ESRGAN upsampling")
         for img in images:
             upsampled_img = esrgan.upsample_pil(img)
             upsampled_images.append(upsampled_img)
-        print_vram_usage(f"After ESRGAN upsampling")
+        print_vram_usage("After ESRGAN upsampling")
     else:
         upsampled_images = [None] * len(images)
 

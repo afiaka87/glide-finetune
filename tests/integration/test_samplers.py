@@ -12,7 +12,6 @@ from glide_finetune.samplers import (
     PLMSSampler,
     SamplerRegistry,
 )
-from glide_text2im.model_creation import create_gaussian_diffusion
 
 
 @pytest.fixture

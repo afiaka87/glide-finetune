@@ -1,13 +1,12 @@
 """Visual tests for sampler outputs to diagnose quality issues."""
 
+
+import numpy as np
 import pytest
 import torch
-import numpy as np
-from pathlib import Path
 from PIL import Image
 
 from glide_finetune.glide_util import load_model, sample
-from glide_finetune.samplers import SamplerRegistry
 
 
 @pytest.fixture

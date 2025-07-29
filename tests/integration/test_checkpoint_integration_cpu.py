@@ -2,10 +2,8 @@
 
 import os
 import tempfile
-import shutil
-import torch
+
 from PIL import Image
-import pytest
 
 from train_glide import run_glide_finetune
 

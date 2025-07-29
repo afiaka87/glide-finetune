@@ -4,8 +4,9 @@ from typing import Tuple
 import numpy as np
 import PIL.Image
 import torch as th
-import wandb
 from tqdm import tqdm
+
+import wandb
 
 
 def save_model(

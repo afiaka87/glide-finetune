@@ -1,14 +1,13 @@
 import os
-import signal
 import sys
-from typing import Any, Dict, Tuple, List
+from typing import Any, Dict, List, Tuple
 
-import torch as th
-import wandb
 import PIL.Image
+import torch as th
 from glide_text2im.respace import SpacedDiffusion
 from glide_text2im.text2im_model import Text2ImUNet
 
+import wandb
 from glide_finetune import glide_util, train_util
 from glide_finetune.checkpoint_utils import CheckpointManager
 
@@ -29,10 +28,9 @@ def print_vram_usage(label: str = ""):
     """Print current VRAM usage."""
     usage = get_vram_usage()
     prefix = f"[{label}] " if label else ""
-    print(
-        f"{prefix}VRAM: {usage['allocated_gb']:.2f}/{usage['total_gb']:.2f} GB allocated, "
-        f"{usage['reserved_gb']:.2f} GB reserved"
-    )
+    allocated = f"{usage['allocated_gb']:.2f}/{usage['total_gb']:.2f} GB allocated"
+    reserved = f"{usage['reserved_gb']:.2f} GB reserved"
+    print(f"{prefix}VRAM: {allocated}, {reserved}")
 
 
 def prompt_with_timeout(prompt: str, timeout: int = 20, default: bool = True) -> bool:
@@ -69,7 +67,7 @@ def prompt_with_timeout(prompt: str, timeout: int = 20, default: bool = True) ->
                 # Invalid input, use default
                 print(f"Invalid input, using default: {'Yes' if default else 'No'}")
                 return default
-        except:
+        except (KeyboardInterrupt, EOFError):
             # Error reading input, use default
             return default
     else:

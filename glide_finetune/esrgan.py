@@ -1,14 +1,15 @@
 """ESRGAN wrapper for upsampling GLIDE outputs from 64x64 to 256x256."""
 
+import hashlib
 import os
+from pathlib import Path
+from typing import List, Union
+
+import numpy as np
+import requests
 import torch
 import torch.nn as nn
 from PIL import Image
-import numpy as np
-from typing import Union, List, Optional
-from pathlib import Path
-import hashlib
-import requests
 from tqdm import tqdm
 
 
@@ -128,13 +129,23 @@ class ESRGANUpsampler:
     # Model URLs and checksums
     MODEL_CONFIGS = {
         "RealESRGAN_x4plus": {
-            "url": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth",
-            "sha256": "4fa0d38905f75ac06eb49a7951b426670021be3018265fd191d2125df9d682f1",
+            "url": (
+                "https://github.com/xinntao/Real-ESRGAN/releases/"
+                "download/v0.1.0/RealESRGAN_x4plus.pth"
+            ),
+            "sha256": (
+                "4fa0d38905f75ac06eb49a7951b426670021be3018265fd191d2125df9d682f1"
+            ),
             "num_block": 23,
         },
         "RealESRGAN_x4plus_anime_6B": {
-            "url": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth",
-            "sha256": "f872d837d3c90ed2e05227bed711bec2f2cbf412b2d1b8b9a2bf2a3f2d3c0c37",
+            "url": (
+                "https://github.com/xinntao/Real-ESRGAN/releases/"
+                "download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth"
+            ),
+            "sha256": (
+                "f872d837d3c90ed2e05227bed711bec2f2cbf412b2d1b8b9a2bf2a3f2d3c0c37"
+            ),
             "num_block": 6,
         },
     }
@@ -145,7 +156,7 @@ class ESRGANUpsampler:
         """Initialize ESRGAN upsampler.
 
         Args:
-            model_name: Model to use ('RealESRGAN_x4plus' or 'RealESRGAN_x4plus_anime_6B')
+            model_name: Model name ('RealESRGAN_x4plus' or 'RealESRGAN_x4plus_anime_6B')
             device: Device to run on ('cuda' or 'cpu')
             cache_dir: Directory to cache model weights
         """
@@ -170,7 +181,7 @@ class ESRGANUpsampler:
                 print(f"Model already cached at {dest_path}")
                 return
             else:
-                print(f"Cached model has wrong checksum, re-downloading...")
+                print("Cached model has wrong checksum, re-downloading...")
 
         # Download with progress bar
         print(f"Downloading {self.model_name} from {url}")
@@ -194,7 +205,7 @@ class ESRGANUpsampler:
                 sha256.update(chunk)
         if sha256.hexdigest() != expected_sha256:
             os.remove(dest_path)
-            raise ValueError(f"Downloaded file has wrong checksum!")
+            raise ValueError("Downloaded file has wrong checksum!")
 
     def _load_model(self) -> nn.Module:
         """Load the ESRGAN model."""

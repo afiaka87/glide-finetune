@@ -1,17 +1,16 @@
 import time
 from pathlib import Path
 from random import choice, randint, random
+from typing import Union
 
 import PIL
+import torch
 import torch as th
 from torch.utils.data import Dataset
 from torchvision import transforms as T
 
 from glide_finetune.glide_util import get_tokens_and_mask, get_uncond_tokens_mask
 from glide_finetune.train_util import pil_image_to_norm_tensor
-import torch
-from typing import Optional
-from typing import Union
 
 
 def trim_white_padding_tensor(

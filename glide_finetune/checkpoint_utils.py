@@ -38,7 +38,8 @@ class CheckpointManager:
 
         # Determine base filename
         if checkpoint_type == "emergency":
-            base_name = f"emergency_checkpoint_epoch{epoch}_step{step}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            base_name = f"emergency_checkpoint_epoch{epoch}_step{step}_{timestamp}"
         elif checkpoint_type == "sigint":
             base_name = f"interrupted_checkpoint_epoch{epoch}_step{step}"
         else:
@@ -186,7 +187,8 @@ class CheckpointManager:
         # Determine resume strategy
         if state["has_metadata"] and state["has_optimizer_state"]:
             print(
-                f"✓ Full checkpoint - Resuming from Epoch {state['epoch']}, Step {state['step']}, Global Step {state['global_step']}"
+                f"✓ Full checkpoint - Resuming from Epoch {state['epoch']}, "
+                f"Step {state['step']}, Global Step {state['global_step']}"
             )
         elif state["has_metadata"]:
             print("ℹ Metadata found but no optimizer state - starting fresh optimizer")
@@ -199,7 +201,7 @@ class CheckpointManager:
         return state
 
     def setup_sigint_handler(self, get_current_state_fn):
-        """Setup SIGINT (Ctrl+C) handler for graceful shutdown with checkpoint saving."""
+        """Setup SIGINT (Ctrl+C) handler for graceful shutdown with checkpointing."""
 
         if self.sigint_handler_installed:
             return
