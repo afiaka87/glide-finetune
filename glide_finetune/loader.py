@@ -9,6 +9,59 @@ from torchvision import transforms as T
 
 from glide_finetune.glide_util import get_tokens_and_mask, get_uncond_tokens_mask
 from glide_finetune.train_util import pil_image_to_norm_tensor
+import torch
+from typing import Optional
+from typing import Union
+
+def trim_white_padding_tensor(
+    img: torch.Tensor,
+    white_thresh: Union[int, float] = 0.95,   # 0-1 for float32 / 0-255 for uint8
+    morph_kernel: int | None = None
+) -> torch.Tensor:
+    """
+    Remove uniform white padding that was added to make a square canvas.
+
+    Args
+    ----
+    img : (C, H, W) torch.Tensor
+          Either uint8 in [0,255] or float in [0,1].
+    white_thresh : threshold that defines "white".
+    morph_kernel : if set, performs a max-pool closing with this
+                   square kernel (odd int) before bbox extraction.
+
+    Returns
+    -------
+    Cropped tensor (C, h', w') without the padded border.
+    """
+    assert img.ndim == 3, "expect (C,H,W)"
+    c, h, w = img.shape
+
+    # --- 1. build boolean “content” mask ------------------------------
+    if img.dtype == torch.uint8:
+        content = (img < white_thresh).any(dim=0)       # (H,W) bool
+    else:  # float
+        content = (img < white_thresh).any(dim=0)
+
+    # --- 2. optional morphological closing in PyTorch -----------------
+    if morph_kernel and morph_kernel > 1:
+        pad = morph_kernel // 2
+        # max_pool2d on the NOT-content mask = dilation of content
+        content = torch.nn.functional.max_pool2d(       # ↓ F.max_pool2d docs
+            content.unsqueeze(0).unsqueeze(0).float(),
+            kernel_size=morph_kernel,
+            stride=1,
+            padding=pad,
+        ).squeeze().bool()
+
+    # --- 3. find rows / cols that contain any non-white pixel ----------
+    rows = torch.where(content.any(dim=1))[0]           # torch.any docs
+    cols = torch.where(content.any(dim=0))[0]           # torch.any docs
+    if rows.numel() == 0 or cols.numel() == 0:          # all-white edge-case
+        return img
+
+    top, bottom = rows[0].item(), rows[-1].item() + 1   # +1 for slicing
+    left, right = cols[0].item(), cols[-1].item() + 1
+    return img[:, top:bottom, left:right]
 
 
 def random_resized_crop(image, shape, resize_ratio=1.0):
@@ -156,5 +209,7 @@ class TextImageDataset(Dataset):
             (self.side_x, self.side_y),
             resize_ratio=self.resize_ratio,
         )
+        # Crop the image to remove white padding
         base_tensor = pil_image_to_norm_tensor(base_pil_image)
+        base_tensor = trim_white_padding_tensor(base_tensor)
         return th.tensor(tokens), th.tensor(mask, dtype=th.bool), base_tensor

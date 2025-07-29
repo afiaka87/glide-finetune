@@ -259,7 +259,7 @@ def main():
         "--sampler",
         type=str,
         default="all",
-        help="Sampler to use (plms, ddim, euler, euler_a, dpm++_2m, dpm++_2m_karras, all)",
+        help="Sampler to use (plms, ddim, euler_fixed, euler_a_fixed, all)",
     )
     parser.add_argument(
         "--steps",
@@ -338,7 +338,8 @@ def main():
     
     # Get samplers to use
     if args.sampler == "all":
-        samplers = ["plms", "ddim", "euler", "euler_a", "dpm++_2m", "dpm++_2m_karras"]
+        # Use the fixed samplers that work with GLIDE
+        samplers = ["plms", "ddim", "euler_fixed", "euler_a_fixed"]
     else:
         samplers = [args.sampler]
     

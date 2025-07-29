@@ -1,8 +1,11 @@
 #!/bin/bash
-
 # Run script for fine-tuning GLIDE on the captioned LAION dataset
+#  Model: /mnt/9_1T_HDD_OLDER/Checkpoints/glide-finetune/0007/interrupted_checkpoint_epoch0_step15893.pt
+#  Optimizer: /mnt/9_1T_HDD_OLDER/Checkpoints/glide-finetune/0007/interrupted_checkpoint_epoch0_step15893.optimizer.pt
+#  Metadata: /mnt/9_1T_HDD_OLDER/Checkpoints/glide-finetune/0007/interrupted_checkpoint_epoch0_step15893.json
 
 uv run python train_glide.py \
+    --resume '/mnt/9_1T_HDD_OLDER/Checkpoints/glide-finetune/0007/interrupted_checkpoint_epoch0_step15893.pt' \
     --data_dir '/home/sam/Data/laion400m-dat-release' \
     --use_webdataset \
     --wds_dataset_name 'laion' \
@@ -17,20 +20,22 @@ uv run python train_glide.py \
     --freeze_diffusion \
     --batch_size 8 \
     --epochs 20 \
-    --learning_rate 7e-05 \
+    --learning_rate 1e-04 \
     --adam_weight_decay 0.01 \
     --use_8bit_adam \
-    --warmup_steps 1000 \
+    --warmup_steps 5000 \
     --warmup_type linear \
     --device cuda \
     --activation_checkpointing \
     --cudnn_benchmark \
     --use_tf32 \
-    --test_prompt 'a male mannequin dressed in a black leather jacket and gray pleated trousers' \
+    --eval_prompts_file '/home/sam/GitHub/glide-finetune/examples/eval_prompts_4.txt' \
     --test_batch_size 1 \
     --test_guidance_scale 4.0 \
     --test_steps 100 \
     --sampler plms \
-    --checkpoints_dir './finetune_checkpoints/laion' \
-    --project_name 'glide-finetune-laion' \
-    --log_frequency 100
+    --checkpoints_dir '/mnt/9_1T_HDD_OLDER/Checkpoints/glide-finetune' \
+    --project_name 'glide-finetune-laion-nostalgia' \
+    --log_frequency 1 \
+    --sample_interval 2000 \
+    --resume_ckpt '/mnt/9_1T_HDD_OLDER/Checkpoints/glide-finetune/0014/interrupted_checkpoint_epoch1_step707.pt'

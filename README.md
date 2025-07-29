@@ -186,7 +186,8 @@ checkpoints_dir/
 
 ### Emergency Recovery
 
-If training crashes unexpectedly, look for emergency checkpoint files:
+If training crashes unexpectedly, you'll be prompted to save a checkpoint (20s timeout, defaults to yes).
+Look for emergency checkpoint files:
 - `emergency_checkpoint_epoch{N}_step{M}_{timestamp}.pt` (and associated files)
 - `interrupted_checkpoint_epoch{N}_step{M}.pt` (for Ctrl+C interruptions)
 
@@ -275,7 +276,11 @@ The evaluation grid:
 - Generates images for all prompts at each sampling interval
 - Creates a square grid (2x2 for 4 prompts, 4x4 for 16 prompts, etc.)
 - Saves as `eval_grid_{step}.png` in outputs directory
-- Automatically logged to wandb for easy comparison
+- Logs to wandb as both a grid view and individual gallery with captions
+- Generates initial samples at step 0 for baseline comparison
+
+Example prompt files are provided in `examples/`:
+- `eval_prompts_4.txt`, `eval_prompts_8.txt`, `eval_prompts_16.txt`, `eval_prompts_32.txt`
 
 
 ## Full Usage

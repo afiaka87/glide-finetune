@@ -213,10 +213,12 @@ def get_glide_schedule_timesteps(
         timesteps = np.array(timesteps)
         sampling_sigmas = karras_sigmas
     else:
-        # Linear timestep schedule
+        # Linear timestep schedule - we need to go from high to low timesteps
+        # But linspace naturally goes from start to end, so no reversal needed
         timesteps = np.linspace(
             num_timesteps - 1, 0, num_steps, dtype=np.int64
         )
+        # timesteps now goes from 999 to 0, which is correct
         sampling_sigmas = sigmas[timesteps]
     
     return timesteps, sampling_sigmas

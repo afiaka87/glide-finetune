@@ -46,12 +46,49 @@ class EulerSampler(Sampler):
         from tqdm import tqdm
         
         # Get GLIDE's cosine schedule
-        betas, alphas_cumprod, sigmas = get_glide_cosine_schedule(self.diffusion.num_timesteps)
+        # For SpacedDiffusion, we need to use the original number of timesteps
+        if hasattr(self.diffusion, 'original_num_steps'):
+            original_steps = self.diffusion.original_num_steps
+        elif hasattr(self.diffusion, 'timestep_map'):
+            # SpacedDiffusion stores the mapping but not original_num_steps
+            # The last element of timestep_map + 1 gives us the original steps
+            original_steps = self.diffusion.timestep_map[-1] + 1
+        else:
+            # Fall back to the diffusion's num_timesteps
+            original_steps = self.diffusion.num_timesteps
+            
+        betas, alphas_cumprod, sigmas = get_glide_cosine_schedule(original_steps)
         
         # Get timesteps and sigmas for sampling
-        timesteps, sampling_sigmas = get_glide_schedule_timesteps(
-            num_steps, self.diffusion.num_timesteps, sigmas, use_karras=use_karras
-        )
+        # If we have a timestep map, we need to map our steps through it
+        if hasattr(self.diffusion, 'timestep_map'):
+            # For respaced diffusion, we sample from the respaced timesteps
+            # and map them to the original timesteps
+            respaced_timesteps = np.linspace(
+                self.diffusion.num_timesteps - 1, 0, num_steps, dtype=np.int64
+            )
+            timesteps = np.array([self.diffusion.timestep_map[t] for t in respaced_timesteps])
+            
+            # Debug print for first few runs
+            if progress and num_steps <= 10:
+                print(f"DEBUG Euler sampler: num_steps={num_steps}, diffusion.num_timesteps={self.diffusion.num_timesteps}")
+                print(f"DEBUG Euler sampler: timestep_map length={len(self.diffusion.timestep_map)}")
+                print(f"DEBUG Euler sampler: Mapped timesteps: {timesteps}")
+            
+            if use_karras:
+                # For Karras, we still use the Karras sigmas but map the timesteps
+                sigma_min = float(sigmas[timesteps[-1]])
+                sigma_max = float(sigmas[timesteps[0]])
+                from .util import get_karras_sigmas
+                karras_sigmas = get_karras_sigmas(num_steps, sigma_min, sigma_max)
+                sampling_sigmas = karras_sigmas
+            else:
+                sampling_sigmas = sigmas[timesteps]
+        else:
+            # No respacing, use the normal schedule
+            timesteps, sampling_sigmas = get_glide_schedule_timesteps(
+                num_steps, original_steps, sigmas, use_karras=use_karras
+            )
         
         # Start from pure noise
         current_sample = th.randn(self.shape, device=self.device)
@@ -140,12 +177,49 @@ class EulerAncestralSampler(Sampler):
         from tqdm import tqdm
         
         # Get GLIDE's cosine schedule
-        betas, alphas_cumprod, sigmas = get_glide_cosine_schedule(self.diffusion.num_timesteps)
+        # For SpacedDiffusion, we need to use the original number of timesteps
+        if hasattr(self.diffusion, 'original_num_steps'):
+            original_steps = self.diffusion.original_num_steps
+        elif hasattr(self.diffusion, 'timestep_map'):
+            # SpacedDiffusion stores the mapping but not original_num_steps
+            # The last element of timestep_map + 1 gives us the original steps
+            original_steps = self.diffusion.timestep_map[-1] + 1
+        else:
+            # Fall back to the diffusion's num_timesteps
+            original_steps = self.diffusion.num_timesteps
+            
+        betas, alphas_cumprod, sigmas = get_glide_cosine_schedule(original_steps)
         
         # Get timesteps and sigmas for sampling
-        timesteps, sampling_sigmas = get_glide_schedule_timesteps(
-            num_steps, self.diffusion.num_timesteps, sigmas, use_karras=use_karras
-        )
+        # If we have a timestep map, we need to map our steps through it
+        if hasattr(self.diffusion, 'timestep_map'):
+            # For respaced diffusion, we sample from the respaced timesteps
+            # and map them to the original timesteps
+            respaced_timesteps = np.linspace(
+                self.diffusion.num_timesteps - 1, 0, num_steps, dtype=np.int64
+            )
+            timesteps = np.array([self.diffusion.timestep_map[t] for t in respaced_timesteps])
+            
+            # Debug print for first few runs
+            if progress and num_steps <= 10:
+                print(f"DEBUG Euler sampler: num_steps={num_steps}, diffusion.num_timesteps={self.diffusion.num_timesteps}")
+                print(f"DEBUG Euler sampler: timestep_map length={len(self.diffusion.timestep_map)}")
+                print(f"DEBUG Euler sampler: Mapped timesteps: {timesteps}")
+            
+            if use_karras:
+                # For Karras, we still use the Karras sigmas but map the timesteps
+                sigma_min = float(sigmas[timesteps[-1]])
+                sigma_max = float(sigmas[timesteps[0]])
+                from .util import get_karras_sigmas
+                karras_sigmas = get_karras_sigmas(num_steps, sigma_min, sigma_max)
+                sampling_sigmas = karras_sigmas
+            else:
+                sampling_sigmas = sigmas[timesteps]
+        else:
+            # No respacing, use the normal schedule
+            timesteps, sampling_sigmas = get_glide_schedule_timesteps(
+                num_steps, original_steps, sigmas, use_karras=use_karras
+            )
         
         # Start from pure noise
         current_sample = th.randn(self.shape, device=self.device)
