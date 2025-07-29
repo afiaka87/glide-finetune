@@ -374,7 +374,8 @@ def training_loop(
             )
             
             # Log metrics to wandb
-            config["wandb_run"].log(config["log"])
+            if config["wandb_run"] is not None and hasattr(config["wandb_run"], "log"):
+                config["wandb_run"].log(config["log"])
             
             # Console output at log_frequency intervals
             if train_idx > 0 and train_idx % config["log_frequency"] == 0:
@@ -622,36 +623,37 @@ def generate_eval_grid(
         print(f"Saved ESRGAN evaluation grid to {esrgan_grid_path}")
     
     # Log to wandb
-    if hasattr(config["wandb_run"], "__class__") and config["wandb_run"].__class__.__name__ == "MockWandbRun":
-        # Skip wandb.Image for mocked runs
-        pass
-    else:
-        # Log the grid
-        log_dict = {
-            "eval_grid": wandb.Image(grid_save_path, caption=f"Evaluation grid at step {global_step}"),
-        }
-        if esrgan_grid_path:
-            log_dict["eval_grid_esrgan"] = wandb.Image(esrgan_grid_path, caption=f"ESRGAN grid at step {global_step}")
-        config["wandb_run"].log(log_dict)
-        
-        # Also log individual images as a gallery with captions
-        wandb_images = []
-        for img, prompt in zip(all_images, prompts):
-            wandb_images.append(wandb.Image(img, caption=prompt))
-        
-        config["wandb_run"].log({
-            "eval_gallery": wandb_images
-        })
-        
-        # Log ESRGAN gallery if enabled
-        if config.get("esrgan") is not None:
-            wandb_esrgan_images = []
-            for img, prompt in zip(esrgan_images, prompts):
-                wandb_esrgan_images.append(wandb.Image(img, caption=f"{prompt} (ESRGAN 256x256)"))
+    if config["wandb_run"] is not None and hasattr(config["wandb_run"], "log"):
+        if hasattr(config["wandb_run"], "__class__") and config["wandb_run"].__class__.__name__ == "MockWandbRun":
+            # Skip wandb.Image for mocked runs
+            pass
+        else:
+            # Log the grid
+            log_dict = {
+                "eval_grid": wandb.Image(grid_save_path, caption=f"Evaluation grid at step {global_step}"),
+            }
+            if esrgan_grid_path:
+                log_dict["eval_grid_esrgan"] = wandb.Image(esrgan_grid_path, caption=f"ESRGAN grid at step {global_step}")
+            config["wandb_run"].log(log_dict)
+            
+            # Also log individual images as a gallery with captions
+            wandb_images = []
+            for img, prompt in zip(all_images, prompts):
+                wandb_images.append(wandb.Image(img, caption=prompt))
             
             config["wandb_run"].log({
-                "eval_gallery_esrgan": wandb_esrgan_images
+                "eval_gallery": wandb_images
             })
+            
+            # Log ESRGAN gallery if enabled
+            if config.get("esrgan") is not None:
+                wandb_esrgan_images = []
+                for img, prompt in zip(esrgan_images, prompts):
+                    wandb_esrgan_images.append(wandb.Image(img, caption=f"{prompt} (ESRGAN 256x256)"))
+                
+                config["wandb_run"].log({
+                    "eval_gallery_esrgan": wandb_esrgan_images
+                })
 
 
 def generate_sample(
@@ -691,16 +693,17 @@ def generate_sample(
         print(f"Saved ESRGAN upsampled image {esrgan_save_path}")
     
     # Log sample images to wandb (may be mocked for early_stop runs)
-    if hasattr(config["wandb_run"], "__class__") and config["wandb_run"].__class__.__name__ == "MockWandbRun":
-        # Skip wandb.Image for mocked runs
-        pass
-    else:
-        log_dict = {
-            "samples": wandb.Image(sample_save_path, caption=config["prompt"]),
-        }
-        if esrgan_save_path:
-            log_dict["samples_esrgan"] = wandb.Image(esrgan_save_path, caption=f"{config['prompt']} (ESRGAN 256x256)")
-        config["wandb_run"].log(log_dict)
+    if config["wandb_run"] is not None and hasattr(config["wandb_run"], "log"):
+        if hasattr(config["wandb_run"], "__class__") and config["wandb_run"].__class__.__name__ == "MockWandbRun":
+            # Skip wandb.Image for mocked runs
+            pass
+        else:
+            log_dict = {
+                "samples": wandb.Image(sample_save_path, caption=config["prompt"]),
+            }
+            if esrgan_save_path:
+                log_dict["samples_esrgan"] = wandb.Image(esrgan_save_path, caption=f"{config['prompt']} (ESRGAN 256x256)")
+            config["wandb_run"].log(log_dict)
     
     print(f"Saved sample {sample_save_path}")
 
