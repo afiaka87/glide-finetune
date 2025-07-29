@@ -90,6 +90,8 @@ def run_glide_finetune(
     eval_prompts_file=None,
     torch_compile=False,
     compile_mode="default",
+    use_esrgan=False,
+    esrgan_cache_dir="./esrgan_models",
 ):
     if "~" in data_dir:
         data_dir = os.path.expanduser(data_dir)
@@ -145,6 +147,9 @@ def run_glide_finetune(
         x.numel() for x in glide_model.parameters() if x.requires_grad
     )
     print(f"Trainable parameters: {number_of_trainable_params}")
+    
+    # Move model to device before creating optimizer
+    glide_model.to(device)
 
     # Data setup
     print("Loading data...")
@@ -332,8 +337,8 @@ def run_glide_finetune(
             batch_size=batch_size,
             checkpoint_manager=checkpoint_manager,
             eval_prompts=eval_prompts,
-            use_esrgan=args.use_esrgan,
-            esrgan_cache_dir=args.esrgan_cache_dir,
+            use_esrgan=use_esrgan,
+            esrgan_cache_dir=esrgan_cache_dir,
         )
 
         # Update global step counter for WebDataset
@@ -614,4 +619,6 @@ if __name__ == "__main__":
         eval_prompts_file=args.eval_prompts_file,
         torch_compile=args.torch_compile,
         compile_mode=args.compile_mode,
+        use_esrgan=args.use_esrgan,
+        esrgan_cache_dir=args.esrgan_cache_dir,
     )

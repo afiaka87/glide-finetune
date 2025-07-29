@@ -132,7 +132,10 @@ class CheckpointManager:
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Model checkpoint not found: {model_path}")
 
-        model_state = th.load(model_path, map_location="cpu")
+        # Get the device of the model (where its parameters are)
+        device = next(model.parameters()).device
+        
+        model_state = th.load(model_path, map_location=device)
         model.load_state_dict(model_state)
         print("✓ Loaded model state")
 
@@ -167,7 +170,7 @@ class CheckpointManager:
 
         # Try to load optimizer state (optional)
         if os.path.exists(optimizer_path) and optimizer is not None:
-            optimizer_data = th.load(optimizer_path, map_location="cpu")
+            optimizer_data = th.load(optimizer_path, map_location=device)
             optimizer.load_state_dict(optimizer_data["optimizer_state_dict"])
             print("✓ Loaded optimizer state")
 

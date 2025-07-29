@@ -136,8 +136,11 @@ class TestFixedSamplers:
         diffusion = Mock()
         diffusion.num_timesteps = 1000
         # Use actual cosine schedule betas
-        betas, _, _ = get_glide_cosine_schedule(1000)
+        betas, alphas_cumprod, _ = get_glide_cosine_schedule(1000)
         diffusion.betas = betas
+        diffusion.alphas_cumprod = alphas_cumprod
+        # Add timestep_map for SpacedDiffusion compatibility
+        diffusion.timestep_map = list(range(1000))
         return diffusion
 
     @pytest.fixture

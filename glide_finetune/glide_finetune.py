@@ -106,15 +106,15 @@ def base_train_step(
         0, len(glide_diffusion.betas) - 1, (reals.shape[0],), device=device
     )
     noise = th.randn_like(reals, device=device)
-    x_t = glide_diffusion.q_sample(reals, timesteps, noise=noise).to(device)
+    x_t = glide_diffusion.q_sample(reals, timesteps, noise=noise)
     model_output = glide_model(
-        x_t.to(device),
-        timesteps.to(device),
-        tokens=tokens.to(device),
-        mask=masks.to(device),
+        x_t,
+        timesteps,
+        tokens=tokens,
+        mask=masks,
     )
     epsilon, _ = th.split(model_output, model_output.shape[1] // 2, dim=1)
-    loss = th.nn.functional.mse_loss(epsilon, noise.to(device).detach())
+    loss = th.nn.functional.mse_loss(epsilon, noise.detach())
 
     # Calculate quartile losses for monitoring
     quartile_bounds = [0, 250, 500, 750, 1000]
@@ -124,7 +124,7 @@ def base_train_step(
         mask = (timesteps >= quartile_bounds[i]) & (timesteps < quartile_bounds[i + 1])
         if mask.any():
             quartile_loss = th.nn.functional.mse_loss(
-                epsilon[mask], noise[mask].to(device).detach()
+                epsilon[mask], noise[mask].detach()
             )
             quartile_losses[f"loss_q{i}"] = quartile_loss.item()
         else:
@@ -166,16 +166,16 @@ def upsample_train_step(
     noise = th.randn_like(high_res_image, device=device)
     noised_high_res_image = glide_diffusion.q_sample(
         high_res_image, timesteps, noise=noise
-    ).to(device)
+    )
     model_output = glide_model(
-        noised_high_res_image.to(device),
-        timesteps.to(device),
-        low_res=low_res_image.to(device),
-        tokens=tokens.to(device),
-        mask=masks.to(device),
+        noised_high_res_image,
+        timesteps,
+        low_res=low_res_image,
+        tokens=tokens,
+        mask=masks,
     )
     epsilon, _ = th.split(model_output, model_output.shape[1] // 2, dim=1)
-    loss = th.nn.functional.mse_loss(epsilon, noise.to(device).detach())
+    loss = th.nn.functional.mse_loss(epsilon, noise.detach())
 
     # Calculate quartile losses
     quartile_bounds = [0, 250, 500, 750, 1000]
@@ -185,7 +185,7 @@ def upsample_train_step(
         mask = (timesteps >= quartile_bounds[i]) & (timesteps < quartile_bounds[i + 1])
         if mask.any():
             quartile_loss = th.nn.functional.mse_loss(
-                epsilon[mask], noise[mask].to(device).detach()
+                epsilon[mask], noise[mask].detach()
             )
             quartile_losses[f"loss_q{i}"] = quartile_loss.item()
         else:
@@ -808,8 +808,7 @@ def run_glide_finetune_epoch(
         esrgan = ESRGANUpsampler(device=device, cache_dir=esrgan_cache_dir)
         print_vram_usage("After loading ESRGAN")
 
-    # Prepare model
-    glide_model.to(device)
+    # Prepare model (already on device from train_glide.py)
     glide_model.train()
 
     # Create checkpoint manager if not provided
