@@ -125,6 +125,21 @@ uv run python train_glide.py \
    - `--use_tf32` for up to 3x speedup with minimal precision loss
 
 3. **Wandb logging**: The training automatically logs to Weights & Biases unless `--early_stop` is set
+   - Training metrics: loss, learning rate, quartile losses, parameter norms
+   - VRAM usage: allocated, reserved, and percentage used
+   - Sample images: both 64x64 base and 256x256 ESRGAN versions if enabled
+   - WebDataset statistics (when using `--use_webdataset`):
+     - Sample processing rates and counts
+     - Filtering statistics by type (NSFW, similarity, size, aspect ratio)
+     - Metadata distributions (e.g., NSFW ratings, similarity scores)
+     - Average preprocessing time per sample
+
+4. **Image Compression**: All generated images are automatically saved as high-quality JPEG files
+   - Uses quality=95 for excellent visual fidelity
+   - Reduces file sizes by 50-70% compared to PNG
+   - Speeds up uploads to Weights & Biases
+   - Handles transparency by converting to RGB with white background
+   - File extensions automatically changed from .png to .jpg
 
 ### VRAM Requirements
 

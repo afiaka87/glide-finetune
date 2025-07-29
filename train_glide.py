@@ -40,7 +40,7 @@ def load_eval_prompts(filepath):
     # Check if count is power of 2 and <= 32
     valid_counts = [2, 4, 8, 16, 32]
     if len(prompts) not in valid_counts:
-        valid_counts_str = ', '.join(map(str, valid_counts))
+        valid_counts_str = ", ".join(map(str, valid_counts))
         raise ValueError(
             f"Evaluation prompts file must contain exactly {valid_counts_str} prompts. "
             f"Found {len(prompts)} prompts."
@@ -147,14 +147,15 @@ def run_glide_finetune(
         x.numel() for x in glide_model.parameters() if x.requires_grad
     )
     print(f"Trainable parameters: {number_of_trainable_params}")
-    
+
     # Move model to device before creating optimizer
     glide_model.to(device)
 
     # Data setup
     print("Loading data...")
+    wds_stats = None
     if use_webdataset:
-        dataset = glide_wds_loader(
+        dataset, wds_stats = glide_wds_loader(
             urls=data_dir,
             caption_key=caption_key,
             image_key=image_key,
@@ -339,6 +340,7 @@ def run_glide_finetune(
             eval_prompts=eval_prompts,
             use_esrgan=use_esrgan,
             esrgan_cache_dir=esrgan_cache_dir,
+            wds_stats=wds_stats if use_webdataset else None,
         )
 
         # Update global step counter for WebDataset
@@ -430,8 +432,10 @@ def parse_args():
         "--eval_prompts_file",
         type=str,
         default=None,
-        help=("File with line-separated prompts for evaluation "
-              "(must have 2,4,8,16, or 32 lines)"),
+        help=(
+            "File with line-separated prompts for evaluation "
+            "(must have 2,4,8,16, or 32 lines)"
+        ),
     )
     parser.add_argument(
         "--test_batch_size",

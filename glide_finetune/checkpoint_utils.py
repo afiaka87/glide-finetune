@@ -178,12 +178,21 @@ class CheckpointManager:
 
             # Restore RNG states if available
             if "torch_rng_state" in optimizer_data:
-                th.set_rng_state(optimizer_data["torch_rng_state"])
+                rng_state = optimizer_data["torch_rng_state"]
+                # Ensure RNG state is a ByteTensor on CPU
+                if isinstance(rng_state, th.Tensor):
+                    rng_state = rng_state.cpu().byte()
+                th.set_rng_state(rng_state)
                 print("✓ Restored PyTorch RNG state")
 
             if "cuda_rng_state" in optimizer_data and th.cuda.is_available():
-                th.cuda.set_rng_state(optimizer_data["cuda_rng_state"])
-                print("✓ Restored CUDA RNG state")
+                cuda_rng_state = optimizer_data["cuda_rng_state"]
+                if cuda_rng_state is not None:
+                    # Ensure CUDA RNG state is a ByteTensor on CPU
+                    if isinstance(cuda_rng_state, th.Tensor):
+                        cuda_rng_state = cuda_rng_state.cpu().byte()
+                    th.cuda.set_rng_state(cuda_rng_state)
+                    print("✓ Restored CUDA RNG state")
         elif optimizer is not None:
             print("ℹ No optimizer state file found")
 

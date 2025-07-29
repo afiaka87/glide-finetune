@@ -12,6 +12,7 @@ from PIL import Image
 
 from glide_finetune.esrgan import ESRGANUpsampler
 from glide_finetune.glide_util import load_model, sample
+from glide_finetune.train_util import save_image_compressed
 
 
 def get_vram_usage() -> dict:
@@ -42,7 +43,7 @@ def load_prompts_from_file(filepath: str) -> List[str]:
 
     valid_counts = [2, 4, 8, 16, 32]
     if len(prompts) not in valid_counts:
-        valid_counts_str = ', '.join(map(str, valid_counts))
+        valid_counts_str = ", ".join(map(str, valid_counts))
         raise ValueError(
             f"Prompt file must contain exactly {valid_counts_str} prompts. "
             f"Found {len(prompts)} prompts."
@@ -221,12 +222,14 @@ def run_benchmark(
 
             # Save individual image
             img_path = output_dir / f"{sampler_name}.png"
-            images[0].save(img_path)
+            img_path = save_image_compressed(images[0], img_path)
 
             # Save upsampled image if available
             if upsampled_images[0] is not None:
                 upsampled_path = output_dir / f"{sampler_name}_esrgan.png"
-                upsampled_images[0].save(upsampled_path)
+                upsampled_path = save_image_compressed(
+                    upsampled_images[0], upsampled_path
+                )
 
             all_images.extend(images)
             results[sampler_name] = elapsed
@@ -260,7 +263,7 @@ def run_benchmark(
 
         grid = create_image_grid(all_images[: grid_size * grid_size])
         grid_path = output_dir / "benchmark_grid.png"
-        grid.save(grid_path)
+        grid_path = save_image_compressed(grid, grid_path)
         print(f"\nSaved benchmark grid to: {grid_path}")
 
 
@@ -300,8 +303,10 @@ def main():
         "--sampler",
         type=str,
         default="all",
-        help=("Sampler to use (plms, ddim, euler, euler_a, dpm++_2m, "
-              "dpm++_2m_karras, all)"),
+        help=(
+            "Sampler to use (plms, ddim, euler, euler_a, dpm++_2m, "
+            "dpm++_2m_karras, all)"
+        ),
     )
     parser.add_argument(
         "--steps",
@@ -471,13 +476,15 @@ def main():
                         )
 
                     img_path = output_dir / filename
-                    img.save(img_path)
+                    img_path = save_image_compressed(img, img_path)
                     all_images.append(img)
 
                     # Save upsampled image if available
                     if upsampled_img is not None:
                         upsampled_path = output_dir / upsampled_filename
-                        upsampled_img.save(upsampled_path)
+                        upsampled_path = save_image_compressed(
+                            upsampled_img, upsampled_path
+                        )
 
                 print(f"    ✓ Generated {len(images)} image(s) in {elapsed:.2f}s")
 
@@ -489,7 +496,7 @@ def main():
         print("\nCreating image grid...")
         grid = create_image_grid(all_images)
         grid_path = output_dir / "grid.png"
-        grid.save(grid_path)
+        grid_path = save_image_compressed(grid, grid_path)
         print(f"Saved grid to: {grid_path}")
     elif len(all_images) > 1:
         print(

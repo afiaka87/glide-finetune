@@ -94,7 +94,7 @@ def base_train_step(
                 normalized to [-1, 1].
             device: The device to use for getting model outputs and computing loss.
         Returns:
-            A tuple of (loss, metrics_dict) where metrics_dict contains detailed 
+            A tuple of (loss, metrics_dict) where metrics_dict contains detailed
             metrics.
     """
     tokens, masks, reals = batch
@@ -221,6 +221,7 @@ def update_metrics(
     batch_size: int,
     gradient_accumualation_steps: int,
     glide_model: th.nn.Module,
+    wds_stats: Any = None,
 ) -> Dict[str, float]:
     """Update and return training metrics."""
     # Combine all metrics
@@ -232,6 +233,13 @@ def update_metrics(
         "lr": current_lr,
         **step_metrics,  # Add all quartile metrics
     }
+
+    # Add WebDataset statistics if available
+    if wds_stats is not None:
+        wds_summary = wds_stats.get_summary()
+        # Add wds_ prefix to all WebDataset metrics
+        wds_metrics = {f"wds_{k}": v for k, v in wds_summary.items()}
+        log.update(wds_metrics)
 
     # Add VRAM metrics
     vram_usage = get_vram_usage()
@@ -298,6 +306,7 @@ def training_loop(
 ) -> int:
     """Main training loop with error handling."""
     train_idx = -1
+    global_step = config["epoch_offset"]  # Initialize global_step
     current_state = None
 
     def get_current_state():
@@ -331,7 +340,7 @@ def training_loop(
         for train_idx, batch in enumerate(dataloader):
             # Early stopping check
             if config["early_stop"] > 0 and train_idx >= config["early_stop"]:
-                early_stop_val = config['early_stop']
+                early_stop_val = config["early_stop"]
                 print(
                     f"Early stopping at step {train_idx} (early_stop={early_stop_val})"
                 )
@@ -384,6 +393,7 @@ def training_loop(
                 config["batch_size"],
                 config["gradient_accumualation_steps"],
                 glide_model,
+                config.get("wds_stats"),
             )
 
             # Log metrics to wandb
@@ -400,6 +410,7 @@ def training_loop(
                     current_lr,
                     config["warmup_steps"],
                     config["first_log"],
+                    config.get("wds_stats"),
                 )
                 config["first_log"] = False
 
@@ -526,6 +537,7 @@ def print_metrics(
     current_lr: float,
     warmup_steps: int,
     first_log: bool,
+    wds_stats: Any = None,
 ) -> None:
     """Print training metrics to console."""
     if first_log:
@@ -550,6 +562,46 @@ def print_metrics(
     if warmup_steps > 0 and global_step < warmup_steps:
         warmup_pct = global_step / warmup_steps * 100
         print(f"  Warmup progress: {global_step}/{warmup_steps} ({warmup_pct:.1f}%)")
+
+    # Print WebDataset statistics if available
+    if wds_stats is not None:
+        summary = wds_stats.get_summary()
+        print("\n  WebDataset Statistics:")
+        print(
+            f"    Samples: {summary['samples_processed']} processed, "
+            f"{summary['samples_skipped']} skipped "
+            f"({summary['processing_rate']:.1%} success rate)"
+        )
+        print(
+            f"    Uncond rate: {summary['uncond_rate']:.1%}, "
+            f"Empty captions: {summary['caption_empty_rate']:.1%}"
+        )
+
+        if summary.get("filter_rejected_total", 0) > 0:
+            print(
+                f"    Filtered: {summary['filter_rejected_total']} total - "
+                f"NSFW: {summary.get('nsfw_filtered', 0)}, "
+                f"Similarity: {summary.get('similarity_filtered', 0)}, "
+                f"Size: {summary.get('size_filtered', 0)}, "
+                f"AR: {summary.get('ar_filtered', 0)}"
+            )
+
+        if "avg_preprocess_time_ms" in summary:
+            print(
+                f"    Avg preprocessing time: {summary['avg_preprocess_time_ms']:.1f}ms"
+            )
+
+        if "metadata_similarity_avg" in summary:
+            print(
+                f"    Avg similarity: {summary['metadata_similarity_avg']:.3f} "
+                f"(range: {summary.get('metadata_similarity_min', 0):.3f} - "
+                f"{summary.get('metadata_similarity_max', 0):.3f})"
+            )
+
+        if "metadata_nsfw_distribution" in summary:
+            nsfw_dist = summary["metadata_nsfw_distribution"]
+            nsfw_str = ", ".join(f"{k}: {v}" for k, v in nsfw_dist.items())
+            print(f"    NSFW distribution: {nsfw_str}")
 
 
 def create_image_grid(
@@ -602,16 +654,27 @@ def generate_eval_grid(
         f"{global_step}..."
     )
 
-    # Calculate grid size - for 8 prompts, use 4x2 grid
+    # Calculate grid size
     num_prompts = len(prompts)
-    if num_prompts == 8:
+    if num_prompts == 2:
+        grid_cols = 2
+        grid_rows = 1
+    elif num_prompts == 4:
+        grid_cols = 2
+        grid_rows = 2
+    elif num_prompts == 8:
         grid_cols = 4
         grid_rows = 2
+    elif num_prompts == 16:
+        grid_cols = 4
+        grid_rows = 4
+    elif num_prompts == 32:
+        grid_cols = 8
+        grid_rows = 4
     else:
-        # For square numbers (4, 16, 32 etc), use square grid
-        grid_size = int(num_prompts**0.5)
-        grid_cols = grid_size
-        grid_rows = grid_size
+        # For other numbers, try to make a roughly square grid
+        grid_cols = int(num_prompts**0.5 + 0.5)
+        grid_rows = (num_prompts + grid_cols - 1) // grid_cols
 
     # Generate images for all prompts
     all_images = []
@@ -639,7 +702,7 @@ def generate_eval_grid(
 
     # Save grid
     grid_save_path = os.path.join(config["outputs_dir"], f"eval_grid_{train_idx}.png")
-    grid_img.save(grid_save_path)
+    grid_save_path = train_util.save_image_compressed(grid_img, grid_save_path)
     print(f"Saved evaluation grid to {grid_save_path}")
 
     # Generate ESRGAN upsampled grid if enabled
@@ -656,7 +719,9 @@ def generate_eval_grid(
         esrgan_grid_path = os.path.join(
             config["outputs_dir"], f"eval_grid_{train_idx}_esrgan.png"
         )
-        esrgan_grid.save(esrgan_grid_path)
+        esrgan_grid_path = train_util.save_image_compressed(
+            esrgan_grid, esrgan_grid_path
+        )
         print_vram_usage("After ESRGAN grid upsampling")
         print(f"Saved ESRGAN evaluation grid to {esrgan_grid_path}")
 
@@ -723,7 +788,7 @@ def generate_sample(
     )
     sample_save_path = os.path.join(config["outputs_dir"], f"{train_idx}.png")
     base_image = train_util.pred_to_pil(samples)
-    base_image.save(sample_save_path)
+    sample_save_path = train_util.save_image_compressed(base_image, sample_save_path)
 
     # Generate ESRGAN upsampled version if enabled
     esrgan_save_path = None
@@ -733,7 +798,9 @@ def generate_sample(
         esrgan_save_path = os.path.join(
             config["outputs_dir"], f"{train_idx}_esrgan.png"
         )
-        upsampled_image.save(esrgan_save_path)
+        esrgan_save_path = train_util.save_image_compressed(
+            upsampled_image, esrgan_save_path
+        )
         print_vram_usage("After ESRGAN upsampling")
         print(f"Saved ESRGAN upsampled image {esrgan_save_path}")
 
@@ -793,6 +860,7 @@ def run_glide_finetune_epoch(
     eval_prompts: list | None = None,
     use_esrgan: bool = False,
     esrgan_cache_dir: str = "./esrgan_models",
+    wds_stats: Any = None,
 ):
     """Run a single epoch of GLIDE fine-tuning with error handling and checkpointing."""
     # Select training step function
@@ -842,6 +910,7 @@ def run_glide_finetune_epoch(
         "first_log": True,
         "eval_prompts": eval_prompts,
         "esrgan": esrgan,
+        "wds_stats": wds_stats,
     }
 
     # Run training loop

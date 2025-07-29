@@ -1,5 +1,6 @@
 import os
-from typing import Tuple
+from pathlib import Path
+from typing import Tuple, Union
 
 import numpy as np
 import PIL.Image
@@ -26,6 +27,49 @@ def pred_to_pil(pred: th.Tensor) -> PIL.Image.Image:
     scaled = ((pred + 1) * 127.5).round().clamp(0, 255).to(th.uint8).cpu()
     reshaped = scaled.permute(2, 0, 3, 1).reshape([pred.shape[2], -1, 3])
     return PIL.Image.fromarray(reshaped.numpy())
+
+
+def save_image_compressed(
+    image: PIL.Image.Image,
+    filepath: Union[str, Path],
+    quality: int = 95,
+    optimize: bool = True,
+) -> str:
+    """
+    Save a PIL image as a compressed JPEG with high quality.
+
+    Args:
+        image: PIL Image to save
+        filepath: Path to save the image (extension will be replaced with .jpg)
+        quality: JPEG quality (1-100, default 95 for high quality)
+        optimize: Whether to optimize the JPEG encoding (default True)
+
+    Returns:
+        The actual filepath where the image was saved (with .jpg extension)
+    """
+    # Convert Path to string and replace extension with .jpg
+    filepath = str(filepath)
+    if filepath.endswith((".png", ".PNG")):
+        filepath = filepath[:-4] + ".jpg"
+    elif not filepath.endswith((".jpg", ".jpeg", ".JPG", ".JPEG")):
+        filepath = filepath + ".jpg"
+
+    # Convert RGBA to RGB if necessary (JPEG doesn't support transparency)
+    if image.mode in ("RGBA", "LA", "P"):
+        # Create a white background
+        background = PIL.Image.new("RGB", image.size, (255, 255, 255))
+        if image.mode == "P":
+            image = image.convert("RGBA")
+        background.paste(
+            image, mask=image.split()[-1] if image.mode in ("RGBA", "LA") else None
+        )
+        image = background
+    elif image.mode != "RGB":
+        image = image.convert("RGB")
+
+    # Save with high quality JPEG compression
+    image.save(filepath, "JPEG", quality=quality, optimize=optimize)
+    return filepath
 
 
 def pil_image_to_norm_tensor(pil_image):
