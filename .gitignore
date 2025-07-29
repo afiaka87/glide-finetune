@@ -9,6 +9,7 @@ wandb/
 finetune_checkpoints/
 docker_child/
 CLAUDE.md
+TODOS.md
 current_prediction.png
 glide_checkpoints/
 .scratch/
