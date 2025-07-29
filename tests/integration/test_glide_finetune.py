@@ -354,7 +354,7 @@ class TestGlideFinetuneEpoch:
 
         checkpoint_manager = CheckpointManager(checkpoints_dir)
 
-        steps = run_glide_finetune_epoch(
+        run_glide_finetune_epoch(
             glide_model=model,
             glide_diffusion=diffusion,
             glide_options=glide_options,

@@ -98,7 +98,7 @@ def test_esrgan_training_vram():
         # Run one training step with ESRGAN enabled
         print("\n=== Running training with ESRGAN ===")
         try:
-            steps_taken = glide_finetune.run_glide_finetune_epoch(
+            glide_finetune.run_glide_finetune_epoch(
                 glide_model=glide_model,
                 glide_diffusion=glide_diffusion,
                 glide_options=glide_options,

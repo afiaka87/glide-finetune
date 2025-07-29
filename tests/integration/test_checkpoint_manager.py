@@ -98,8 +98,8 @@ class TestCheckpointManager:
         assert state["warmup_steps"] == 1000
         assert state["warmup_type"] == "cosine"
         assert state["base_lr"] == 1e-3
-        assert state["has_metadata"] == True
-        assert state["has_optimizer_state"] == True
+        assert state["has_metadata"]
+        assert state["has_optimizer_state"]
 
         # Verify optimizer state matches
         assert len(optimizer.state) == len(new_optimizer.state)
@@ -128,15 +128,15 @@ class TestCheckpointManager:
         new_model1 = SimpleModel()
         new_optimizer1 = optim.Adam(new_model1.parameters(), lr=1e-3)
         state1 = manager.load_checkpoint(paths["model"], new_model1, new_optimizer1)
-        assert state1["has_metadata"] == True
-        assert state1["has_optimizer_state"] == True
+        assert state1["has_metadata"]
+        assert state1["has_optimizer_state"]
 
         # Test 2: Load from metadata path (.json)
         new_model2 = SimpleModel()
         new_optimizer2 = optim.Adam(new_model2.parameters(), lr=1e-3)
         state2 = manager.load_checkpoint(paths["metadata"], new_model2, new_optimizer2)
-        assert state2["has_metadata"] == True
-        assert state2["has_optimizer_state"] == True
+        assert state2["has_metadata"]
+        assert state2["has_optimizer_state"]
 
         # Test 3: Load from base path (no extension)
         new_model3 = SimpleModel()
@@ -304,7 +304,7 @@ class TestCheckpointManager:
             torch.cuda.manual_seed(42)
 
         # Generate some random numbers
-        rand1 = torch.rand(5)
+        rand1 = torch.rand(5)  # noqa: F841
 
         # Save checkpoint
         paths = manager.save_checkpoint(

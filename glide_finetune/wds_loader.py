@@ -185,17 +185,17 @@ def glide_wds_loader(
         if enable_metadata and metadata_key not in item:
             return False
 
-        metadata = json.loads(item[metadata_key].decode("utf-8"))
-        # similarity = float(metadata["similarity"])
-        # orig_h = float(metadata["original_height"])
-        # orig_w = float(metadata["original_width"])
-        # ar = orig_w / orig_h
-        # if orig_h < min_original_height or orig_w < min_original_width:
-        #     return False
-        # if ar < ar_lower or ar > ar_upper:
-        #     return False
-        # if similarity < similarity_threshold_lower or similarity > similarity_threshold_upper:
-        #     return False
+        metadata = json.loads(item[metadata_key].decode("utf-8"))  # noqa: F841
+        similarity = float(metadata["similarity"])
+        orig_h = float(metadata["original_height"])
+        orig_w = float(metadata["original_width"])
+        ar = orig_w / orig_h
+        if orig_h < min_original_height or orig_w < min_original_width:
+            return False
+        if ar < ar_lower or ar > ar_upper:
+            return False
+        if similarity < similarity_threshold_lower or similarity > similarity_threshold_upper:
+            return False
         return True
 
     def _select_alamy(item):

@@ -99,7 +99,6 @@ class TestCheckpointResume:
             metadata = json.load(f)
 
         original_epoch = metadata["epoch"]
-        original_step = metadata["step"]
 
         # Reset mocks
         mock_wandb.reset_mock()
