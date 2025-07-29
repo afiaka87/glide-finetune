@@ -216,7 +216,7 @@ class ESRGANUpsampler:
         model_path = self.cache_dir / f"{self.model_name}.pth"
 
         # Download if needed
-        self._download_file(config["url"], model_path, config["sha256"])
+        self._download_file(str(config["url"]), model_path, str(config["sha256"]))
 
         # Initialize model
         model = RRDBNet(

@@ -333,7 +333,7 @@ def run_glide_finetune(
             base_lr=learning_rate,
             epoch_offset=global_step_counter
             if use_webdataset
-            else epoch * steps_per_epoch,
+            else epoch * (steps_per_epoch or 0),
             batch_size=batch_size,
             checkpoint_manager=checkpoint_manager,
             eval_prompts=eval_prompts,

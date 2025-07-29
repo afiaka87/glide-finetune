@@ -72,7 +72,7 @@ def _trim_white_padding_tensor(
 
     top, bottom = rows[0].item(), rows[-1].item() + 1
     left, right = cols[0].item(), cols[-1].item() + 1
-    return img[:, top:bottom, left:right]
+    return img[:, int(top):int(bottom), int(left):int(right)]
 
 
 def trim_white_padding_pil(pil_img: Image.Image, thresh: int = 245) -> Image.Image:

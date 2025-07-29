@@ -65,7 +65,7 @@ def trim_white_padding_tensor(
 
     top, bottom = rows[0].item(), rows[-1].item() + 1  # +1 for slicing
     left, right = cols[0].item(), cols[-1].item() + 1
-    return img[:, top:bottom, left:right]
+    return img[:, int(top):int(bottom), int(left):int(right)]
 
 
 def random_resized_crop(image, shape, resize_ratio=1.0):

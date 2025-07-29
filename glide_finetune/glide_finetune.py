@@ -789,8 +789,8 @@ def run_glide_finetune_epoch(
     base_lr: float = 1e-5,
     epoch_offset: int = 0,
     batch_size: int = 1,
-    checkpoint_manager: CheckpointManager = None,
-    eval_prompts: list = None,
+    checkpoint_manager: CheckpointManager | None = None,
+    eval_prompts: list | None = None,
     use_esrgan: bool = False,
     esrgan_cache_dir: str = "./esrgan_models",
 ):
