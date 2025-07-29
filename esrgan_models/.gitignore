@@ -1,0 +1,4 @@
+# Ignore downloaded ESRGAN model files
+*.pth
+*.pt
+*.safetensors
