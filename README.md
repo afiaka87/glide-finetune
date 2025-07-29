@@ -143,6 +143,8 @@ The following are typical VRAM usage patterns:
 - Upsampling overhead during training: ~2-3GB (includes temporary buffers)
 - Both 64x64 and 256x256 versions are saved and logged to wandb
 - Can be used with both training and inference scripts
+- Model downloaded automatically on first use to `esrgan_models/` directory
+- Supports RealESRGAN_x4plus.pth (default) and RealESRGAN_x4plus_anime_6B.pth models
 
 ## Checkpointing and Resuming
 
