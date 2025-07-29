@@ -46,6 +46,8 @@ def load_model(
     freeze_diffusion: bool = False,
     activation_checkpointing: bool = False,
     model_type: str = "base",
+    torch_compile: bool = False,
+    compile_mode: str = "default",
 ):
     assert model_type in MODEL_TYPES, f"Model must be one of {MODEL_TYPES}. Exiting."
     if model_type in ["base", "base-inpaint"]:
@@ -120,6 +122,20 @@ def load_model(
             print("  ✓ Transformer components frozen (text processing)")
         if freeze_diffusion:
             print("  ✓ Diffusion/UNet components frozen (image generation backbone)")
+    
+    # Apply torch.compile if requested
+    if torch_compile:
+        print(f"\nApplying torch.compile with mode='{compile_mode}'...")
+        try:
+            import torch
+            if hasattr(torch, 'compile'):
+                glide_model = torch.compile(glide_model, mode=compile_mode)
+                print(f"✓ Model compiled successfully with torch.compile (mode={compile_mode})")
+            else:
+                print("⚠️  torch.compile not available (requires PyTorch 2.0+), skipping compilation")
+        except Exception as e:
+            print(f"⚠️  Failed to compile model: {e}")
+            print("   Continuing without compilation...")
     
     return glide_model, glide_diffusion, options
 

@@ -193,26 +193,37 @@ class CheckpointManager:
             
         def sigint_handler(signum, frame):
             print("\n\n🛑 Training interrupted by user (Ctrl+C)")
-            print("💾 Saving checkpoint before exit...")
             
-            # Get current training state
-            state = get_current_state_fn()
+            # Import here to avoid circular import
+            from glide_finetune.glide_finetune import prompt_with_timeout
             
-            if state:
-                # Save checkpoint
-                self.save_checkpoint(
-                    model=state["model"],
-                    optimizer=state["optimizer"],
-                    epoch=state["epoch"],
-                    step=state["step"],
-                    global_step=state["global_step"],
-                    warmup_steps=state["warmup_steps"],
-                    warmup_type=state["warmup_type"],
-                    base_lr=state["base_lr"],
-                    checkpoint_type="sigint",
-                )
+            # Ask user if they want to save
+            if prompt_with_timeout("Do you want to save a checkpoint before exiting?", timeout=20, default=True):
+                print("💾 Saving checkpoint...")
+                
+                # Get current training state
+                state = get_current_state_fn()
+                
+                if state:
+                    # Save checkpoint
+                    self.save_checkpoint(
+                        model=state["model"],
+                        optimizer=state["optimizer"],
+                        epoch=state["epoch"],
+                        step=state["step"],
+                        global_step=state["global_step"],
+                        warmup_steps=state["warmup_steps"],
+                        warmup_type=state["warmup_type"],
+                        base_lr=state["base_lr"],
+                        checkpoint_type="sigint",
+                    )
+                    print("✅ Checkpoint saved.")
+                else:
+                    print("❌ No training state available to save.")
+            else:
+                print("⏭️  Skipping checkpoint save as requested")
             
-            print("✅ Checkpoint saved. Exiting gracefully.")
+            print("Exiting...")
             sys.exit(0)
         
         signal.signal(signal.SIGINT, sigint_handler)

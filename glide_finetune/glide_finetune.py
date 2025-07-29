@@ -1,4 +1,6 @@
 import os
+import signal
+import sys
 from typing import Any, Dict, Tuple, List
 
 import torch as th
@@ -9,6 +11,45 @@ from glide_text2im.text2im_model import Text2ImUNet
 
 from glide_finetune import glide_util, train_util
 from glide_finetune.checkpoint_utils import CheckpointManager
+
+
+def prompt_with_timeout(prompt: str, timeout: int = 20, default: bool = True) -> bool:
+    """Prompt user with a yes/no question with timeout.
+    
+    Args:
+        prompt: The question to ask
+        timeout: Seconds to wait for response
+        default: Default response if timeout occurs
+        
+    Returns:
+        True for yes, False for no
+    """
+    import select
+    
+    print(f"\n{prompt}")
+    print(f"{'[Y/n]' if default else '[y/N]'} (timeout in {timeout}s): ", end='', flush=True)
+    
+    # Use select to implement timeout on stdin
+    ready, _, _ = select.select([sys.stdin], [], [], timeout)
+    
+    if ready:
+        try:
+            response = sys.stdin.readline().strip().lower()
+            if response in ['n', 'no']:
+                return False
+            elif response in ['y', 'yes', '']:
+                return True
+            else:
+                # Invalid input, use default
+                print(f"Invalid input, using default: {'Yes' if default else 'No'}")
+                return default
+        except:
+            # Error reading input, use default
+            return default
+    else:
+        # Timeout occurred
+        print(f"\nTimeout - using default: {'Yes' if default else 'No'}")
+        return default
 
 
 def base_train_step(
@@ -227,6 +268,27 @@ def training_loop(
     # Setup SIGINT handler
     checkpoint_manager.setup_sigint_handler(get_current_state)
     
+    # Generate initial samples before training starts
+    print("\nGenerating initial samples before training...")
+    with th.no_grad():
+        if config.get("eval_prompts"):
+            generate_eval_grid(
+                glide_model,
+                glide_options,
+                config,
+                config["eval_prompts"],
+                0,  # train_idx = 0 for initial
+                config["epoch_offset"],  # global_step
+            )
+        else:
+            generate_sample(
+                glide_model,
+                glide_options,
+                config,
+                0,  # train_idx = 0 for initial
+                config["epoch_offset"],  # global_step
+            )
+    
     try:
         for train_idx, batch in enumerate(dataloader):
             # Early stopping check
@@ -300,7 +362,7 @@ def training_loop(
                 config["first_log"] = False
             
             # Sample generation
-            if train_idx > 0 and train_idx % config["sample_interval"] == 0:
+            if global_step > 0 and global_step % config["sample_interval"] == 0:
                 if config.get("eval_prompts"):
                     generate_eval_grid(
                         glide_model,
@@ -377,29 +439,34 @@ def handle_training_error(
     warmup_type: str,
     base_lr: float,
 ) -> None:
-    """Handle errors during training by saving emergency checkpoint."""
+    """Handle errors during training by optionally saving emergency checkpoint."""
     print(f"\n\n🚨 ERROR during training: {type(error).__name__}: {error}")
-    print("💾 Attempting to save emergency checkpoint...")
     
-    try:
-        if train_idx >= 0:
-            checkpoint_manager.save_checkpoint(
-                model=glide_model,
-                optimizer=optimizer,
-                epoch=epoch,
-                step=train_idx,
-                global_step=epoch_offset + train_idx if train_idx >= 0 else epoch_offset,
-                warmup_steps=warmup_steps,
-                warmup_type=warmup_type,
-                base_lr=base_lr,
-                checkpoint_type="emergency",
-                additional_state={"error": str(error), "error_type": type(error).__name__},
-            )
-            print("✅ Emergency checkpoint saved successfully!")
-        else:
-            print("❌ Cannot save checkpoint - training loop never started")
-    except Exception as save_error:
-        print(f"❌ Failed to save emergency checkpoint: {save_error}")
+    # Ask user if they want to save checkpoint
+    if prompt_with_timeout("Do you want to save an emergency checkpoint?", timeout=20, default=True):
+        print("💾 Saving emergency checkpoint...")
+        
+        try:
+            if train_idx >= 0:
+                checkpoint_manager.save_checkpoint(
+                    model=glide_model,
+                    optimizer=optimizer,
+                    epoch=epoch,
+                    step=train_idx,
+                    global_step=epoch_offset + train_idx if train_idx >= 0 else epoch_offset,
+                    warmup_steps=warmup_steps,
+                    warmup_type=warmup_type,
+                    base_lr=base_lr,
+                    checkpoint_type="emergency",
+                    additional_state={"error": str(error), "error_type": type(error).__name__},
+                )
+                print("✅ Emergency checkpoint saved successfully!")
+            else:
+                print("❌ Cannot save checkpoint - training loop never started")
+        except Exception as save_error:
+            print(f"❌ Failed to save emergency checkpoint: {save_error}")
+    else:
+        print("⏭️  Skipping checkpoint save as requested")
 
 
 def print_metrics(
@@ -515,8 +582,18 @@ def generate_eval_grid(
         # Skip wandb.Image for mocked runs
         pass
     else:
+        # Log the grid
         config["wandb_run"].log({
             "eval_grid": wandb.Image(grid_save_path, caption=f"Evaluation grid at step {global_step}"),
+        })
+        
+        # Also log individual images as a gallery with captions
+        wandb_images = []
+        for img, prompt in zip(all_images, prompts):
+            wandb_images.append(wandb.Image(img, caption=prompt))
+        
+        config["wandb_run"].log({
+            "eval_gallery": wandb_images
         })
 
 

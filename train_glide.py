@@ -87,6 +87,8 @@ def run_glide_finetune(
     warmup_steps=0,
     warmup_type="linear",
     eval_prompts_file=None,
+    torch_compile=False,
+    compile_mode="default",
 ):
     if "~" in data_dir:
         data_dir = os.path.expanduser(data_dir)
@@ -128,6 +130,8 @@ def run_glide_finetune(
         freeze_diffusion=freeze_diffusion,
         activation_checkpointing=activation_checkpointing,
         model_type="base" if not enable_upsample else "upsample",
+        torch_compile=torch_compile,
+        compile_mode=compile_mode,
     )
     glide_model.train()
     number_of_params = sum(x.numel() for x in glide_model.parameters())
@@ -468,6 +472,18 @@ def parse_args():
         help="Enable TF32 on Ampere GPUs for faster training with slightly reduced precision",
     )
     parser.add_argument(
+        "--torch_compile",
+        action="store_true",
+        help="Enable torch.compile for optimized model execution (PyTorch 2.0+)",
+    )
+    parser.add_argument(
+        "--compile_mode",
+        type=str,
+        default="default",
+        choices=["default", "reduce-overhead", "max-autotune"],
+        help="torch.compile mode: default (balanced), reduce-overhead (lower latency), max-autotune (maximum performance)",
+    )
+    parser.add_argument(
         "--early_stop",
         type=int,
         default=0,
@@ -569,4 +585,6 @@ if __name__ == "__main__":
         warmup_steps=args.warmup_steps,
         warmup_type=args.warmup_type,
         eval_prompts_file=args.eval_prompts_file,
+        torch_compile=args.torch_compile,
+        compile_mode=args.compile_mode,
     )
