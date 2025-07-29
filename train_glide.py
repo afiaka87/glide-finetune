@@ -215,9 +215,9 @@ def run_glide_finetune(
         use_8bit=use_8bit_adam,
     )
     
-    # Training setup
-    outputs_dir = "./outputs"
-    os.makedirs(outputs_dir, exist_ok=True)
+    # Training setup - create run-specific output directory
+    training_base_dir = "./outputs/training"
+    os.makedirs(training_base_dir, exist_ok=True)
 
     existing_runs = [
         sub_dir
@@ -233,9 +233,12 @@ def run_glide_finetune(
             # ignore
     existing_runs_int = sorted(existing_runs_int)
     next_run = 0 if len(existing_runs) == 0 else existing_runs_int[-1] + 1
-    current_run_ckpt_dir = os.path.join(checkpoints_dir, str(next_run).zfill(4))
+    run_id = str(next_run).zfill(4)
+    current_run_ckpt_dir = os.path.join(checkpoints_dir, run_id)
+    current_run_outputs_dir = os.path.join(training_base_dir, run_id)
 
     os.makedirs(current_run_ckpt_dir, exist_ok=True)
+    os.makedirs(current_run_outputs_dir, exist_ok=True)
 
     # Create checkpoint manager
     checkpoint_manager = CheckpointManager(current_run_ckpt_dir)
@@ -299,7 +302,7 @@ def run_glide_finetune(
             sample_bs=sample_bs,
             sample_gs=sample_gs,
             checkpoints_dir=current_run_ckpt_dir,
-            outputs_dir=outputs_dir,
+            outputs_dir=current_run_outputs_dir,
             side_x=side_x,
             side_y=side_y,
             device=device,

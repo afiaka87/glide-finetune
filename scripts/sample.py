@@ -289,7 +289,7 @@ def main():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="./outputs",
+        default="./outputs/eval",
         help="Base directory for outputs",
     )
     
