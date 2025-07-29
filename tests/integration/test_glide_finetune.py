@@ -3,6 +3,7 @@
 import os
 import shutil
 import tempfile
+from typing import Any
 from unittest.mock import Mock, patch
 
 import pytest
@@ -131,7 +132,7 @@ class TestGlideFinetuneComponents:
     def test_update_metrics(self):
         """Test metrics update function."""
         model = MockGlideModel()
-        log = {}
+        log: dict[str, float] = {}
         loss = torch.tensor(0.5)
         step_metrics = {"loss_q0": 0.1, "loss_q1": 0.2}
 
@@ -209,7 +210,7 @@ class TestGlideFinetuneEpoch:
 
         # Create simple dataloader with a few batches
         dataset = [create_mock_batch() for _ in range(5)]
-        dataloader = dataset  # Simple list works for testing
+        dataloader: Any = dataset  # Simple list works for testing, typed as Any to match DataLoader
 
         # Mock glide_options
         glide_options = {
@@ -254,7 +255,7 @@ class TestGlideFinetuneEpoch:
         diffusion = MockDiffusion()
 
         dataset = [create_mock_batch() for _ in range(10)]
-        dataloader = dataset
+        dataloader: Any = dataset
 
         glide_options = {
             "diffusion_steps": 1000,
@@ -344,7 +345,7 @@ class TestGlideFinetuneEpoch:
 
         # Create dataloader with enough batches to trigger checkpoint
         dataset = [create_mock_batch() for _ in range(10)]
-        dataloader = dataset
+        dataloader: Any = dataset
 
         glide_options = {
             "diffusion_steps": 1000,

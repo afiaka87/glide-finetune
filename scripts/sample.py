@@ -167,7 +167,7 @@ def sample_single(
             upsampled_images.append(upsampled_img)
         print_vram_usage("After ESRGAN upsampling")
     else:
-        upsampled_images = [None] * len(images)
+        upsampled_images: List[Optional[Image.Image]] = [None] * len(images)
 
     return images, upsampled_images, elapsed
 
@@ -199,7 +199,7 @@ def run_benchmark(
     # Fixed seed for fair comparison
     seed = 42
 
-    results = {}
+    results: dict[str, float | None] = {}
     all_images = []
 
     for sampler_name in samplers:
@@ -242,7 +242,8 @@ def run_benchmark(
     print("BENCHMARK RESULTS")
     print(f"{'=' * 60}")
 
-    for sampler_name, elapsed in results.items():
+    for sampler_name in results:
+        elapsed = results[sampler_name]
         if elapsed is not None:
             print(f"{sampler_name:20s} {elapsed:8.2f}s")
         else:

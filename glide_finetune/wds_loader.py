@@ -81,7 +81,8 @@ def trim_white_padding_pil(pil_img: Image.Image, thresh: int = 245) -> Image.Ima
     """
     t = TF.pil_to_tensor(pil_img.convert("RGB"))  # (C,H,W) uint8
     t = _trim_white_padding_tensor(t, white_thresh=thresh)
-    return TF.to_pil_image(t)  # back to PIL
+    result: Image.Image = TF.to_pil_image(t)  # back to PIL
+    return result
 
 
 # -----------------------------------------------------------------------------#

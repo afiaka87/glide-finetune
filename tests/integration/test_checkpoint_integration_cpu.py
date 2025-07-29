@@ -83,8 +83,8 @@ def test_checkpoint_integration_cpu():
 
         # List all checkpoint files
         print("\nCheckpoint files created:")
-        for f in sorted(files):
-            print(f"  {f}")
+        for filename in sorted(files):
+            print(f"  {filename}")
 
 
 if __name__ == "__main__":

@@ -24,7 +24,7 @@ class PLMSSampler(Sampler):
     ) -> th.Tensor:
         """Sample using PLMS method."""
         # Use existing plms_sample_loop from guided-diffusion
-        return self.diffusion.plms_sample_loop(
+        result = self.diffusion.plms_sample_loop(
             self.model_fn,
             self.shape,
             clip_denoised=self.clip_denoised,
@@ -33,3 +33,4 @@ class PLMSSampler(Sampler):
             progress=progress,
             cond_fn=cond_fn,
         )
+        return th.tensor(result)

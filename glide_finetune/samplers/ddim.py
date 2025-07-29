@@ -32,7 +32,7 @@ class DDIMSampler(Sampler):
             cond_fn: Optional conditioning function
         """
         # Use existing ddim_sample_loop from guided-diffusion
-        return self.diffusion.ddim_sample_loop(
+        result = self.diffusion.ddim_sample_loop(
             self.model_fn,
             self.shape,
             clip_denoised=self.clip_denoised,
@@ -42,3 +42,4 @@ class DDIMSampler(Sampler):
             eta=eta,
             cond_fn=cond_fn,
         )
+        return th.tensor(result)

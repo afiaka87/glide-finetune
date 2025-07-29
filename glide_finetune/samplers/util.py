@@ -83,7 +83,7 @@ def get_karras_sigmas(
     max_inv_rho = sigma_max ** (1 / rho)
     sigmas = (max_inv_rho + ramp * (min_inv_rho - max_inv_rho)) ** rho
     # Return sigmas from high to low for denoising
-    return sigmas
+    return np.array(sigmas)
 
 
 def scale_model_input(sample: th.Tensor, sigma: float) -> th.Tensor:
@@ -98,7 +98,8 @@ def scale_model_input(sample: th.Tensor, sigma: float) -> th.Tensor:
     Returns:
         Scaled sample
     """
-    return sample / np.sqrt(sigma**2 + 1)
+    scaled: th.Tensor = sample / np.sqrt(sigma**2 + 1)
+    return scaled
 
 
 def predicted_noise_to_denoised(
@@ -127,7 +128,8 @@ def predicted_noise_to_denoised(
     if clip_denoised:
         denoised = denoised.clamp(-1, 1)
 
-    return denoised
+    result: th.Tensor = denoised
+    return result
 
 
 def wrap_glide_model_for_sampling(

@@ -90,7 +90,7 @@ def test_esrgan_training_vram():
         optimizer = torch.optim.Adam(glide_model.parameters(), lr=1e-5)
 
         # Create checkpoint manager
-        checkpoint_manager = CheckpointManager(checkpoints_dir)
+        checkpoint_manager = CheckpointManager(str(checkpoints_dir))
 
         # Track VRAM before running epoch with ESRGAN
         pre_epoch_vram = torch.cuda.memory_allocated() / 1024**3

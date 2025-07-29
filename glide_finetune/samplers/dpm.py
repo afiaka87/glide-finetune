@@ -64,7 +64,7 @@ class DPMPlusPlusSampler(Sampler):
         previous_timestep = None
 
         # Progress bar
-        step_indices = list(range(len(timesteps)))
+        step_indices: list[int] | tqdm[int] = list(range(len(timesteps)))
         if progress:
             step_indices = tqdm(step_indices)
 

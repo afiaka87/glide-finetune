@@ -1,6 +1,7 @@
 """Comprehensive integration tests for all GLIDE samplers."""
 
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -171,7 +172,7 @@ class TestAllSamplers:
 
                 # Compute statistics
                 img_array = samples[0].cpu().numpy()
-                stats = {
+                stats: dict[str, Any] = {
                     "success": True,
                     "mean": float(np.mean(img_array)),
                     "std": float(np.std(img_array)),
