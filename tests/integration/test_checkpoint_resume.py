@@ -61,7 +61,7 @@ class TestCheckpointResume:
             checkpoints_dir=checkpoint_dir,
             num_epochs=3,
             batch_size=1,
-            device="cpu",
+            device="cuda",
             early_stop=5,  # Stop after 5 steps
             use_captions=True,
             side_x=64,
@@ -105,6 +105,10 @@ class TestCheckpointResume:
         mock_wandb_run.reset_mock()
         mock_trange.reset_mock()
 
+        # Clean up GPU memory before resuming
+        import torch
+        torch.cuda.empty_cache()
+
         # Now resume training
         mock_trange.side_effect = lambda start, end: range(start, min(start + 1, end))
 
@@ -114,7 +118,7 @@ class TestCheckpointResume:
             resume_ckpt=checkpoint_path,
             num_epochs=3,
             batch_size=1,
-            device="cpu",
+            device="cuda",
             early_stop=5,
             use_captions=True,
             side_x=64,
