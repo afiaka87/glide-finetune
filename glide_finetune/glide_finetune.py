@@ -531,31 +531,32 @@ def print_metrics(
         print(f"  Warmup progress: {global_step}/{warmup_steps} ({global_step/warmup_steps*100:.1f}%)")
 
 
-def create_image_grid(images: List[PIL.Image.Image], grid_size: int) -> PIL.Image.Image:
-    """Create a square grid from a list of images.
+def create_image_grid(images: List[PIL.Image.Image], grid_cols: int, grid_rows: int) -> PIL.Image.Image:
+    """Create a grid from a list of images.
     
     Args:
         images: List of PIL images
-        grid_size: Number of images per row/column (must be sqrt of len(images))
+        grid_cols: Number of columns in the grid
+        grid_rows: Number of rows in the grid
         
     Returns:
         PIL Image containing the grid
     """
-    if len(images) != grid_size * grid_size:
-        raise ValueError(f"Expected {grid_size * grid_size} images, got {len(images)}")
+    if len(images) != grid_cols * grid_rows:
+        raise ValueError(f"Expected {grid_cols * grid_rows} images, got {len(images)}")
     
     # Get dimensions from first image
     img_width, img_height = images[0].size
     
     # Create new image for grid
-    grid_width = img_width * grid_size
-    grid_height = img_height * grid_size
+    grid_width = img_width * grid_cols
+    grid_height = img_height * grid_rows
     grid_img = PIL.Image.new('RGB', (grid_width, grid_height))
     
     # Paste images into grid
     for idx, img in enumerate(images):
-        row = idx // grid_size
-        col = idx % grid_size
+        row = idx // grid_cols
+        col = idx % grid_cols
         x = col * img_width
         y = row * img_height
         grid_img.paste(img, (x, y))
@@ -574,8 +575,16 @@ def generate_eval_grid(
     """Generate and save a grid of images from multiple evaluation prompts."""
     print(f"Generating evaluation grid with {len(prompts)} prompts at step {global_step}...")
     
-    # Calculate grid size
-    grid_size = int(len(prompts) ** 0.5)
+    # Calculate grid size - for 8 prompts, use 4x2 grid
+    num_prompts = len(prompts)
+    if num_prompts == 8:
+        grid_cols = 4
+        grid_rows = 2
+    else:
+        # For square numbers (4, 16, 32 etc), use square grid
+        grid_size = int(num_prompts ** 0.5)
+        grid_cols = grid_size
+        grid_rows = grid_size
     
     # Generate images for all prompts
     all_images = []
@@ -599,7 +608,7 @@ def generate_eval_grid(
         all_images.append(img)
     
     # Create grid
-    grid_img = create_image_grid(all_images, grid_size)
+    grid_img = create_image_grid(all_images, grid_cols, grid_rows)
     
     # Save grid
     grid_save_path = os.path.join(config["outputs_dir"], f"eval_grid_{train_idx}.png")
@@ -616,7 +625,7 @@ def generate_eval_grid(
             esrgan_images.append(upsampled_img)
         
         # Create ESRGAN grid
-        esrgan_grid = create_image_grid(esrgan_images, grid_size)
+        esrgan_grid = create_image_grid(esrgan_images, grid_cols, grid_rows)
         esrgan_grid_path = os.path.join(config["outputs_dir"], f"eval_grid_{train_idx}_esrgan.png")
         esrgan_grid.save(esrgan_grid_path)
         print_vram_usage("After ESRGAN grid upsampling")
