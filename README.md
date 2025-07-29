@@ -119,11 +119,30 @@ uv run python train_glide.py \
    - `--activation_checkpointing` for gradient checkpointing
    - Reduce `--batch_size` (can go as low as 1)
    - `--freeze_transformer` or `--freeze_diffusion` to train fewer parameters
+   - Disable `--use_esrgan` if you don't need 256x256 upsampling during training
 
 2. **Speed optimization**: For faster training on Ampere GPUs (RTX 30xx, A100):
    - `--use_tf32` for up to 3x speedup with minimal precision loss
 
 3. **Wandb logging**: The training automatically logs to Weights & Biases unless `--early_stop` is set
+
+### VRAM Requirements
+
+The following are typical VRAM usage patterns:
+
+| Configuration | VRAM Usage | Notes |
+|--------------|------------|-------|
+| Base GLIDE (inference) | ~1.45 GB | 64x64 generation only |
+| Base GLIDE + ESRGAN (inference) | ~1.85 GB | 64x64 → 256x256 upsampling |
+| Training (batch_size=1) | ~4-5 GB | Without ESRGAN |
+| Training + ESRGAN (batch_size=1) | ~7.4 GB | Includes optimizer states |
+| Training with 8-bit Adam | ~3-4 GB | ~50% optimizer memory reduction |
+
+**ESRGAN Integration**: The `--use_esrgan` flag enables automatic upsampling from 64x64 to 256x256:
+- ESRGAN model itself only uses ~70MB
+- Upsampling overhead during training: ~2-3GB (includes temporary buffers)
+- Both 64x64 and 256x256 versions are saved and logged to wandb
+- Can be used with both training and inference scripts
 
 ## Checkpointing and Resuming
 
@@ -193,44 +212,45 @@ Look for emergency checkpoint files:
 
 These can be used with `--resume_ckpt` just like regular checkpoints.
 
-## Diffusion Samplers
+## Sampling and Inference
 
-The project includes several modern diffusion sampling algorithms:
+The project includes a comprehensive sampling script (`scripts/sample.py`) for generating images with trained models:
+
+```sh
+# Single prompt with default PLMS sampler
+uv run python scripts/sample.py --prompt "a beautiful sunset"
+
+# Multi-prompt file with specific sampler
+uv run python scripts/sample.py --prompt_file examples/eval_prompts_4.txt --sampler euler
+
+# Benchmark all samplers
+uv run python scripts/sample.py --prompt "test image" --benchmark
+
+# Use custom checkpoint
+uv run python scripts/sample.py --model_path checkpoints/model.pt --prompt "landscape"
+```
 
 ### Available Samplers
 
 - **`plms`** (default): Pseudo Linear Multi-Step method
-  - ✓ Stable and well-tested with GLIDE
-  - ✓ Good quality at reasonable step counts
+  - ✓ Original GLIDE sampler, stable and well-tested
+  - ✓ Good quality at 100 steps
   - ✗ Not the fastest option available
 
 - **`ddim`**: Denoising Diffusion Implicit Models
   - ✓ Deterministic when eta=0 (reproducible results)
   - ✓ Good for testing and comparisons
-  - ✗ Can be slower than newer methods
+  - ✓ 50-100 steps recommended
 
-- **`euler`**: Euler method (first-order ODE solver)
-  - ✓ Fast generation
-  - ✓ Good quality with 20-50 steps
-  - ✓ Low memory usage
-  - ✗ Less stable at very low step counts
+- **`euler`**: Euler method adapted for GLIDE
+  - ✓ Fast generation (~2 seconds for 50 steps)
+  - ✓ Good quality with 50 steps
+  - ✓ Comparable speed to DDIM
 
 - **`euler_a`**: Euler Ancestral (adds noise at each step)
-  - ✓ More variation and "creativity" in outputs
+  - ✓ More variation in outputs
   - ✓ Good for exploration and diverse results
-  - ✗ Non-convergent (more steps ≠ better quality)
-  - ✗ Results vary even with same seed
-
-- **`dpm++_2m`**: DPM++ 2nd order multistep
-  - ✓ Excellent quality/speed balance
-  - ✓ Stable at low step counts (10-20 steps)
-  - ✗ Slightly higher memory usage than Euler
-
-- **`dpm++_2m_karras`**: DPM++ 2M with Karras noise schedule
-  - ✓ Best quality at very low step counts (10-15 steps)
-  - ✓ Improved color and detail preservation
-  - ✓ Recommended for fast inference
-  - ✗ Slightly higher computational cost
+  - ✗ Non-deterministic even with same seed
 
 ### Usage Example
 
@@ -249,6 +269,37 @@ uv run python train_glide.py \
   --test_guidance_scale 4.0 \
   --test_steps 20
 ```
+
+## Sampling and Inference
+
+Generate images using trained models with `scripts/sample.py`:
+
+```sh
+# Basic usage
+uv run python scripts/sample.py --prompt "a beautiful sunset"
+
+# With ESRGAN upsampling (64x64 → 256x256)
+uv run python scripts/sample.py --prompt "a cat" --use_esrgan
+
+# Multiple prompts from file
+uv run python scripts/sample.py --prompt_file examples/eval_prompts_16.txt
+
+# Specific sampler and steps
+uv run python scripts/sample.py --prompt "landscape" --sampler euler --steps 50
+
+# Using custom checkpoint
+uv run python scripts/sample.py --model_path checkpoints/0000/glide-ft-1x5000.pt --prompt "test"
+
+# Benchmark all samplers
+uv run python scripts/sample.py --prompt "benchmark test" --benchmark
+```
+
+### Sampler Options
+
+- `plms` (default): Original GLIDE sampler, 100 steps recommended
+- `ddim`: Deterministic, good for reproducibility
+- `euler`: Fast generation, 50 steps recommended  
+- `euler_a`: More variation, non-deterministic
 
 ## Multi-Prompt Evaluation
 
