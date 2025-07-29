@@ -3,6 +3,13 @@
 import torch as th
 
 from .base import Sampler, SamplerRegistry
+from .util import (
+    get_glide_cosine_schedule,
+    scale_model_input,
+    sigma_to_timestep,
+    predicted_noise_to_denoised,
+    get_glide_schedule_timesteps,
+)
 
 
 @SamplerRegistry.register("euler")
@@ -21,9 +28,10 @@ class EulerSampler(Sampler):
         s_tmax: float = float("inf"),
         s_noise: float = 1.0,
         progress: bool = True,
+        use_karras: bool = False,
         **kwargs
     ) -> th.Tensor:
-        """Sample using Euler method.
+        """Sample using Euler method with proper GLIDE schedule.
         
         Args:
             num_steps: Number of sampling steps
@@ -32,80 +40,74 @@ class EulerSampler(Sampler):
             s_tmax: Maximum timestep for adding noise  
             s_noise: Noise scale factor
             progress: Show progress bar
+            use_karras: Use Karras sigma schedule
         """
-        # Pre-compute alpha products only when needed to save memory
         import numpy as np
-        betas_np = self.diffusion.betas
-        alphas_np = 1.0 - betas_np
-        alphas_cumprod_np = np.cumprod(alphas_np)
+        from tqdm import tqdm
         
-        # Create timestep schedule on CPU
-        timesteps = th.linspace(
-            self.diffusion.num_timesteps - 1, 0, num_steps, dtype=th.long
+        # Get GLIDE's cosine schedule
+        betas, alphas_cumprod, sigmas = get_glide_cosine_schedule(self.diffusion.num_timesteps)
+        
+        # Get timesteps and sigmas for sampling
+        timesteps, sampling_sigmas = get_glide_schedule_timesteps(
+            num_steps, self.diffusion.num_timesteps, sigmas, use_karras=use_karras
         )
         
         # Start from pure noise
         current_sample = th.randn(self.shape, device=self.device)
         
         # Progress bar setup
-        from tqdm import tqdm
-        iterator = tqdm(timesteps) if progress else timesteps
+        iterator = tqdm(range(num_steps)) if progress else range(num_steps)
         
-        for step_idx, timestep in enumerate(iterator):
-            timestep_int = int(timestep.item())
+        for step_idx in iterator:
+            timestep = timesteps[step_idx]
+            sigma = sampling_sigmas[step_idx]
+            
+            # Scale model input
+            scaled_sample = scale_model_input(current_sample, sigma)
+            
+            # Get timestep tensor
             batch_timesteps = th.full(
-                (self.shape[0],), timestep_int, device=self.device, dtype=th.long
+                (self.shape[0],), timestep, device=self.device, dtype=th.long
             )
             
             # Get model prediction
             with th.no_grad():
-                model_output = self.model_fn(current_sample, batch_timesteps, **self.model_kwargs)
+                model_output = self.model_fn(scaled_sample, batch_timesteps, **self.model_kwargs)
                 if isinstance(model_output, tuple):
-                    predicted_noise = model_output[0][:, :3]  # Extract epsilon prediction
+                    predicted_noise = model_output[0][:, :3]
                 else:
                     predicted_noise = model_output[:, :3]
             
-            # Get alpha values for current timestep
-            alpha_prod_t = float(alphas_cumprod_np[timestep_int])
-            if step_idx < len(timesteps) - 1:
-                next_timestep_int = int(timesteps[step_idx + 1].item())
-                alpha_prod_next = float(alphas_cumprod_np[next_timestep_int])
+            # Convert to denoised prediction
+            alpha_prod = alphas_cumprod[timestep]
+            denoised = predicted_noise_to_denoised(
+                scaled_sample, predicted_noise, sigma, alpha_prod, self.clip_denoised
+            )
+            
+            # Get next sigma
+            if step_idx < num_steps - 1:
+                next_sigma = sampling_sigmas[step_idx + 1]
             else:
-                alpha_prod_next = 1.0
+                next_sigma = 0.0
             
-            # Add noise for stochasticity if needed (for Karras-style noise)
-            if s_churn > 0 and s_tmin <= timestep_int <= s_tmax:
+            # Add noise for stochasticity if needed
+            if s_churn > 0 and s_tmin <= sigma <= s_tmax:
                 gamma = min(s_churn / num_steps, np.sqrt(2.0) - 1)
-                noise_level = np.sqrt((1 - alpha_prod_t) / alpha_prod_t)
-                noise_level_higher = noise_level * np.sqrt(1 + gamma**2)
+                noise_factor = sigma * np.sqrt(1 + gamma**2)
                 noise = th.randn_like(current_sample) * s_noise
-                current_sample = current_sample + noise * (noise_level_higher - noise_level)
-                # Recompute alpha_prod_t
-                alpha_prod_t = 1 / (1 + noise_level_higher**2)
+                current_sample = current_sample + noise * (noise_factor - sigma)
+                sigma = noise_factor
             
-            # Euler step - compute noise levels as scalars
-            current_noise_level = np.sqrt((1 - alpha_prod_t) / alpha_prod_t)
-            next_noise_level = np.sqrt((1 - alpha_prod_next) / alpha_prod_next)
-            sqrt_alpha_prod_t = np.sqrt(alpha_prod_t)
-            
-            # Denoised estimate - in-place operations where possible
-            denoised_sample = current_sample - current_noise_level * predicted_noise
-            denoised_sample.div_(sqrt_alpha_prod_t)
-            
-            if self.clip_denoised:
-                denoised_sample.clamp_(-1, 1)
-            
-            # Euler update - compute more efficiently
-            # derivative = (x - sqrt_alpha * denoised) / sigma
-            # new_x = x + derivative * (sigma_next - sigma)
-            timestep_delta = next_noise_level - current_noise_level
-            
-            # Compute update more efficiently with fewer allocations
-            update = (current_sample - sqrt_alpha_prod_t * denoised_sample) / current_noise_level
-            current_sample = current_sample + update * timestep_delta
+            # Euler step
+            # d = (x - denoised) / sigma
+            # x_next = x + d * (sigma_next - sigma)
+            d = (current_sample - denoised) / sigma if sigma > 0 else 0
+            dt = next_sigma - sigma
+            current_sample = current_sample + d * dt
             
             # Free memory
-            del denoised_sample, predicted_noise, update
+            del scaled_sample, predicted_noise, denoised, d
             
         return current_sample
 
@@ -123,90 +125,89 @@ class EulerAncestralSampler(Sampler):
         num_steps: int,
         eta: float = 1.0,
         progress: bool = True,
+        use_karras: bool = False,
         **kwargs
     ) -> th.Tensor:
-        """Sample using Euler Ancestral method.
+        """Sample using Euler Ancestral method with proper GLIDE schedule.
         
         Args:
             num_steps: Number of sampling steps
             eta: Amount of noise to add at each step (1.0 is default)
             progress: Show progress bar
+            use_karras: Use Karras sigma schedule
         """
-        # Pre-compute alpha products only when needed to save memory
         import numpy as np
-        betas_np = self.diffusion.betas
-        alphas_np = 1.0 - betas_np
-        alphas_cumprod_np = np.cumprod(alphas_np)
+        from tqdm import tqdm
         
-        # Create timestep schedule on CPU
-        timesteps = th.linspace(
-            self.diffusion.num_timesteps - 1, 0, num_steps, dtype=th.long
+        # Get GLIDE's cosine schedule
+        betas, alphas_cumprod, sigmas = get_glide_cosine_schedule(self.diffusion.num_timesteps)
+        
+        # Get timesteps and sigmas for sampling
+        timesteps, sampling_sigmas = get_glide_schedule_timesteps(
+            num_steps, self.diffusion.num_timesteps, sigmas, use_karras=use_karras
         )
         
         # Start from pure noise
         current_sample = th.randn(self.shape, device=self.device)
         
         # Progress bar setup
-        from tqdm import tqdm
-        iterator = tqdm(timesteps) if progress else timesteps
+        iterator = tqdm(range(num_steps)) if progress else range(num_steps)
         
-        for step_idx, timestep in enumerate(iterator):
-            timestep_int = int(timestep.item())
+        for step_idx in iterator:
+            timestep = timesteps[step_idx]
+            sigma = sampling_sigmas[step_idx]
+            
+            # Scale model input
+            scaled_sample = scale_model_input(current_sample, sigma)
+            
+            # Get timestep tensor
             batch_timesteps = th.full(
-                (self.shape[0],), timestep_int, device=self.device, dtype=th.long
+                (self.shape[0],), timestep, device=self.device, dtype=th.long
             )
             
             # Get model prediction
             with th.no_grad():
-                model_output = self.model_fn(current_sample, batch_timesteps, **self.model_kwargs)
+                model_output = self.model_fn(scaled_sample, batch_timesteps, **self.model_kwargs)
                 if isinstance(model_output, tuple):
                     predicted_noise = model_output[0][:, :3]
                 else:
                     predicted_noise = model_output[:, :3]
             
-            # Current timestep values as scalars
-            current_alpha_prod = float(alphas_cumprod_np[timestep_int])
-            current_noise_level = np.sqrt((1 - current_alpha_prod) / current_alpha_prod)
-            
-            # Denoised estimate  
-            sqrt_alpha_prod = np.sqrt(current_alpha_prod)
-            denoised_sample = (current_sample - current_noise_level * predicted_noise) / sqrt_alpha_prod
-            
-            if self.clip_denoised:
-                denoised_sample = denoised_sample.clamp(-1, 1)
+            # Convert to denoised prediction
+            alpha_prod = alphas_cumprod[timestep]
+            denoised = predicted_noise_to_denoised(
+                scaled_sample, predicted_noise, sigma, alpha_prod, self.clip_denoised
+            )
             
             # Ancestral sampling step
-            if step_idx < len(timesteps) - 1:
-                # Next timestep values
-                next_timestep_int = int(timesteps[step_idx + 1].item())
-                next_alpha_prod = float(alphas_cumprod_np[next_timestep_int])
-                next_noise_level = np.sqrt((1 - next_alpha_prod) / next_alpha_prod)
+            if step_idx < num_steps - 1:
+                # Get next sigma
+                next_sigma = sampling_sigmas[step_idx + 1]
                 
                 # Calculate step sizes for ancestral sampling
-                # This is where we "overshoot" and then add noise back
-                noise_amount_up = np.sqrt(
-                    next_noise_level**2 * (current_noise_level**2 - next_noise_level**2) / current_noise_level**2
-                )
-                noise_amount_down = np.sqrt(next_noise_level**2 - noise_amount_up**2)
+                # sigma_up = sqrt(sigma_next^2 * (sigma^2 - sigma_next^2) / sigma^2)
+                # sigma_down = sqrt(sigma_next^2 - sigma_up^2)
+                if sigma > 0 and next_sigma < sigma:
+                    sigma_up = np.sqrt(next_sigma**2 * (sigma**2 - next_sigma**2) / sigma**2)
+                    sigma_down = np.sqrt(next_sigma**2 - sigma_up**2)
+                else:
+                    sigma_up = 0
+                    sigma_down = next_sigma
                 
                 # Euler step with reduced noise
-                derivative = (current_sample - sqrt_alpha_prod * denoised_sample) / current_noise_level
-                timestep_delta = noise_amount_down - current_noise_level
-                current_sample = current_sample + derivative * timestep_delta
+                d = (current_sample - denoised) / sigma if sigma > 0 else 0
+                dt = sigma_down - sigma
+                current_sample = current_sample + d * dt
                 
-                # Add noise back (ancestral part - this is what makes it non-convergent)
-                if eta > 0:
-                    random_noise = th.randn_like(current_sample)
-                    current_sample = current_sample + random_noise * noise_amount_up * eta
-                
-                # Free memory
-                del derivative, random_noise
+                # Add noise back (ancestral part)
+                if eta > 0 and sigma_up > 0:
+                    noise = th.randn_like(current_sample)
+                    current_sample = current_sample + noise * sigma_up * eta
             else:
-                # Final step - no noise added
-                final_alpha = float(alphas_cumprod_np[-1])
-                current_sample = np.sqrt(final_alpha) * denoised_sample
+                # Final step - deterministic
+                current_sample = denoised
             
             # Free memory
-            del denoised_sample, predicted_noise
-                
+            del scaled_sample, predicted_noise, denoised
+            
         return current_sample
