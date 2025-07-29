@@ -42,8 +42,9 @@ def load_prompts_from_file(filepath: str) -> List[str]:
 
     valid_counts = [2, 4, 8, 16, 32]
     if len(prompts) not in valid_counts:
+        valid_counts_str = ', '.join(map(str, valid_counts))
         raise ValueError(
-            f"Prompt file must contain exactly {', '.join(map(str, valid_counts))} prompts. "
+            f"Prompt file must contain exactly {valid_counts_str} prompts. "
             f"Found {len(prompts)} prompts."
         )
 
@@ -298,7 +299,8 @@ def main():
         "--sampler",
         type=str,
         default="all",
-        help="Sampler to use (plms, ddim, euler, euler_a, dpm++_2m, dpm++_2m_karras, all)",
+        help=("Sampler to use (plms, ddim, euler, euler_a, dpm++_2m, "
+              "dpm++_2m_karras, all)"),
     )
     parser.add_argument(
         "--steps",
@@ -458,8 +460,14 @@ def main():
                         upsampled_filename = f"sample{prompt_idx + 1}_esrgan.png"
                     else:
                         # More complex naming for multiple samplers/batches
-                        filename = f"prompt{prompt_idx + 1}_{sampler_name}_batch{batch_idx + 1}.png"
-                        upsampled_filename = f"prompt{prompt_idx + 1}_{sampler_name}_batch{batch_idx + 1}_esrgan.png"
+                        filename = (
+                            f"prompt{prompt_idx + 1}_{sampler_name}_"
+                            f"batch{batch_idx + 1}.png"
+                        )
+                        upsampled_filename = (
+                            f"prompt{prompt_idx + 1}_{sampler_name}_"
+                            f"batch{batch_idx + 1}_esrgan.png"
+                        )
 
                     img_path = output_dir / filename
                     img.save(img_path)
@@ -484,7 +492,8 @@ def main():
         print(f"Saved grid to: {grid_path}")
     elif len(all_images) > 1:
         print(
-            f"\nNote: Generated {len(all_images)} images. Grid requires exactly 4, 16, 64, or 256 images."
+            f"\nNote: Generated {len(all_images)} images. Grid requires exactly "
+            f"4, 16, 64, or 256 images."
         )
 
     print(f"\nAll outputs saved to: {output_dir}")

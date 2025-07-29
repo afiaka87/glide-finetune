@@ -31,7 +31,8 @@ def create_dummy_dataset(data_dir: Path, num_samples: int = 4):
     not torch.cuda.is_available(), reason="GPU required for ESRGAN test"
 )
 def test_esrgan_training_vram():
-    """Test that training with ESRGAN produces upsampled images without running out of VRAM."""
+    """Test that training with ESRGAN produces upsampled images without 
+    running out of VRAM."""
 
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
@@ -176,7 +177,8 @@ def test_esrgan_training_vram():
                         f"ESRGAN image should be 256x256, got {esrgan_img.size}"
                     )
                     print(
-                        f"✓ Verified {base_img_path.name} (64x64) -> {esrgan_path.name} (256x256)"
+                        f"✓ Verified {base_img_path.name} (64x64) -> "
+                        f"{esrgan_path.name} (256x256)"
                     )
 
             # Verify VRAM didn't exceed reasonable limits

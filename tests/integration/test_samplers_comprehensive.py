@@ -408,7 +408,8 @@ class TestSamplerComparison:
 
 @pytest.mark.slow
 class TestFinalVerification:
-    """Final comprehensive verification test that saves outputs for manual inspection."""
+    """Final comprehensive verification test that saves outputs for manual 
+    inspection."""
 
     def test_final_sampler_verification(self, test_model_and_diffusion, device):
         """Run final verification test with all samplers and save outputs."""
@@ -507,7 +508,8 @@ class TestFinalVerification:
                         result["quality"] = "GOOD"
 
                     print(
-                        f"    ✓ Success - std: {std_val:.3f}, mean: {mean_val:.3f} [{result['quality']}]"
+                        f"    ✓ Success - std: {std_val:.3f}, mean: {mean_val:.3f} "
+                        f"[{result['quality']}]"
                     )
 
                 except Exception as e:

@@ -129,24 +129,30 @@ class TestSamplersVisual:
 
         # Images should have reasonable variance (not all gray/uniform)
         assert avg_std > 0.05, (
-            f"{sampler_name} produced images with too low variance (avg std: {avg_std:.3f})"
+            f"{sampler_name} produced images with too low variance "
+            f"(avg std: {avg_std:.3f})"
         )
 
         # Images should not be too dark or too bright on average
         assert 0.2 < avg_mean < 0.8, (
-            f"{sampler_name} produced images with unusual brightness (avg mean: {avg_mean:.3f})"
+            f"{sampler_name} produced images with unusual brightness "
+            f"(avg mean: {avg_mean:.3f})"
         )
 
-        # Check for the "gray noise" issue - if std is high but image looks like pure noise
-        # A good image should have both structure (some low-frequency content) and detail
+        # Check for the "gray noise" issue - if std is high but image looks 
+        # like pure noise
+        # A good image should have both structure (some low-frequency content) 
+        # and detail
         # Pure noise would have very high std relative to the mean
         noise_ratio = avg_std / (avg_mean + 1e-6)
         assert noise_ratio < 1.0, (
-            f"{sampler_name} may be producing pure noise (noise ratio: {noise_ratio:.3f})"
+            f"{sampler_name} may be producing pure noise "
+            f"(noise ratio: {noise_ratio:.3f})"
         )
 
     def test_sampler_consistency(self, test_model_and_diffusion, device, tmp_path):
-        """Test that PLMS (known working) produces different results than broken samplers."""
+        """Test that PLMS (known working) produces different results than 
+        broken samplers."""
         model, diffusion, options = test_model_and_diffusion
 
         prompt = "a beautiful landscape with mountains"

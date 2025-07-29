@@ -109,7 +109,8 @@ class DPMPlusPlusSampler(Sampler):
                     next_noise_level = alphas_cumprod[next_timestep]
 
                     # Compute timestep sizes for DPM++ formula
-                    # We use log(noise_level) as our "time" variable for numerical stability
+                    # We use log(noise_level) as our "time" variable for 
+                    # numerical stability
                     log_snr_current = -0.5 * np.log(
                         current_noise_level
                     )  # log signal-to-noise ratio
@@ -124,7 +125,8 @@ class DPMPlusPlusSampler(Sampler):
                         and abs(previous_step_size) > 1e-8
                     ):
                         # Second-order update
-                        # Compute the derivative estimate (rate of change of clean image)
+                        # Compute the derivative estimate (rate of change of 
+                        # clean image)
                         clean_image_derivative = (
                             predicted_clean_image - previous_clean_image
                         ) / previous_step_size
@@ -139,7 +141,8 @@ class DPMPlusPlusSampler(Sampler):
                         extrapolated_clean_image = predicted_clean_image
 
                     # DDIM-style update to next timestep
-                    # Formula: next_image = sqrt(next_noise_level) * clean_image + sqrt(1 - next_noise_level) * noise_direction
+                    # Formula: next_image = sqrt(next_noise_level) * clean_image + 
+                    # sqrt(1 - next_noise_level) * noise_direction
                     noise_amount = (
                         eta
                         * np.sqrt((1 - next_noise_level) / (1 - current_noise_level))

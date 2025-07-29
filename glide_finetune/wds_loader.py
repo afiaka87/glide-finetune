@@ -194,7 +194,8 @@ def glide_wds_loader(
 
         # Similarity filtering
         similarity = float(metadata["similarity"])
-        if similarity < similarity_threshold_lower or similarity > similarity_threshold_upper:
+        if (similarity < similarity_threshold_lower or 
+            similarity > similarity_threshold_upper):
             return False
 
         # Aspect ratio filtering

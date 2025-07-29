@@ -51,7 +51,8 @@ class TestFreezing:
 
         # Allow 1% tolerance for ratio
         assert abs(actual_ratio - expected_trainable_ratio) < 0.01, (
-            f"Expected {expected_trainable_ratio * 100:.1f}% trainable, got {actual_ratio * 100:.1f}%"
+            f"Expected {expected_trainable_ratio * 100:.1f}% trainable, "
+            f"got {actual_ratio * 100:.1f}%"
         )
 
         return trainable_params, frozen_params

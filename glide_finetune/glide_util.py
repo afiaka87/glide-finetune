@@ -157,7 +157,8 @@ def load_model(
             if hasattr(torch, "compile"):
                 glide_model = torch.compile(glide_model, mode=compile_mode)
                 print(
-                    f"✓ Model compiled successfully with torch.compile (mode={compile_mode})"
+                    f"✓ Model compiled successfully with torch.compile "
+                    f"(mode={compile_mode})"
                 )
             else:
                 msg = ("⚠️  torch.compile not available (requires PyTorch 2.0+), "

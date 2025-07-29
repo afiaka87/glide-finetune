@@ -598,7 +598,8 @@ def generate_eval_grid(
     """Generate and save a grid of images from multiple evaluation prompts."""
     num_prompts = len(prompts)
     print(
-        f"Generating evaluation grid with {num_prompts} prompts at step {global_step}..."
+        f"Generating evaluation grid with {num_prompts} prompts at step "
+        f"{global_step}..."
     )
 
     # Calculate grid size - for 8 prompts, use 4x2 grid
