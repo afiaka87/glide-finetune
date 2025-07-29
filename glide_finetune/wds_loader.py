@@ -186,15 +186,24 @@ def glide_wds_loader(
             return False
 
         metadata = json.loads(item[metadata_key].decode("utf-8"))  # noqa: F841
+
+        # NSFW filtering (categories are "UNLIKELY", "UNSURE", "NSFW" - also many)
+        nsfw_likelihood: str = metadata.get("NSFW")
+        if nsfw_filter and nsfw_likelihood is not None and nsfw_likelihood == "NSFW":
+            return False
+
+        # Similarity filtering
         similarity = float(metadata["similarity"])
+        if similarity < similarity_threshold_lower or similarity > similarity_threshold_upper:
+            return False
+
+        # Aspect ratio filtering
         orig_h = float(metadata["original_height"])
         orig_w = float(metadata["original_width"])
         ar = orig_w / orig_h
         if orig_h < min_original_height or orig_w < min_original_width:
             return False
         if ar < ar_lower or ar > ar_upper:
-            return False
-        if similarity < similarity_threshold_lower or similarity > similarity_threshold_upper:
             return False
         return True
 

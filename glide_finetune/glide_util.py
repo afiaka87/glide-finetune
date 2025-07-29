@@ -138,12 +138,10 @@ def load_model(
 
         print("\nModel parameter summary:")
         print(f"  Total parameters: {total_params:,}")
-        print(
-            f"  Trainable parameters: {trainable_params:,} ({trainable_params / total_params * 100:.1f}%)"
-        )
-        print(
-            f"  Frozen parameters: {frozen_params:,} ({frozen_params / total_params * 100:.1f}%)"
-        )
+        trainable_pct = trainable_params / total_params * 100
+        print(f"  Trainable parameters: {trainable_params:,} ({trainable_pct:.1f}%)")
+        frozen_pct = frozen_params / total_params * 100
+        print(f"  Frozen parameters: {frozen_params:,} ({frozen_pct:.1f}%)")
 
         if freeze_transformer:
             print("  ✓ Transformer components frozen (text processing)")
@@ -162,9 +160,9 @@ def load_model(
                     f"✓ Model compiled successfully with torch.compile (mode={compile_mode})"
                 )
             else:
-                print(
-                    "⚠️  torch.compile not available (requires PyTorch 2.0+), skipping compilation"
-                )
+                msg = ("⚠️  torch.compile not available (requires PyTorch 2.0+), "
+                       "skipping compilation")
+                print(msg)
         except Exception as e:
             print(f"⚠️  Failed to compile model: {e}")
             print("   Continuing without compilation...")

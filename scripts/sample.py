@@ -30,10 +30,9 @@ def print_vram_usage(label: str = ""):
     """Print current VRAM usage."""
     usage = get_vram_usage()
     prefix = f"[{label}] " if label else ""
-    print(
-        f"{prefix}VRAM: {usage['allocated_gb']:.2f}/{usage['total_gb']:.2f} GB allocated, "
-        f"{usage['reserved_gb']:.2f} GB reserved"
-    )
+    allocated = f"{usage['allocated_gb']:.2f}/{usage['total_gb']:.2f} GB allocated"
+    reserved = f"{usage['reserved_gb']:.2f} GB reserved"
+    print(f"{prefix}VRAM: {allocated}, {reserved}")
 
 
 def load_prompts_from_file(filepath: str) -> List[str]:

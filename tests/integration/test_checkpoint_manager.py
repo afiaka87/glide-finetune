@@ -142,15 +142,15 @@ class TestCheckpointManager:
         new_model3 = SimpleModel()
         new_optimizer3 = optim.Adam(new_model3.parameters(), lr=1e-3)
         state3 = manager.load_checkpoint(base_path, new_model3, new_optimizer3)
-        assert state3["has_metadata"] == True
-        assert state3["has_optimizer_state"] == True
+        assert state3["has_metadata"]
+        assert state3["has_optimizer_state"]
 
         # Test 4: Load from optimizer path (.optimizer.pt)
         new_model4 = SimpleModel()
         new_optimizer4 = optim.Adam(new_model4.parameters(), lr=1e-3)
         state4 = manager.load_checkpoint(paths["optimizer"], new_model4, new_optimizer4)
-        assert state4["has_metadata"] == True
-        assert state4["has_optimizer_state"] == True
+        assert state4["has_metadata"]
+        assert state4["has_optimizer_state"]
 
     def test_load_model_only_checkpoint(self, temp_checkpoint_dir, model_and_optimizer):
         """Test loading a checkpoint with only model weights."""
@@ -171,8 +171,8 @@ class TestCheckpointManager:
         assert torch.allclose(model.linear1.weight, new_model.linear1.weight)
 
         # Verify state indicates model-only checkpoint
-        assert state["has_metadata"] == False
-        assert state["has_optimizer_state"] == False
+        assert not state["has_metadata"]
+        assert not state["has_optimizer_state"]
         assert state["epoch"] == 0
         assert state["step"] == 0
         assert state["global_step"] == 0
@@ -205,8 +205,8 @@ class TestCheckpointManager:
         state = manager.load_checkpoint(paths["model"], new_model, new_optimizer)
 
         # Should load model and metadata but not optimizer
-        assert state["has_metadata"] == True
-        assert state["has_optimizer_state"] == False
+        assert state["has_metadata"]
+        assert not state["has_optimizer_state"]
         assert state["epoch"] == 3
         assert state["step"] == 150
 

@@ -78,9 +78,9 @@ class SamplerRegistry:
     def get_sampler(cls, name: str) -> Type[Sampler]:
         """Get a sampler class by name."""
         if name not in cls._samplers:
-            raise ValueError(
-                f"Unknown sampler '{name}'. Available samplers: {list(cls._samplers.keys())}"
-            )
+            available = list(cls._samplers.keys())
+            msg = f"Unknown sampler '{name}'. Available samplers: {available}"
+            raise ValueError(msg)
         return cls._samplers[name]
 
     @classmethod

@@ -119,7 +119,8 @@ print("TF32 enabled successfully")
             # TF32 should be faster (allow some margin for variance)
             speedup = time_fp32 / time_tf32
             print(
-                f"FP32 time: {time_fp32:.2f}ms, TF32 time: {time_tf32:.2f}ms, speedup: {speedup:.2f}x"
+                f"FP32 time: {time_fp32:.2f}ms, TF32 time: {time_tf32:.2f}ms, "
+                f"speedup: {speedup:.2f}x"
             )
 
             # We expect at least some speedup, but the exact amount varies by GPU

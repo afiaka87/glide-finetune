@@ -425,7 +425,8 @@ def parse_args():
         "--eval_prompts_file",
         type=str,
         default=None,
-        help="File with line-separated prompts for evaluation (must have 2,4,8,16, or 32 lines)",
+        help=("File with line-separated prompts for evaluation "
+              "(must have 2,4,8,16, or 32 lines)"),
     )
     parser.add_argument(
         "--test_batch_size",

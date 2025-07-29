@@ -1,4 +1,5 @@
-"""DPM++ (Diffusion Probabilistic Model Plus Plus) sampler implementations using DDPM parameterization."""
+"""DPM++ (Diffusion Probabilistic Model Plus Plus) sampler implementations using 
+DDPM parameterization."""
 
 import numpy as np
 import torch as th
@@ -57,7 +58,8 @@ class DPMPlusPlusSampler(Sampler):
         # Start from pure noise
         noisy_image = th.randn(self.shape, device=self.device)
 
-        # DPM++ 2M specific - store previous clean image predictions for second-order updates
+        # DPM++ 2M specific - store previous clean image predictions for 
+        # second-order updates
         previous_clean_image = None
         previous_timestep = None
 
@@ -86,7 +88,8 @@ class DPMPlusPlusSampler(Sampler):
             current_noise_level = alphas_cumprod[current_timestep]
 
             # Predict the clean image from the noisy image and predicted noise
-            # Formula: clean_image = (noisy_image - sqrt(1 - noise_level) * predicted_noise) / sqrt(noise_level)
+            # Formula: clean_image = (noisy_image - sqrt(1 - noise_level) * 
+            # predicted_noise) / sqrt(noise_level)
             predicted_clean_image = (
                 noisy_image - np.sqrt(1 - current_noise_level) * predicted_noise
             ) / np.sqrt(current_noise_level)

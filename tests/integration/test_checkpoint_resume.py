@@ -167,8 +167,8 @@ class TestCheckpointResume:
             assert state["epoch"] == 2
             assert state["step"] == 100
             assert state["global_step"] == 500
-            assert state["has_metadata"] == True
-            assert state["has_optimizer_state"] == True
+            assert state["has_metadata"]
+            assert state["has_optimizer_state"]
 
 
 if __name__ == "__main__":

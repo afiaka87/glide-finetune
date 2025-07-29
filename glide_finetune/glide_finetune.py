@@ -94,7 +94,8 @@ def base_train_step(
                 normalized to [-1, 1].
             device: The device to use for getting model outputs and computing loss.
         Returns:
-            A tuple of (loss, metrics_dict) where metrics_dict contains detailed metrics.
+            A tuple of (loss, metrics_dict) where metrics_dict contains detailed 
+            metrics.
     """
     tokens, masks, reals = batch
     tokens = tokens.to(device)
@@ -330,8 +331,9 @@ def training_loop(
         for train_idx, batch in enumerate(dataloader):
             # Early stopping check
             if config["early_stop"] > 0 and train_idx >= config["early_stop"]:
+                early_stop_val = config['early_stop']
                 print(
-                    f"Early stopping at step {train_idx} (early_stop={config['early_stop']})"
+                    f"Early stopping at step {train_idx} (early_stop={early_stop_val})"
                 )
                 break
 
@@ -546,9 +548,8 @@ def print_metrics(
     print(metrics_str)
 
     if warmup_steps > 0 and global_step < warmup_steps:
-        print(
-            f"  Warmup progress: {global_step}/{warmup_steps} ({global_step / warmup_steps * 100:.1f}%)"
-        )
+        warmup_pct = global_step / warmup_steps * 100
+        print(f"  Warmup progress: {global_step}/{warmup_steps} ({warmup_pct:.1f}%)")
 
 
 def create_image_grid(
@@ -595,8 +596,9 @@ def generate_eval_grid(
     global_step: int,
 ) -> None:
     """Generate and save a grid of images from multiple evaluation prompts."""
+    num_prompts = len(prompts)
     print(
-        f"Generating evaluation grid with {len(prompts)} prompts at step {global_step}..."
+        f"Generating evaluation grid with {num_prompts} prompts at step {global_step}..."
     )
 
     # Calculate grid size - for 8 prompts, use 4x2 grid
