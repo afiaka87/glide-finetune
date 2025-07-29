@@ -13,6 +13,26 @@ from glide_finetune import glide_util, train_util
 from glide_finetune.checkpoint_utils import CheckpointManager
 
 
+def get_vram_usage() -> dict:
+    """Get current VRAM usage statistics."""
+    if th.cuda.is_available():
+        return {
+            "allocated_gb": th.cuda.memory_allocated() / 1024**3,
+            "reserved_gb": th.cuda.memory_reserved() / 1024**3,
+            "max_allocated_gb": th.cuda.max_memory_allocated() / 1024**3,
+            "total_gb": th.cuda.get_device_properties(0).total_memory / 1024**3,
+        }
+    return {"allocated_gb": 0, "reserved_gb": 0, "max_allocated_gb": 0, "total_gb": 0}
+
+
+def print_vram_usage(label: str = ""):
+    """Print current VRAM usage."""
+    usage = get_vram_usage()
+    prefix = f"[{label}] " if label else ""
+    print(f"{prefix}VRAM: {usage['allocated_gb']:.2f}/{usage['total_gb']:.2f} GB allocated, "
+          f"{usage['reserved_gb']:.2f} GB reserved")
+
+
 def prompt_with_timeout(prompt: str, timeout: int = 20, default: bool = True) -> bool:
     """Prompt user with a yes/no question with timeout.
     
@@ -206,6 +226,14 @@ def update_metrics(
         "lr": current_lr,
         **step_metrics,  # Add all quartile metrics
     }
+    
+    # Add VRAM metrics
+    vram_usage = get_vram_usage()
+    log.update({
+        "vram_allocated_gb": vram_usage["allocated_gb"],
+        "vram_reserved_gb": vram_usage["reserved_gb"],
+        "vram_percent": (vram_usage["allocated_gb"] / vram_usage["total_gb"]) * 100 if vram_usage["total_gb"] > 0 else 0,
+    })
     
     # Calculate total samples processed
     samples_processed = (global_step + 1) * batch_size
@@ -577,15 +605,34 @@ def generate_eval_grid(
     grid_img.save(grid_save_path)
     print(f"Saved evaluation grid to {grid_save_path}")
     
+    # Generate ESRGAN upsampled grid if enabled
+    esrgan_grid_path = None
+    if config.get("esrgan") is not None:
+        print_vram_usage("Before ESRGAN grid upsampling")
+        esrgan_images = []
+        for img in all_images:
+            upsampled_img = config["esrgan"].upsample_pil(img)
+            esrgan_images.append(upsampled_img)
+        
+        # Create ESRGAN grid
+        esrgan_grid = create_image_grid(esrgan_images, grid_size)
+        esrgan_grid_path = os.path.join(config["outputs_dir"], f"eval_grid_{train_idx}_esrgan.png")
+        esrgan_grid.save(esrgan_grid_path)
+        print_vram_usage("After ESRGAN grid upsampling")
+        print(f"Saved ESRGAN evaluation grid to {esrgan_grid_path}")
+    
     # Log to wandb
     if hasattr(config["wandb_run"], "__class__") and config["wandb_run"].__class__.__name__ == "MockWandbRun":
         # Skip wandb.Image for mocked runs
         pass
     else:
         # Log the grid
-        config["wandb_run"].log({
+        log_dict = {
             "eval_grid": wandb.Image(grid_save_path, caption=f"Evaluation grid at step {global_step}"),
-        })
+        }
+        if esrgan_grid_path:
+            log_dict["eval_grid_esrgan"] = wandb.Image(esrgan_grid_path, caption=f"ESRGAN grid at step {global_step}")
+        config["wandb_run"].log(log_dict)
         
         # Also log individual images as a gallery with captions
         wandb_images = []
@@ -595,6 +642,16 @@ def generate_eval_grid(
         config["wandb_run"].log({
             "eval_gallery": wandb_images
         })
+        
+        # Log ESRGAN gallery if enabled
+        if config.get("esrgan") is not None:
+            wandb_esrgan_images = []
+            for img, prompt in zip(esrgan_images, prompts):
+                wandb_esrgan_images.append(wandb.Image(img, caption=f"{prompt} (ESRGAN 256x256)"))
+            
+            config["wandb_run"].log({
+                "eval_gallery_esrgan": wandb_esrgan_images
+            })
 
 
 def generate_sample(
@@ -620,16 +677,31 @@ def generate_sample(
         sampler_name=config["sampler_name"],
     )
     sample_save_path = os.path.join(config["outputs_dir"], f"{train_idx}.png")
-    train_util.pred_to_pil(samples).save(sample_save_path)
+    base_image = train_util.pred_to_pil(samples)
+    base_image.save(sample_save_path)
     
-    # Log sample image to wandb (may be mocked for early_stop runs)
+    # Generate ESRGAN upsampled version if enabled
+    esrgan_save_path = None
+    if config.get("esrgan") is not None:
+        print_vram_usage("Before ESRGAN upsampling")
+        upsampled_image = config["esrgan"].upsample_pil(base_image)
+        esrgan_save_path = os.path.join(config["outputs_dir"], f"{train_idx}_esrgan.png")
+        upsampled_image.save(esrgan_save_path)
+        print_vram_usage("After ESRGAN upsampling")
+        print(f"Saved ESRGAN upsampled image {esrgan_save_path}")
+    
+    # Log sample images to wandb (may be mocked for early_stop runs)
     if hasattr(config["wandb_run"], "__class__") and config["wandb_run"].__class__.__name__ == "MockWandbRun":
         # Skip wandb.Image for mocked runs
         pass
     else:
-        config["wandb_run"].log({
+        log_dict = {
             "samples": wandb.Image(sample_save_path, caption=config["prompt"]),
-        })
+        }
+        if esrgan_save_path:
+            log_dict["samples_esrgan"] = wandb.Image(esrgan_save_path, caption=f"{config['prompt']} (ESRGAN 256x256)")
+        config["wandb_run"].log(log_dict)
+    
     print(f"Saved sample {sample_save_path}")
 
 
@@ -666,10 +738,21 @@ def run_glide_finetune_epoch(
     batch_size: int = 1,
     checkpoint_manager: CheckpointManager = None,
     eval_prompts: list = None,
+    use_esrgan: bool = False,
+    esrgan_cache_dir: str = "./esrgan_models",
 ):
     """Run a single epoch of GLIDE fine-tuning with error handling and checkpointing."""
     # Select training step function
     train_step_fn = upsample_train_step if train_upsample else base_train_step
+    
+    # Initialize ESRGAN if requested
+    esrgan = None
+    if use_esrgan:
+        from glide_finetune.esrgan import ESRGANUpsampler
+        print("\nInitializing ESRGAN for upsampling...")
+        print_vram_usage("Before ESRGAN")
+        esrgan = ESRGANUpsampler(device=device, cache_dir=esrgan_cache_dir)
+        print_vram_usage("After loading ESRGAN")
     
     # Prepare model
     glide_model.to(device)
@@ -705,6 +788,7 @@ def run_glide_finetune_epoch(
         "log": {},
         "first_log": True,
         "eval_prompts": eval_prompts,
+        "esrgan": esrgan,
     }
     
     # Run training loop

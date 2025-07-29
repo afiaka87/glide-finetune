@@ -322,6 +322,8 @@ def run_glide_finetune(
             batch_size=batch_size,
             checkpoint_manager=checkpoint_manager,
             eval_prompts=eval_prompts,
+            use_esrgan=args.use_esrgan,
+            esrgan_cache_dir=args.esrgan_cache_dir,
         )
         
         # Update global step counter for WebDataset
@@ -385,6 +387,17 @@ def parse_args():
         type=int,
         default=1000,
         help="How often to generate sample images (default: 1000 steps)",
+    )
+    parser.add_argument(
+        "--use_esrgan",
+        action="store_true",
+        help="Use ESRGAN to upsample training samples from 64x64 to 256x256",
+    )
+    parser.add_argument(
+        "--esrgan_cache_dir",
+        type=str,
+        default="./esrgan_models",
+        help="Directory to cache ESRGAN model weights",
     )
     parser.add_argument("--freeze_transformer", "-fz_xt", action="store_true")
     parser.add_argument("--freeze_diffusion", "-fz_unet", action="store_true")

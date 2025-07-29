@@ -13,6 +13,27 @@ from PIL import Image
 
 from glide_finetune.glide_util import load_model, sample
 from glide_finetune.samplers import SamplerRegistry
+from glide_finetune.esrgan import ESRGANUpsampler
+
+
+def get_vram_usage() -> dict:
+    """Get current VRAM usage statistics."""
+    if torch.cuda.is_available():
+        return {
+            "allocated_gb": torch.cuda.memory_allocated() / 1024**3,
+            "reserved_gb": torch.cuda.memory_reserved() / 1024**3,
+            "max_allocated_gb": torch.cuda.max_memory_allocated() / 1024**3,
+            "total_gb": torch.cuda.get_device_properties(0).total_memory / 1024**3,
+        }
+    return {"allocated_gb": 0, "reserved_gb": 0, "max_allocated_gb": 0, "total_gb": 0}
+
+
+def print_vram_usage(label: str = ""):
+    """Print current VRAM usage."""
+    usage = get_vram_usage()
+    prefix = f"[{label}] " if label else ""
+    print(f"{prefix}VRAM: {usage['allocated_gb']:.2f}/{usage['total_gb']:.2f} GB allocated, "
+          f"{usage['reserved_gb']:.2f} GB reserved")
 
 
 def load_prompts_from_file(filepath: str) -> List[str]:
@@ -99,7 +120,8 @@ def sample_single(
     batch_size: int = 1,
     seed: Optional[int] = None,
     use_karras: bool = False,
-) -> Tuple[List[Image.Image], float]:
+    esrgan: Optional[ESRGANUpsampler] = None,
+) -> Tuple[List[Image.Image], List[Optional[Image.Image]], float]:
     """Sample images with a single sampler and return timing."""
     
     # Set seed if provided
@@ -136,7 +158,18 @@ def sample_single(
     # Convert to PIL images
     images = [tensor_to_pil(samples[i]) for i in range(samples.shape[0])]
     
-    return images, elapsed
+    # Upsample with ESRGAN if requested
+    upsampled_images = []
+    if esrgan is not None:
+        print_vram_usage(f"Before ESRGAN upsampling")
+        for img in images:
+            upsampled_img = esrgan.upsample_pil(img)
+            upsampled_images.append(upsampled_img)
+        print_vram_usage(f"After ESRGAN upsampling")
+    else:
+        upsampled_images = [None] * len(images)
+    
+    return images, upsampled_images, elapsed
 
 
 def run_benchmark(
@@ -149,6 +182,7 @@ def run_benchmark(
     device: str,
     output_dir: Path,
     use_karras: bool = False,
+    esrgan: Optional[ESRGANUpsampler] = None,
 ) -> None:
     """Run benchmark comparing all samplers."""
     
@@ -172,7 +206,7 @@ def run_benchmark(
         print(f"\nTesting {sampler_name}...")
         
         try:
-            images, elapsed = sample_single(
+            images, upsampled_images, elapsed = sample_single(
                 model=model,
                 options=options,
                 prompt=prompt,
@@ -182,11 +216,17 @@ def run_benchmark(
                 device=device,
                 seed=seed,
                 use_karras=use_karras,
+                esrgan=esrgan,
             )
             
             # Save individual image
             img_path = output_dir / f"{sampler_name}.png"
             images[0].save(img_path)
+            
+            # Save upsampled image if available
+            if upsampled_images[0] is not None:
+                upsampled_path = output_dir / f"{sampler_name}_esrgan.png"
+                upsampled_images[0].save(upsampled_path)
             
             all_images.extend(images)
             results[sampler_name] = elapsed
@@ -313,10 +353,25 @@ def main():
         help="Use FP16 precision",
     )
     
+    # ESRGAN upsampling arguments
+    parser.add_argument(
+        "--use_esrgan",
+        action="store_true",
+        help="Use ESRGAN to upsample 64x64 images to 256x256",
+    )
+    parser.add_argument(
+        "--esrgan_cache_dir",
+        type=str,
+        default="./esrgan_models",
+        help="Directory to cache ESRGAN model weights",
+    )
+    
     args = parser.parse_args()
     
     # Load model
     print("Loading model...")
+    print_vram_usage("Initial")
+    
     model, _, options = load_model(
         glide_path=args.model_path,
         use_fp16=args.use_fp16,
@@ -324,6 +379,15 @@ def main():
     )
     model.eval()
     model = model.to(args.device)
+    
+    print_vram_usage("After loading GLIDE")
+    
+    # Initialize ESRGAN if requested
+    esrgan = None
+    if args.use_esrgan:
+        print("\nLoading ESRGAN model...")
+        esrgan = ESRGANUpsampler(device=args.device, cache_dir=args.esrgan_cache_dir)
+        print_vram_usage("After loading ESRGAN")
     
     # Get prompts
     if args.prompt_file:
@@ -358,6 +422,7 @@ def main():
             device=args.device,
             output_dir=output_dir,
             use_karras=args.use_karras,
+            esrgan=esrgan,
         )
         return
     
@@ -371,7 +436,7 @@ def main():
             print(f"  Sampling with {sampler_name}...")
             
             try:
-                images, elapsed = sample_single(
+                images, upsampled_images, elapsed = sample_single(
                     model=model,
                     options=options,
                     prompt=prompt,
@@ -381,20 +446,28 @@ def main():
                     device=args.device,
                     batch_size=args.batch_size,
                     use_karras=args.use_karras,
+                    esrgan=esrgan,
                 )
                 
                 # Save individual images
-                for batch_idx, img in enumerate(images):
+                for batch_idx, (img, upsampled_img) in enumerate(zip(images, upsampled_images)):
                     if len(samplers) == 1 and args.batch_size == 1:
                         # Simple naming when single sampler and batch
                         filename = f"sample{prompt_idx + 1}.png"
+                        upsampled_filename = f"sample{prompt_idx + 1}_esrgan.png"
                     else:
                         # More complex naming for multiple samplers/batches
                         filename = f"prompt{prompt_idx + 1}_{sampler_name}_batch{batch_idx + 1}.png"
+                        upsampled_filename = f"prompt{prompt_idx + 1}_{sampler_name}_batch{batch_idx + 1}_esrgan.png"
                     
                     img_path = output_dir / filename
                     img.save(img_path)
                     all_images.append(img)
+                    
+                    # Save upsampled image if available
+                    if upsampled_img is not None:
+                        upsampled_path = output_dir / upsampled_filename
+                        upsampled_img.save(upsampled_path)
                 
                 print(f"    ✓ Generated {len(images)} image(s) in {elapsed:.2f}s")
                 
@@ -412,6 +485,9 @@ def main():
         print(f"\nNote: Generated {len(all_images)} images. Grid requires exactly 4, 16, 64, or 256 images.")
     
     print(f"\nAll outputs saved to: {output_dir}")
+    
+    # Final VRAM report
+    print_vram_usage("Final")
 
 
 if __name__ == "__main__":
