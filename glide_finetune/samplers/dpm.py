@@ -1,21 +1,15 @@
-"""DPM++ (Diffusion Probabilistic Model Plus Plus) sampler implementations."""
+"""DPM++ (Diffusion Probabilistic Model Plus Plus) sampler implementations using DDPM parameterization."""
 
+import numpy as np
 import torch as th
+from tqdm import tqdm
 
 from .base import Sampler, SamplerRegistry
-from .util import (
-    get_glide_cosine_schedule,
-    scale_model_input,
-    sigma_to_timestep,
-    predicted_noise_to_denoised,
-    get_glide_schedule_timesteps,
-    compute_lambda_min_clipped,
-)
 
 
 @SamplerRegistry.register("dpm++_2m")
 class DPMPlusPlusSampler(Sampler):
-    """DPM++ 2M sampler - second-order multistep solver."""
+    """DPM++ 2M sampler using DDPM parameterization compatible with GLIDE."""
     
     @property
     def name(self) -> str:
@@ -24,178 +18,142 @@ class DPMPlusPlusSampler(Sampler):
     def sample(
         self,
         num_steps: int,
-        use_karras_sigmas: bool = True,
+        eta: float = 0.0,
         progress: bool = True,
         **kwargs
     ) -> th.Tensor:
-        """Sample using DPM++ 2M method with proper GLIDE schedule.
+        """Sample using DPM++ 2M with DDPM parameterization.
         
-        Args:
-            num_steps: Number of sampling steps
-            use_karras_sigmas: Use Karras sigma schedule for better quality
-            progress: Show progress bar
+        This uses the DDPM forward process parameterization:
+        x_t = sqrt(alpha_bar_t) * x_0 + sqrt(1 - alpha_bar_t) * eps
+        
+        And implements a second-order multistep update.
         """
-        import numpy as np
-        from tqdm import tqdm
-        
-        # Get GLIDE's cosine schedule
-        # For SpacedDiffusion, we need to use the original number of timesteps
-        if hasattr(self.diffusion, 'original_num_steps'):
-            original_steps = self.diffusion.original_num_steps
-        elif hasattr(self.diffusion, 'timestep_map'):
-            # SpacedDiffusion stores the mapping but not original_num_steps
-            # The last element of timestep_map + 1 gives us the original steps
-            original_steps = self.diffusion.timestep_map[-1] + 1
-        else:
-            # Fall back to the diffusion's num_timesteps
-            original_steps = self.diffusion.num_timesteps
-            
-        betas, alphas_cumprod, sigmas = get_glide_cosine_schedule(original_steps)
-        
-        # Get timesteps and sigmas for sampling
-        # If we have a timestep map, we need to map our steps through it
+        # Get the respaced timesteps
         if hasattr(self.diffusion, 'timestep_map'):
-            # For respaced diffusion, we sample from the respaced timesteps
-            # and map them to the original timesteps
-            respaced_timesteps = np.linspace(
+            # For SpacedDiffusion, map to original timesteps
+            respaced_indices = np.linspace(
                 self.diffusion.num_timesteps - 1, 0, num_steps, dtype=np.int64
             )
-            timesteps = np.array([self.diffusion.timestep_map[t] for t in respaced_timesteps])
-            
-            if use_karras_sigmas:
-                # For Karras, we still use the Karras sigmas but map the timesteps
-                sigma_min = float(sigmas[timesteps[-1]])
-                sigma_max = float(sigmas[timesteps[0]])
-                from .util import get_karras_sigmas
-                karras_sigmas = get_karras_sigmas(num_steps, sigma_min, sigma_max)
-                sampling_sigmas = karras_sigmas
-            else:
-                sampling_sigmas = sigmas[timesteps]
+            timesteps = np.array([self.diffusion.timestep_map[i] for i in respaced_indices])
         else:
-            # No respacing, use the normal schedule
-            timesteps, sampling_sigmas = get_glide_schedule_timesteps(
-                num_steps, original_steps, sigmas, use_karras=use_karras_sigmas
+            # No respacing
+            timesteps = np.linspace(
+                self.diffusion.num_timesteps - 1, 0, num_steps, dtype=np.int64
             )
         
-        # Get lambda_min_clipped for cosine schedule stability
-        lambda_min_clipped = compute_lambda_min_clipped()
+        # Get alpha values - need to handle respaced diffusion
+        if hasattr(self.diffusion, 'timestep_map'):
+            # For respaced diffusion, we need the original alphas
+            # We'll compute them from the cosine schedule
+            from .util import get_glide_cosine_schedule
+            original_steps = self.diffusion.timestep_map[-1] + 1
+            _, alphas_cumprod, _ = get_glide_cosine_schedule(original_steps)
+        else:
+            # Use diffusion's alphas directly
+            alphas_cumprod = self.diffusion.alphas_cumprod
+            if isinstance(alphas_cumprod, th.Tensor):
+                alphas_cumprod = alphas_cumprod.cpu().numpy()
         
         # Start from pure noise
-        current_sample = th.randn(self.shape, device=self.device)
+        noisy_image = th.randn(self.shape, device=self.device)
         
-        # DPM++ 2M specific - store previous denoised and derivative
-        old_denoised = None
-        h_last = None
+        # DPM++ 2M specific - store previous clean image predictions for second-order updates
+        previous_clean_image = None
+        previous_timestep = None
         
-        # Progress bar setup
-        iterator = tqdm(range(num_steps)) if progress else range(num_steps)
+        # Progress bar
+        step_indices = list(range(len(timesteps)))
+        if progress:
+            step_indices = tqdm(step_indices)
         
-        for step_idx in iterator:
-            timestep = timesteps[step_idx]
-            sigma = sampling_sigmas[step_idx]
+        for step_idx in step_indices:
+            current_timestep = timesteps[step_idx]
+            timestep_batch = th.full((self.shape[0],), current_timestep, device=self.device, dtype=th.long)
             
-            # Scale model input
-            scaled_sample = scale_model_input(current_sample, sigma)
-            
-            # Get timestep tensor
-            batch_timesteps = th.full(
-                (self.shape[0],), timestep, device=self.device, dtype=th.long
-            )
-            
-            # Get model prediction
+            # Get model prediction (predicted noise)
             with th.no_grad():
-                model_output = self.model_fn(scaled_sample, batch_timesteps, **self.model_kwargs)
+                model_output = self.model_fn(noisy_image, timestep_batch, **self.model_kwargs)
                 if isinstance(model_output, tuple):
                     predicted_noise = model_output[0][:, :3]
                 else:
                     predicted_noise = model_output[:, :3]
             
-            # Convert to denoised prediction
-            alpha_prod = alphas_cumprod[timestep]
-            denoised = predicted_noise_to_denoised(
-                scaled_sample, predicted_noise, sigma, alpha_prod, self.clip_denoised
-            )
+            # Current noise level (cumulative product of alphas)
+            current_noise_level = alphas_cumprod[current_timestep]
             
-            # DPM++ 2M update
+            # Predict the clean image from the noisy image and predicted noise
+            # Formula: clean_image = (noisy_image - sqrt(1 - noise_level) * predicted_noise) / sqrt(noise_level)
+            predicted_clean_image = (noisy_image - np.sqrt(1 - current_noise_level) * predicted_noise) / np.sqrt(current_noise_level)
+            
+            if self.clip_denoised:
+                predicted_clean_image = predicted_clean_image.clamp(-1, 1)
+            
             if step_idx == 0:
                 # First step - just store for multistep
-                old_denoised = denoised
+                previous_clean_image = predicted_clean_image
+                previous_timestep = current_timestep
             else:
                 # Multistep update
-                if step_idx < num_steps - 1:
-                    # Get next sigma
-                    next_sigma = sampling_sigmas[step_idx + 1]
-                    
-                    # Compute lambdas for DPM++ formula
-                    # lambda = log(sigma) - log(alpha)
-                    lambda_s = np.log(sigma) - 0.5 * np.log(alpha_prod)
+                if step_idx < len(timesteps) - 1:
+                    # Get next noise level
                     next_timestep = timesteps[step_idx + 1]
-                    next_alpha_prod = alphas_cumprod[next_timestep]
-                    lambda_next = np.log(next_sigma) - 0.5 * np.log(next_alpha_prod)
+                    next_noise_level = alphas_cumprod[next_timestep]
                     
-                    # Clip lambda for stability with cosine schedule
-                    lambda_s = max(lambda_s, lambda_min_clipped)
-                    lambda_next = max(lambda_next, lambda_min_clipped)
+                    # Compute timestep sizes for DPM++ formula
+                    # We use log(noise_level) as our "time" variable for numerical stability
+                    log_snr_current = -0.5 * np.log(current_noise_level)  # log signal-to-noise ratio
+                    log_snr_previous = -0.5 * np.log(alphas_cumprod[previous_timestep])
+                    log_snr_next = -0.5 * np.log(next_noise_level)
                     
-                    # Step size
-                    h = lambda_next - lambda_s
+                    step_size = log_snr_next - log_snr_current
+                    previous_step_size = log_snr_current - log_snr_previous
                     
-                    if old_denoised is not None and h_last is not None:
+                    if previous_clean_image is not None and abs(previous_step_size) > 1e-8:
                         # Second-order update
-                        # r = h / h_last
-                        r = h / h_last if abs(h_last) > 1e-8 else 1.0
+                        # Compute the derivative estimate (rate of change of clean image)
+                        clean_image_derivative = (predicted_clean_image - previous_clean_image) / previous_step_size
                         
-                        # Compute D2 (second-order difference)
-                        D2 = (denoised - old_denoised) / h_last if abs(h_last) > 1e-8 else 0
-                        
-                        # Second-order DPM++ formula
-                        # x_next = alpha_next * (denoised + 0.5 * h * D2)
-                        denoised_prime = denoised + 0.5 * h * D2
+                        # Second-order DPM++ formula: extrapolate using derivative
+                        extrapolated_clean_image = predicted_clean_image + 0.5 * step_size * clean_image_derivative
                     else:
                         # First-order fallback
-                        denoised_prime = denoised
+                        extrapolated_clean_image = predicted_clean_image
                     
-                    # Update sample (convert back from denoised space)
-                    # x_next = sqrt(alpha_next) * denoised_prime + sigma_next * noise
-                    sqrt_next_alpha = np.sqrt(next_alpha_prod)
+                    # DDIM-style update to next timestep
+                    # Formula: next_image = sqrt(next_noise_level) * clean_image + sqrt(1 - next_noise_level) * noise_direction
+                    noise_amount = eta * np.sqrt((1 - next_noise_level) / (1 - current_noise_level)) * np.sqrt(1 - current_noise_level / next_noise_level)
                     
-                    # For DPM++, we need to compute the noise component
-                    # noise = (x - sqrt(alpha) * denoised) / sigma
-                    noise_component = (current_sample - np.sqrt(alpha_prod) * denoised) / sigma if sigma > 0 else predicted_noise
+                    # Compute the direction pointing from noisy to clean
+                    denoising_direction = (noisy_image - np.sqrt(current_noise_level) * predicted_clean_image) / np.sqrt(1 - current_noise_level)
                     
-                    current_sample = sqrt_next_alpha * denoised_prime + next_sigma * noise_component
+                    # Take a step towards the extrapolated clean image
+                    noisy_image = np.sqrt(next_noise_level) * extrapolated_clean_image + np.sqrt(1 - next_noise_level - noise_amount**2) * denoising_direction
                     
-                    # Store for next iteration
-                    h_last = h
-                    del noise_component, denoised_prime
+                    # Add noise if eta > 0 (stochastic sampling)
+                    if eta > 0:
+                        random_noise = th.randn_like(noisy_image)
+                        noisy_image = noisy_image + noise_amount * random_noise
                 else:
-                    # Final step - deterministic
-                    current_sample = denoised
+                    # Final step - use the denoised prediction
+                    noisy_image = predicted_clean_image
                 
-                # Update old_denoised
-                if old_denoised is not None:
-                    del old_denoised
-                old_denoised = denoised
-            
-            # Free memory
-            del scaled_sample, predicted_noise
+                # Update previous values for next iteration
+                previous_clean_image = predicted_clean_image
+                previous_timestep = current_timestep
         
-        return current_sample
+        return noisy_image
 
 
 @SamplerRegistry.register("dpm++_2m_karras") 
 class DPMPlusPlus2MKarrasSampler(DPMPlusPlusSampler):
-    """DPM++ 2M with Karras sigma schedule - convenience alias."""
+    """DPM++ 2M with Karras schedule using DDPM parameterization.
+    
+    Note: For GLIDE's DDPM parameterization, the Karras schedule
+    doesn't apply in the same way as k-diffusion, so this is 
+    equivalent to the base DPM++ 2M sampler.
+    """
     
     @property
     def name(self) -> str:
         return "dpm++_2m_karras"
-    
-    def sample(self, num_steps: int, progress: bool = True, **kwargs) -> th.Tensor:
-        """Sample using DPM++ 2M with Karras sigmas."""
-        return super().sample(
-            num_steps=num_steps,
-            use_karras_sigmas=True,
-            progress=progress,
-            **kwargs
-        )
