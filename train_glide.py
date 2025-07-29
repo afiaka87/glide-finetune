@@ -21,22 +21,22 @@ UNCOND_LENGTH = 0
 
 def load_eval_prompts(filepath):
     """Load and validate evaluation prompts from file.
-    
+
     Args:
         filepath: Path to file containing line-separated prompts
-        
+
     Returns:
         List of prompts if valid, None if file not provided
-        
+
     Raises:
         ValueError: If prompt count is not a power of 2 or exceeds 32
     """
     if filepath is None:
         return None
-        
-    with open(filepath, 'r') as f:
+
+    with open(filepath, "r") as f:
         prompts = [line.strip() for line in f if line.strip()]
-    
+
     # Check if count is power of 2 and <= 32
     valid_counts = [2, 4, 8, 16, 32]
     if len(prompts) not in valid_counts:
@@ -44,7 +44,7 @@ def load_eval_prompts(filepath):
             f"Evaluation prompts file must contain exactly {', '.join(map(str, valid_counts))} prompts. "
             f"Found {len(prompts)} prompts."
         )
-    
+
     return prompts
 
 
@@ -101,10 +101,12 @@ def run_glide_finetune(
     # Start wandb logging (disabled for early_stop test runs)
     if early_stop > 0:
         print("Early stopping enabled - disabling wandb logging")
+
         # Create a mock wandb run object that does nothing
         class MockWandbRun:
             def log(self, *args, **kwargs):
                 pass
+
         wandb_run = MockWandbRun()
     else:
         wandb_run = wandb_setup(
@@ -122,7 +124,9 @@ def run_glide_finetune(
 
     # Model setup
     # First load the base model or from OpenAI checkpoint
-    initial_checkpoint = "" if resume_ckpt else ""  # Use OpenAI checkpoint if not resuming
+    initial_checkpoint = (
+        "" if resume_ckpt else ""
+    )  # Use OpenAI checkpoint if not resuming
     glide_model, glide_diffusion, glide_options = load_model(
         glide_path=initial_checkpoint,
         use_fp16=use_fp16,
@@ -181,7 +185,7 @@ def run_glide_finetune(
             enable_glide_upsample=enable_upsample,
             upscale_factor=upsample_factor,  # TODO: make this a parameter
         )
-    
+
     print(f"[Main] Dataset created: {dataset}")
 
     # Data loader setup
@@ -214,7 +218,7 @@ def run_glide_finetune(
         weight_decay=adam_weight_decay,
         use_8bit=use_8bit_adam,
     )
-    
+
     # Training setup - create run-specific output directory
     training_base_dir = "./outputs/training"
     os.makedirs(training_base_dir, exist_ok=True)
@@ -242,12 +246,12 @@ def run_glide_finetune(
 
     # Create checkpoint manager
     checkpoint_manager = CheckpointManager(current_run_ckpt_dir)
-    
+
     # Initialize training state
     start_epoch = 0
     start_step = 0
     global_step_counter = 0
-    
+
     # Resume from checkpoint if provided
     if resume_ckpt:
         print(f"\nResuming from checkpoint: {resume_ckpt}")
@@ -256,7 +260,7 @@ def run_glide_finetune(
             model=glide_model,
             optimizer=optimizer,
         )
-        
+
         if resume_state["has_optimizer_state"] and resume_state["has_metadata"]:
             # Full resume - continue from next epoch to keep things simple
             # TODO: Add support for resuming within an epoch
@@ -265,16 +269,18 @@ def run_glide_finetune(
             warmup_steps = resume_state.get("warmup_steps", warmup_steps)
             warmup_type = resume_state.get("warmup_type", warmup_type)
             learning_rate = resume_state.get("base_lr", learning_rate)
-            print(f"Resuming training from epoch {start_epoch} (continuing after completed epoch {resume_state['epoch']})")
+            print(
+                f"Resuming training from epoch {start_epoch} (continuing after completed epoch {resume_state['epoch']})"
+            )
         else:
             # Model-only checkpoint - start fresh training
             print("Model weights loaded, starting fresh training")
-    
+
     # Load evaluation prompts if provided
     eval_prompts = load_eval_prompts(eval_prompts_file)
     if eval_prompts:
         print(f"Loaded {len(eval_prompts)} evaluation prompts from {eval_prompts_file}")
-    
+
     # Check for conflicting options
     if eval_prompts and len(test_prompt) > UNCOND_LENGTH:
         print("Error: Both --test_prompt and --eval_prompts_file were specified.")
@@ -282,16 +288,16 @@ def run_glide_finetune(
         print("  --test_prompt: For evaluating with a single prompt")
         print("  --eval_prompts_file: For evaluating with multiple prompts in a grid")
         sys.exit(1)
-    
+
     # Calculate steps per epoch for warmup
     # WebDataset doesn't have a length, so we'll track steps during training
     steps_per_epoch = None
     if not use_webdataset:
         steps_per_epoch = len(dataloader)
-    
+
     for epoch in trange(start_epoch, num_epochs):
         print(f"Starting epoch {epoch}")
-        
+
         steps_taken = run_glide_finetune_epoch(
             glide_model=glide_model,
             glide_diffusion=glide_diffusion,
@@ -318,14 +324,16 @@ def run_glide_finetune(
             warmup_steps=warmup_steps,
             warmup_type=warmup_type,
             base_lr=learning_rate,
-            epoch_offset=global_step_counter if use_webdataset else epoch * steps_per_epoch,
+            epoch_offset=global_step_counter
+            if use_webdataset
+            else epoch * steps_per_epoch,
             batch_size=batch_size,
             checkpoint_manager=checkpoint_manager,
             eval_prompts=eval_prompts,
             use_esrgan=args.use_esrgan,
             esrgan_cache_dir=args.esrgan_cache_dir,
         )
-        
+
         # Update global step counter for WebDataset
         if use_webdataset:
             global_step_counter += steps_taken
@@ -546,7 +554,7 @@ if __name__ == "__main__":
     th.manual_seed(args.seed)
     np.random.seed(args.seed)
     th.backends.cudnn.benchmark = args.cudnn_benchmark
-    
+
     # Enable TF32 on Ampere GPUs
     if args.use_tf32:
         th.backends.cuda.matmul.allow_tf32 = True

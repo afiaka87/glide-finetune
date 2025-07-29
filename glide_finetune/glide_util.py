@@ -64,34 +64,55 @@ def load_model(
 
     # Start with all parameters trainable
     glide_model.requires_grad_(True)
-    
+
     # Freeze transformer components (text processing)
     if freeze_transformer:
         # Core transformer and embeddings
-        if hasattr(glide_model, 'transformer') and glide_model.transformer is not None:
+        if hasattr(glide_model, "transformer") and glide_model.transformer is not None:
             glide_model.transformer.requires_grad_(False)
-        if hasattr(glide_model, 'transformer_proj') and glide_model.transformer_proj is not None:
+        if (
+            hasattr(glide_model, "transformer_proj")
+            and glide_model.transformer_proj is not None
+        ):
             glide_model.transformer_proj.requires_grad_(False)
-        if hasattr(glide_model, 'token_embedding') and glide_model.token_embedding is not None:
+        if (
+            hasattr(glide_model, "token_embedding")
+            and glide_model.token_embedding is not None
+        ):
             glide_model.token_embedding.requires_grad_(False)
-        if hasattr(glide_model, 'positional_embedding') and glide_model.positional_embedding is not None:
+        if (
+            hasattr(glide_model, "positional_embedding")
+            and glide_model.positional_embedding is not None
+        ):
             glide_model.positional_embedding.requires_grad = False
-        if hasattr(glide_model, 'padding_embedding') and glide_model.padding_embedding is not None:
+        if (
+            hasattr(glide_model, "padding_embedding")
+            and glide_model.padding_embedding is not None
+        ):
             glide_model.padding_embedding.requires_grad = False
         # Final layer norm is part of transformer output processing
-        if hasattr(glide_model, 'final_ln') and glide_model.final_ln is not None:
+        if hasattr(glide_model, "final_ln") and glide_model.final_ln is not None:
             glide_model.final_ln.requires_grad_(False)
-    
+
     # Freeze diffusion/UNet components
     if freeze_diffusion:
         # UNet blocks
-        if hasattr(glide_model, 'input_blocks') and glide_model.input_blocks is not None:
+        if (
+            hasattr(glide_model, "input_blocks")
+            and glide_model.input_blocks is not None
+        ):
             glide_model.input_blocks.requires_grad_(False)
-        if hasattr(glide_model, 'middle_block') and glide_model.middle_block is not None:
+        if (
+            hasattr(glide_model, "middle_block")
+            and glide_model.middle_block is not None
+        ):
             glide_model.middle_block.requires_grad_(False)
-        if hasattr(glide_model, 'output_blocks') and glide_model.output_blocks is not None:
+        if (
+            hasattr(glide_model, "output_blocks")
+            and glide_model.output_blocks is not None
+        ):
             glide_model.output_blocks.requires_grad_(False)
-        if hasattr(glide_model, 'out') and glide_model.out is not None:
+        if hasattr(glide_model, "out") and glide_model.out is not None:
             glide_model.out.requires_grad_(False)
         # Note: We intentionally keep time_embed trainable as it's needed for
         # adapting the diffusion process to new domains
@@ -106,37 +127,48 @@ def load_model(
     if use_fp16:
         glide_model.convert_to_fp16()
         print("Converted to fp16, likely gradients will explode")
-    
+
     # Report freezing status
     if freeze_transformer or freeze_diffusion:
         total_params = sum(p.numel() for p in glide_model.parameters())
-        trainable_params = sum(p.numel() for p in glide_model.parameters() if p.requires_grad)
+        trainable_params = sum(
+            p.numel() for p in glide_model.parameters() if p.requires_grad
+        )
         frozen_params = total_params - trainable_params
-        
+
         print(f"\nModel parameter summary:")
         print(f"  Total parameters: {total_params:,}")
-        print(f"  Trainable parameters: {trainable_params:,} ({trainable_params/total_params*100:.1f}%)")
-        print(f"  Frozen parameters: {frozen_params:,} ({frozen_params/total_params*100:.1f}%)")
-        
+        print(
+            f"  Trainable parameters: {trainable_params:,} ({trainable_params / total_params * 100:.1f}%)"
+        )
+        print(
+            f"  Frozen parameters: {frozen_params:,} ({frozen_params / total_params * 100:.1f}%)"
+        )
+
         if freeze_transformer:
             print("  ✓ Transformer components frozen (text processing)")
         if freeze_diffusion:
             print("  ✓ Diffusion/UNet components frozen (image generation backbone)")
-    
+
     # Apply torch.compile if requested
     if torch_compile:
         print(f"\nApplying torch.compile with mode='{compile_mode}'...")
         try:
             import torch
-            if hasattr(torch, 'compile'):
+
+            if hasattr(torch, "compile"):
                 glide_model = torch.compile(glide_model, mode=compile_mode)
-                print(f"✓ Model compiled successfully with torch.compile (mode={compile_mode})")
+                print(
+                    f"✓ Model compiled successfully with torch.compile (mode={compile_mode})"
+                )
             else:
-                print("⚠️  torch.compile not available (requires PyTorch 2.0+), skipping compilation")
+                print(
+                    "⚠️  torch.compile not available (requires PyTorch 2.0+), skipping compilation"
+                )
         except Exception as e:
             print(f"⚠️  Failed to compile model: {e}")
             print("   Continuing without compilation...")
-    
+
     return glide_model, glide_diffusion, options
 
 
@@ -229,10 +261,10 @@ def sample(
 
     # Use the new sampler system
     from glide_finetune.samplers import SamplerRegistry
-    
+
     sampler_kwargs = sampler_kwargs or {}
     shape = (full_batch_size, 3, side_y, side_x)
-    
+
     # Get sampler class and instantiate
     sampler_class = SamplerRegistry.get_sampler(sampler_name)
     sampler = sampler_class(
@@ -243,12 +275,14 @@ def sample(
         clip_denoised=True,
         model_kwargs=model_kwargs,
     )
-    
+
     # Get number of steps from respacing
     num_steps = int(prediction_respacing) if prediction_respacing.isdigit() else 100
-    
+
     # Sample
-    samples = sampler.sample(num_steps=num_steps, progress=True, **sampler_kwargs)[:batch_size]
-    
+    samples = sampler.sample(num_steps=num_steps, progress=True, **sampler_kwargs)[
+        :batch_size
+    ]
+
     glide_model.del_cache()
     return samples

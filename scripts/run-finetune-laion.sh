@@ -3,6 +3,7 @@
 #  Model: /mnt/9_1T_HDD_OLDER/Checkpoints/glide-finetune/0007/interrupted_checkpoint_epoch0_step15893.pt
 #  Optimizer: /mnt/9_1T_HDD_OLDER/Checkpoints/glide-finetune/0007/interrupted_checkpoint_epoch0_step15893.optimizer.pt
 #  Metadata: /mnt/9_1T_HDD_OLDER/Checkpoints/glide-finetune/0007/interrupted_checkpoint_epoch0_step15893.json
+#--sampler {plms,ddim,euler,euler_a,dpm++_2m,dpm++_2m_karras}
 
 uv run python train_glide.py \
     --resume '/mnt/9_1T_HDD_OLDER/Checkpoints/glide-finetune/0007/interrupted_checkpoint_epoch0_step15893.pt' \
@@ -23,19 +24,20 @@ uv run python train_glide.py \
     --learning_rate 1e-04 \
     --adam_weight_decay 0.01 \
     --use_8bit_adam \
-    --warmup_steps 5000 \
+    --warmup_steps 2000 \
     --warmup_type linear \
     --device cuda \
     --activation_checkpointing \
     --cudnn_benchmark \
     --use_tf32 \
-    --eval_prompts_file '/home/sam/GitHub/glide-finetune/examples/eval_prompts_4.txt' \
+    --eval_prompts_file '/home/sam/GitHub/glide-finetune/examples/eval_prompts_32.txt' \
     --test_batch_size 1 \
     --test_guidance_scale 4.0 \
-    --test_steps 100 \
-    --sampler plms \
+    --test_steps 20 \
+    --sampler 'dpm++_2m_karras' \
     --checkpoints_dir '/mnt/9_1T_HDD_OLDER/Checkpoints/glide-finetune' \
     --project_name 'glide-finetune-laion-nostalgia' \
-    --log_frequency 1 \
-    --sample_interval 2000 \
-    --resume_ckpt '/mnt/9_1T_HDD_OLDER/Checkpoints/glide-finetune/0014/interrupted_checkpoint_epoch1_step707.pt'
+    --log_frequency 5 \
+    --sample_interval 100 \
+    --use_esrgan \
+    --resume_ckpt '/mnt/9_1T_HDD_OLDER/Checkpoints/glide-finetune/0023/interrupted_checkpoint_epoch3_step144174.pt'

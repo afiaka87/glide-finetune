@@ -13,10 +13,11 @@ import torch
 from typing import Optional
 from typing import Union
 
+
 def trim_white_padding_tensor(
     img: torch.Tensor,
-    white_thresh: Union[int, float] = 0.95,   # 0-1 for float32 / 0-255 for uint8
-    morph_kernel: int | None = None
+    white_thresh: Union[int, float] = 0.95,  # 0-1 for float32 / 0-255 for uint8
+    morph_kernel: int | None = None,
 ) -> torch.Tensor:
     """
     Remove uniform white padding that was added to make a square canvas.
@@ -38,7 +39,7 @@ def trim_white_padding_tensor(
 
     # --- 1. build boolean “content” mask ------------------------------
     if img.dtype == torch.uint8:
-        content = (img < white_thresh).any(dim=0)       # (H,W) bool
+        content = (img < white_thresh).any(dim=0)  # (H,W) bool
     else:  # float
         content = (img < white_thresh).any(dim=0)
 
@@ -46,20 +47,24 @@ def trim_white_padding_tensor(
     if morph_kernel and morph_kernel > 1:
         pad = morph_kernel // 2
         # max_pool2d on the NOT-content mask = dilation of content
-        content = torch.nn.functional.max_pool2d(       # ↓ F.max_pool2d docs
-            content.unsqueeze(0).unsqueeze(0).float(),
-            kernel_size=morph_kernel,
-            stride=1,
-            padding=pad,
-        ).squeeze().bool()
+        content = (
+            torch.nn.functional.max_pool2d(  # ↓ F.max_pool2d docs
+                content.unsqueeze(0).unsqueeze(0).float(),
+                kernel_size=morph_kernel,
+                stride=1,
+                padding=pad,
+            )
+            .squeeze()
+            .bool()
+        )
 
     # --- 3. find rows / cols that contain any non-white pixel ----------
-    rows = torch.where(content.any(dim=1))[0]           # torch.any docs
-    cols = torch.where(content.any(dim=0))[0]           # torch.any docs
-    if rows.numel() == 0 or cols.numel() == 0:          # all-white edge-case
+    rows = torch.where(content.any(dim=1))[0]  # torch.any docs
+    cols = torch.where(content.any(dim=0))[0]  # torch.any docs
+    if rows.numel() == 0 or cols.numel() == 0:  # all-white edge-case
         return img
 
-    top, bottom = rows[0].item(), rows[-1].item() + 1   # +1 for slicing
+    top, bottom = rows[0].item(), rows[-1].item() + 1  # +1 for slicing
     left, right = cols[0].item(), cols[-1].item() + 1
     return img[:, top:bottom, left:right]
 

@@ -29,35 +29,41 @@ def print_vram_usage(label: str = ""):
     """Print current VRAM usage."""
     usage = get_vram_usage()
     prefix = f"[{label}] " if label else ""
-    print(f"{prefix}VRAM: {usage['allocated_gb']:.2f}/{usage['total_gb']:.2f} GB allocated, "
-          f"{usage['reserved_gb']:.2f} GB reserved")
+    print(
+        f"{prefix}VRAM: {usage['allocated_gb']:.2f}/{usage['total_gb']:.2f} GB allocated, "
+        f"{usage['reserved_gb']:.2f} GB reserved"
+    )
 
 
 def prompt_with_timeout(prompt: str, timeout: int = 20, default: bool = True) -> bool:
     """Prompt user with a yes/no question with timeout.
-    
+
     Args:
         prompt: The question to ask
         timeout: Seconds to wait for response
         default: Default response if timeout occurs
-        
+
     Returns:
         True for yes, False for no
     """
     import select
-    
+
     print(f"\n{prompt}")
-    print(f"{'[Y/n]' if default else '[y/N]'} (timeout in {timeout}s): ", end='', flush=True)
-    
+    print(
+        f"{'[Y/n]' if default else '[y/N]'} (timeout in {timeout}s): ",
+        end="",
+        flush=True,
+    )
+
     # Use select to implement timeout on stdin
     ready, _, _ = select.select([sys.stdin], [], [], timeout)
-    
+
     if ready:
         try:
             response = sys.stdin.readline().strip().lower()
-            if response in ['n', 'no']:
+            if response in ["n", "no"]:
                 return False
-            elif response in ['y', 'yes', '']:
+            elif response in ["y", "yes", ""]:
                 return True
             else:
                 # Invalid input, use default
@@ -110,22 +116,21 @@ def base_train_step(
     )
     epsilon, _ = th.split(model_output, model_output.shape[1] // 2, dim=1)
     loss = th.nn.functional.mse_loss(epsilon, noise.to(device).detach())
-    
+
     # Calculate quartile losses for monitoring
     quartile_bounds = [0, 250, 500, 750, 1000]
     quartile_losses = {}
-    
+
     for i in range(4):
-        mask = (timesteps >= quartile_bounds[i]) & (timesteps < quartile_bounds[i+1])
+        mask = (timesteps >= quartile_bounds[i]) & (timesteps < quartile_bounds[i + 1])
         if mask.any():
             quartile_loss = th.nn.functional.mse_loss(
-                epsilon[mask], 
-                noise[mask].to(device).detach()
+                epsilon[mask], noise[mask].to(device).detach()
             )
             quartile_losses[f"loss_q{i}"] = quartile_loss.item()
         else:
             quartile_losses[f"loss_q{i}"] = 0.0
-    
+
     return loss, quartile_losses
 
 
@@ -172,34 +177,36 @@ def upsample_train_step(
     )
     epsilon, _ = th.split(model_output, model_output.shape[1] // 2, dim=1)
     loss = th.nn.functional.mse_loss(epsilon, noise.to(device).detach())
-    
+
     # Calculate quartile losses
     quartile_bounds = [0, 250, 500, 750, 1000]
     quartile_losses = {}
-    
+
     for i in range(4):
-        mask = (timesteps >= quartile_bounds[i]) & (timesteps < quartile_bounds[i+1])
+        mask = (timesteps >= quartile_bounds[i]) & (timesteps < quartile_bounds[i + 1])
         if mask.any():
             quartile_loss = th.nn.functional.mse_loss(
-                epsilon[mask], 
-                noise[mask].to(device).detach()
+                epsilon[mask], noise[mask].to(device).detach()
             )
             quartile_losses[f"loss_q{i}"] = quartile_loss.item()
         else:
             quartile_losses[f"loss_q{i}"] = 0.0
-    
+
     return loss, quartile_losses
 
 
-def get_warmup_lr(step: int, base_lr: float, warmup_steps: int, warmup_type: str) -> float:
+def get_warmup_lr(
+    step: int, base_lr: float, warmup_steps: int, warmup_type: str
+) -> float:
     """Calculate learning rate during warmup period."""
     if warmup_steps == 0 or step >= warmup_steps:
         return base_lr
-    
+
     if warmup_type == "linear":
         return base_lr * (step / warmup_steps)
     elif warmup_type == "cosine":
         import math
+
         return base_lr * 0.5 * (1.0 + math.cos(math.pi * (1.0 - step / warmup_steps)))
     else:
         return base_lr
@@ -226,27 +233,31 @@ def update_metrics(
         "lr": current_lr,
         **step_metrics,  # Add all quartile metrics
     }
-    
+
     # Add VRAM metrics
     vram_usage = get_vram_usage()
-    log.update({
-        "vram_allocated_gb": vram_usage["allocated_gb"],
-        "vram_reserved_gb": vram_usage["reserved_gb"],
-        "vram_percent": (vram_usage["allocated_gb"] / vram_usage["total_gb"]) * 100 if vram_usage["total_gb"] > 0 else 0,
-    })
-    
+    log.update(
+        {
+            "vram_allocated_gb": vram_usage["allocated_gb"],
+            "vram_reserved_gb": vram_usage["reserved_gb"],
+            "vram_percent": (vram_usage["allocated_gb"] / vram_usage["total_gb"]) * 100
+            if vram_usage["total_gb"] > 0
+            else 0,
+        }
+    )
+
     # Calculate total samples processed
     samples_processed = (global_step + 1) * batch_size
     log["samples_seen"] = samples_processed
-    
+
     # Calculate parameter norm (cheap operation)
     param_norm = 0.0
     for p in glide_model.parameters():
         if p.requires_grad:
             param_norm += p.data.norm(2).item() ** 2
-    param_norm = param_norm ** 0.5
+    param_norm = param_norm**0.5
     log["param_norm"] = param_norm
-    
+
     return log
 
 
@@ -289,13 +300,13 @@ def training_loop(
     """Main training loop with error handling."""
     train_idx = -1
     current_state = None
-    
+
     def get_current_state():
         return current_state
-    
+
     # Setup SIGINT handler
     checkpoint_manager.setup_sigint_handler(get_current_state)
-    
+
     # Generate initial samples before training starts
     print("\nGenerating initial samples before training...")
     with th.no_grad():
@@ -316,27 +327,29 @@ def training_loop(
                 0,  # train_idx = 0 for initial
                 config["epoch_offset"],  # global_step
             )
-    
+
     try:
         for train_idx, batch in enumerate(dataloader):
             # Early stopping check
             if config["early_stop"] > 0 and train_idx >= config["early_stop"]:
-                print(f"Early stopping at step {train_idx} (early_stop={config['early_stop']})")
+                print(
+                    f"Early stopping at step {train_idx} (early_stop={config['early_stop']})"
+                )
                 break
-            
+
             # Calculate global step for warmup
             global_step = config["epoch_offset"] + train_idx
-            
+
             # Apply learning rate warmup
             current_lr = get_warmup_lr(
-                global_step, 
-                config["base_lr"], 
-                config["warmup_steps"], 
-                config["warmup_type"]
+                global_step,
+                config["base_lr"],
+                config["warmup_steps"],
+                config["warmup_type"],
             )
             for param_group in optimizer.param_groups:
-                param_group['lr'] = current_lr
-            
+                param_group["lr"] = current_lr
+
             # Update current state for SIGINT handler
             current_state = {
                 "model": glide_model,
@@ -348,7 +361,7 @@ def training_loop(
                 "warmup_type": config["warmup_type"],
                 "base_lr": config["base_lr"],
             }
-            
+
             # Training step
             accumulated_loss, step_metrics = train_step_fn(
                 glide_model=glide_model,
@@ -359,7 +372,7 @@ def training_loop(
             accumulated_loss.backward()
             optimizer.step()
             glide_model.zero_grad()
-            
+
             # Update metrics
             config["log"] = update_metrics(
                 config["log"],
@@ -372,24 +385,24 @@ def training_loop(
                 config["gradient_accumualation_steps"],
                 glide_model,
             )
-            
+
             # Log metrics to wandb
             if config["wandb_run"] is not None and hasattr(config["wandb_run"], "log"):
                 config["wandb_run"].log(config["log"])
-            
+
             # Console output at log_frequency intervals
             if train_idx > 0 and train_idx % config["log_frequency"] == 0:
                 print_metrics(
-                    config["log"], 
-                    step_metrics, 
-                    global_step, 
-                    accumulated_loss, 
+                    config["log"],
+                    step_metrics,
+                    global_step,
+                    accumulated_loss,
                     current_lr,
                     config["warmup_steps"],
                     config["first_log"],
                 )
                 config["first_log"] = False
-            
+
             # Sample generation
             if global_step > 0 and global_step % config["sample_interval"] == 0:
                 if config.get("eval_prompts"):
@@ -409,7 +422,7 @@ def training_loop(
                         train_idx,
                         global_step,
                     )
-            
+
             # Checkpoint saving
             if train_idx % 5000 == 0 and train_idx > 0:
                 save_checkpoint_with_manager(
@@ -423,7 +436,7 @@ def training_loop(
                     config["warmup_type"],
                     config["base_lr"],
                 )
-        
+
         # Save final checkpoint
         print("Finished training, saving final checkpoint")
         save_checkpoint_with_manager(
@@ -437,7 +450,7 @@ def training_loop(
             config["warmup_type"],
             config["base_lr"],
         )
-        
+
     except Exception as e:
         handle_training_error(
             e,
@@ -452,7 +465,7 @@ def training_loop(
             config["base_lr"],
         )
         raise
-    
+
     return train_idx + 1
 
 
@@ -470,11 +483,13 @@ def handle_training_error(
 ) -> None:
     """Handle errors during training by optionally saving emergency checkpoint."""
     print(f"\n\n🚨 ERROR during training: {type(error).__name__}: {error}")
-    
+
     # Ask user if they want to save checkpoint
-    if prompt_with_timeout("Do you want to save an emergency checkpoint?", timeout=20, default=True):
+    if prompt_with_timeout(
+        "Do you want to save an emergency checkpoint?", timeout=20, default=True
+    ):
         print("💾 Saving emergency checkpoint...")
-        
+
         try:
             if train_idx >= 0:
                 checkpoint_manager.save_checkpoint(
@@ -482,12 +497,17 @@ def handle_training_error(
                     optimizer=optimizer,
                     epoch=epoch,
                     step=train_idx,
-                    global_step=epoch_offset + train_idx if train_idx >= 0 else epoch_offset,
+                    global_step=epoch_offset + train_idx
+                    if train_idx >= 0
+                    else epoch_offset,
                     warmup_steps=warmup_steps,
                     warmup_type=warmup_type,
                     base_lr=base_lr,
                     checkpoint_type="emergency",
-                    additional_state={"error": str(error), "error_type": type(error).__name__},
+                    additional_state={
+                        "error": str(error),
+                        "error_type": type(error).__name__,
+                    },
                 )
                 print("✅ Emergency checkpoint saved successfully!")
             else:
@@ -516,43 +536,47 @@ def print_metrics(
         print("  q2: Mid-late (t=500-750) - adding details")
         print("  q3: Late denoising (t=750-1000) - final refinements")
         print("Lower values = better performance at that stage\n")
-    
+
     # Create metrics display
     metrics_str = f"Step {global_step}: loss: {accumulated_loss.item():.4f}"
     metrics_str += f", lr: {current_lr:.2e}"
-    
+
     # Add quartile losses
     q_losses = [f"q{i}: {step_metrics.get(f'loss_q{i}', 0.0):.4f}" for i in range(4)]
     metrics_str += f" | Quartiles: {' '.join(q_losses)}"
-    
+
     print(metrics_str)
-    
+
     if warmup_steps > 0 and global_step < warmup_steps:
-        print(f"  Warmup progress: {global_step}/{warmup_steps} ({global_step/warmup_steps*100:.1f}%)")
+        print(
+            f"  Warmup progress: {global_step}/{warmup_steps} ({global_step / warmup_steps * 100:.1f}%)"
+        )
 
 
-def create_image_grid(images: List[PIL.Image.Image], grid_cols: int, grid_rows: int) -> PIL.Image.Image:
+def create_image_grid(
+    images: List[PIL.Image.Image], grid_cols: int, grid_rows: int
+) -> PIL.Image.Image:
     """Create a grid from a list of images.
-    
+
     Args:
         images: List of PIL images
         grid_cols: Number of columns in the grid
         grid_rows: Number of rows in the grid
-        
+
     Returns:
         PIL Image containing the grid
     """
     if len(images) != grid_cols * grid_rows:
         raise ValueError(f"Expected {grid_cols * grid_rows} images, got {len(images)}")
-    
+
     # Get dimensions from first image
     img_width, img_height = images[0].size
-    
+
     # Create new image for grid
     grid_width = img_width * grid_cols
     grid_height = img_height * grid_rows
-    grid_img = PIL.Image.new('RGB', (grid_width, grid_height))
-    
+    grid_img = PIL.Image.new("RGB", (grid_width, grid_height))
+
     # Paste images into grid
     for idx, img in enumerate(images):
         row = idx // grid_cols
@@ -560,7 +584,7 @@ def create_image_grid(images: List[PIL.Image.Image], grid_cols: int, grid_rows: 
         x = col * img_width
         y = row * img_height
         grid_img.paste(img, (x, y))
-    
+
     return grid_img
 
 
@@ -573,8 +597,10 @@ def generate_eval_grid(
     global_step: int,
 ) -> None:
     """Generate and save a grid of images from multiple evaluation prompts."""
-    print(f"Generating evaluation grid with {len(prompts)} prompts at step {global_step}...")
-    
+    print(
+        f"Generating evaluation grid with {len(prompts)} prompts at step {global_step}..."
+    )
+
     # Calculate grid size - for 8 prompts, use 4x2 grid
     num_prompts = len(prompts)
     if num_prompts == 8:
@@ -582,14 +608,14 @@ def generate_eval_grid(
         grid_rows = 2
     else:
         # For square numbers (4, 16, 32 etc), use square grid
-        grid_size = int(num_prompts ** 0.5)
+        grid_size = int(num_prompts**0.5)
         grid_cols = grid_size
         grid_rows = grid_size
-    
+
     # Generate images for all prompts
     all_images = []
     for i, prompt in enumerate(prompts):
-        print(f"  Generating image {i+1}/{len(prompts)}: {prompt[:50]}...")
+        print(f"  Generating image {i + 1}/{len(prompts)}: {prompt[:50]}...")
         samples = glide_util.sample(
             glide_model=glide_model,
             glide_options=glide_options,
@@ -606,15 +632,15 @@ def generate_eval_grid(
         # Convert to PIL and add to list
         img = train_util.pred_to_pil(samples)
         all_images.append(img)
-    
+
     # Create grid
     grid_img = create_image_grid(all_images, grid_cols, grid_rows)
-    
+
     # Save grid
     grid_save_path = os.path.join(config["outputs_dir"], f"eval_grid_{train_idx}.png")
     grid_img.save(grid_save_path)
     print(f"Saved evaluation grid to {grid_save_path}")
-    
+
     # Generate ESRGAN upsampled grid if enabled
     esrgan_grid_path = None
     if config.get("esrgan") is not None:
@@ -623,46 +649,53 @@ def generate_eval_grid(
         for img in all_images:
             upsampled_img = config["esrgan"].upsample_pil(img)
             esrgan_images.append(upsampled_img)
-        
+
         # Create ESRGAN grid
         esrgan_grid = create_image_grid(esrgan_images, grid_cols, grid_rows)
-        esrgan_grid_path = os.path.join(config["outputs_dir"], f"eval_grid_{train_idx}_esrgan.png")
+        esrgan_grid_path = os.path.join(
+            config["outputs_dir"], f"eval_grid_{train_idx}_esrgan.png"
+        )
         esrgan_grid.save(esrgan_grid_path)
         print_vram_usage("After ESRGAN grid upsampling")
         print(f"Saved ESRGAN evaluation grid to {esrgan_grid_path}")
-    
+
     # Log to wandb
     if config["wandb_run"] is not None and hasattr(config["wandb_run"], "log"):
-        if hasattr(config["wandb_run"], "__class__") and config["wandb_run"].__class__.__name__ == "MockWandbRun":
+        if (
+            hasattr(config["wandb_run"], "__class__")
+            and config["wandb_run"].__class__.__name__ == "MockWandbRun"
+        ):
             # Skip wandb.Image for mocked runs
             pass
         else:
             # Log the grid
             log_dict = {
-                "eval_grid": wandb.Image(grid_save_path, caption=f"Evaluation grid at step {global_step}"),
+                "eval_grid": wandb.Image(
+                    grid_save_path, caption=f"Evaluation grid at step {global_step}"
+                ),
             }
             if esrgan_grid_path:
-                log_dict["eval_grid_esrgan"] = wandb.Image(esrgan_grid_path, caption=f"ESRGAN grid at step {global_step}")
+                log_dict["eval_grid_esrgan"] = wandb.Image(
+                    esrgan_grid_path, caption=f"ESRGAN grid at step {global_step}"
+                )
             config["wandb_run"].log(log_dict)
-            
+
             # Also log individual images as a gallery with captions
             wandb_images = []
             for img, prompt in zip(all_images, prompts):
                 wandb_images.append(wandb.Image(img, caption=prompt))
-            
-            config["wandb_run"].log({
-                "eval_gallery": wandb_images
-            })
-            
+
+            config["wandb_run"].log({"eval_gallery": wandb_images})
+
             # Log ESRGAN gallery if enabled
             if config.get("esrgan") is not None:
                 wandb_esrgan_images = []
                 for img, prompt in zip(esrgan_images, prompts):
-                    wandb_esrgan_images.append(wandb.Image(img, caption=f"{prompt} (ESRGAN 256x256)"))
-                
-                config["wandb_run"].log({
-                    "eval_gallery_esrgan": wandb_esrgan_images
-                })
+                    wandb_esrgan_images.append(
+                        wandb.Image(img, caption=f"{prompt} (ESRGAN 256x256)")
+                    )
+
+                config["wandb_run"].log({"eval_gallery_esrgan": wandb_esrgan_images})
 
 
 def generate_sample(
@@ -690,20 +723,25 @@ def generate_sample(
     sample_save_path = os.path.join(config["outputs_dir"], f"{train_idx}.png")
     base_image = train_util.pred_to_pil(samples)
     base_image.save(sample_save_path)
-    
+
     # Generate ESRGAN upsampled version if enabled
     esrgan_save_path = None
     if config.get("esrgan") is not None:
         print_vram_usage("Before ESRGAN upsampling")
         upsampled_image = config["esrgan"].upsample_pil(base_image)
-        esrgan_save_path = os.path.join(config["outputs_dir"], f"{train_idx}_esrgan.png")
+        esrgan_save_path = os.path.join(
+            config["outputs_dir"], f"{train_idx}_esrgan.png"
+        )
         upsampled_image.save(esrgan_save_path)
         print_vram_usage("After ESRGAN upsampling")
         print(f"Saved ESRGAN upsampled image {esrgan_save_path}")
-    
+
     # Log sample images to wandb (may be mocked for early_stop runs)
     if config["wandb_run"] is not None and hasattr(config["wandb_run"], "log"):
-        if hasattr(config["wandb_run"], "__class__") and config["wandb_run"].__class__.__name__ == "MockWandbRun":
+        if (
+            hasattr(config["wandb_run"], "__class__")
+            and config["wandb_run"].__class__.__name__ == "MockWandbRun"
+        ):
             # Skip wandb.Image for mocked runs
             pass
         else:
@@ -711,9 +749,11 @@ def generate_sample(
                 "samples": wandb.Image(sample_save_path, caption=config["prompt"]),
             }
             if esrgan_save_path:
-                log_dict["samples_esrgan"] = wandb.Image(esrgan_save_path, caption=f"{config['prompt']} (ESRGAN 256x256)")
+                log_dict["samples_esrgan"] = wandb.Image(
+                    esrgan_save_path, caption=f"{config['prompt']} (ESRGAN 256x256)"
+                )
             config["wandb_run"].log(log_dict)
-    
+
     print(f"Saved sample {sample_save_path}")
 
 
@@ -756,24 +796,25 @@ def run_glide_finetune_epoch(
     """Run a single epoch of GLIDE fine-tuning with error handling and checkpointing."""
     # Select training step function
     train_step_fn = upsample_train_step if train_upsample else base_train_step
-    
+
     # Initialize ESRGAN if requested
     esrgan = None
     if use_esrgan:
         from glide_finetune.esrgan import ESRGANUpsampler
+
         print("\nInitializing ESRGAN for upsampling...")
         print_vram_usage("Before ESRGAN")
         esrgan = ESRGANUpsampler(device=device, cache_dir=esrgan_cache_dir)
         print_vram_usage("After loading ESRGAN")
-    
+
     # Prepare model
     glide_model.to(device)
     glide_model.train()
-    
+
     # Create checkpoint manager if not provided
     if checkpoint_manager is None:
         checkpoint_manager = CheckpointManager(checkpoints_dir)
-    
+
     # Pack configuration
     config = {
         "epoch": epoch,
@@ -802,7 +843,7 @@ def run_glide_finetune_epoch(
         "eval_prompts": eval_prompts,
         "esrgan": esrgan,
     }
-    
+
     # Run training loop
     steps_taken = training_loop(
         dataloader,
@@ -814,5 +855,5 @@ def run_glide_finetune_epoch(
         train_step_fn,
         config,
     )
-    
+
     return steps_taken

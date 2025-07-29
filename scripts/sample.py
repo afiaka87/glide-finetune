@@ -32,22 +32,24 @@ def print_vram_usage(label: str = ""):
     """Print current VRAM usage."""
     usage = get_vram_usage()
     prefix = f"[{label}] " if label else ""
-    print(f"{prefix}VRAM: {usage['allocated_gb']:.2f}/{usage['total_gb']:.2f} GB allocated, "
-          f"{usage['reserved_gb']:.2f} GB reserved")
+    print(
+        f"{prefix}VRAM: {usage['allocated_gb']:.2f}/{usage['total_gb']:.2f} GB allocated, "
+        f"{usage['reserved_gb']:.2f} GB reserved"
+    )
 
 
 def load_prompts_from_file(filepath: str) -> List[str]:
     """Load prompts from a text file."""
-    with open(filepath, 'r') as f:
+    with open(filepath, "r") as f:
         prompts = [line.strip() for line in f if line.strip()]
-    
+
     valid_counts = [2, 4, 8, 16, 32]
     if len(prompts) not in valid_counts:
         raise ValueError(
             f"Prompt file must contain exactly {', '.join(map(str, valid_counts))} prompts. "
             f"Found {len(prompts)} prompts."
         )
-    
+
     return prompts
 
 
@@ -55,42 +57,42 @@ def create_image_grid(images: List[Image.Image]) -> Image.Image:
     """Create a square grid from a list of images."""
     n = len(images)
     grid_size = int(np.sqrt(n))
-    
+
     if grid_size * grid_size != n:
         raise ValueError(f"Number of images ({n}) must be a perfect square")
-    
+
     img_width, img_height = images[0].size
     grid_width = img_width * grid_size
     grid_height = img_height * grid_size
-    
-    grid = Image.new('RGB', (grid_width, grid_height))
-    
+
+    grid = Image.new("RGB", (grid_width, grid_height))
+
     for idx, img in enumerate(images):
         row = idx // grid_size
         col = idx % grid_size
         grid.paste(img, (col * img_width, row * img_height))
-    
+
     return grid
 
 
 def get_next_output_dir(base_dir: Path) -> Path:
     """Get the next available output directory with 5-digit numbering."""
     base_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # Find existing directories
     existing_dirs = [d for d in base_dir.iterdir() if d.is_dir() and d.name.isdigit()]
-    
+
     if not existing_dirs:
         next_num = 0
     else:
         # Get the highest number
         numbers = [int(d.name) for d in existing_dirs]
         next_num = max(numbers) + 1
-    
+
     # Create directory with 5-digit format
     output_dir = base_dir / f"{next_num:05d}"
     output_dir.mkdir(parents=True, exist_ok=True)
-    
+
     return output_dir
 
 
@@ -98,14 +100,14 @@ def tensor_to_pil(tensor: torch.Tensor) -> Image.Image:
     """Convert a tensor to PIL Image."""
     # Move to CPU and convert to numpy
     img_np = tensor.cpu().numpy()
-    
+
     # Convert from [-1, 1] to [0, 255]
     img_np = (img_np + 1) * 127.5
     img_np = img_np.clip(0, 255).astype(np.uint8)
-    
+
     # Transpose from CHW to HWC
     img_np = img_np.transpose(1, 2, 0)
-    
+
     return Image.fromarray(img_np)
 
 
@@ -123,20 +125,20 @@ def sample_single(
     esrgan: Optional[ESRGANUpsampler] = None,
 ) -> Tuple[List[Image.Image], List[Optional[Image.Image]], float]:
     """Sample images with a single sampler and return timing."""
-    
+
     # Set seed if provided
     if seed is not None:
         torch.manual_seed(seed)
         np.random.seed(seed)
-    
+
     # Prepare sampler kwargs
     sampler_kwargs = {}
     if sampler_name in ["euler", "euler_a", "dpm++_2m"] and use_karras:
         sampler_kwargs["use_karras"] = True
-    
+
     # Time the sampling
     start_time = time.time()
-    
+
     # Sample
     samples = sample(
         glide_model=model,
@@ -151,13 +153,13 @@ def sample_single(
         sampler_name=sampler_name,
         sampler_kwargs=sampler_kwargs,
     )
-    
+
     end_time = time.time()
     elapsed = end_time - start_time
-    
+
     # Convert to PIL images
     images = [tensor_to_pil(samples[i]) for i in range(samples.shape[0])]
-    
+
     # Upsample with ESRGAN if requested
     upsampled_images = []
     if esrgan is not None:
@@ -168,7 +170,7 @@ def sample_single(
         print_vram_usage(f"After ESRGAN upsampling")
     else:
         upsampled_images = [None] * len(images)
-    
+
     return images, upsampled_images, elapsed
 
 
@@ -185,26 +187,26 @@ def run_benchmark(
     esrgan: Optional[ESRGANUpsampler] = None,
 ) -> None:
     """Run benchmark comparing all samplers."""
-    
-    print(f"\n{'='*60}")
+
+    print(f"\n{'=' * 60}")
     print("BENCHMARK MODE")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(f"Prompt: {prompt}")
     print(f"Steps: {num_steps}")
     print(f"Guidance scale: {guidance_scale}")
     print(f"Device: {device}")
     print(f"Karras schedule: {use_karras}")
-    print(f"{'='*60}\n")
-    
+    print(f"{'=' * 60}\n")
+
     # Fixed seed for fair comparison
     seed = 42
-    
+
     results = {}
     all_images = []
-    
+
     for sampler_name in samplers:
         print(f"\nTesting {sampler_name}...")
-        
+
         try:
             images, upsampled_images, elapsed = sample_single(
                 model=model,
@@ -218,36 +220,36 @@ def run_benchmark(
                 use_karras=use_karras,
                 esrgan=esrgan,
             )
-            
+
             # Save individual image
             img_path = output_dir / f"{sampler_name}.png"
             images[0].save(img_path)
-            
+
             # Save upsampled image if available
             if upsampled_images[0] is not None:
                 upsampled_path = output_dir / f"{sampler_name}_esrgan.png"
                 upsampled_images[0].save(upsampled_path)
-            
+
             all_images.extend(images)
             results[sampler_name] = elapsed
-            
+
             print(f"✓ {sampler_name}: {elapsed:.2f}s")
-            
+
         except Exception as e:
             print(f"✗ {sampler_name} failed: {str(e)}")
             results[sampler_name] = None
-    
+
     # Print summary
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("BENCHMARK RESULTS")
-    print(f"{'='*60}")
-    
+    print(f"{'=' * 60}")
+
     for sampler_name, elapsed in results.items():
         if elapsed is not None:
             print(f"{sampler_name:20s} {elapsed:8.2f}s")
         else:
             print(f"{sampler_name:20s}   FAILED")
-    
+
     # Save comparison grid if we have results
     if all_images:
         # Pad to make square grid if needed
@@ -255,9 +257,9 @@ def run_benchmark(
         grid_size = int(np.ceil(np.sqrt(n)))
         while len(all_images) < grid_size * grid_size:
             # Create blank image
-            all_images.append(Image.new('RGB', all_images[0].size, (128, 128, 128)))
-        
-        grid = create_image_grid(all_images[:grid_size * grid_size])
+            all_images.append(Image.new("RGB", all_images[0].size, (128, 128, 128)))
+
+        grid = create_image_grid(all_images[: grid_size * grid_size])
         grid_path = output_dir / "benchmark_grid.png"
         grid.save(grid_path)
         print(f"\nSaved benchmark grid to: {grid_path}")
@@ -265,7 +267,7 @@ def run_benchmark(
 
 def main():
     parser = argparse.ArgumentParser(description="Sample from GLIDE models")
-    
+
     # Model arguments
     parser.add_argument(
         "--model_path",
@@ -280,7 +282,7 @@ def main():
         choices=["base", "upsample", "base-inpaint", "upsample-inpaint"],
         help="Type of model to load",
     )
-    
+
     # Prompt arguments (mutually exclusive)
     prompt_group = parser.add_mutually_exclusive_group(required=True)
     prompt_group.add_argument(
@@ -293,7 +295,7 @@ def main():
         type=str,
         help="File containing prompts (must have 2, 4, 8, 16, or 32 lines)",
     )
-    
+
     # Sampling arguments
     parser.add_argument(
         "--sampler",
@@ -324,7 +326,7 @@ def main():
         action="store_true",
         help="Use Karras sigma schedule for applicable samplers",
     )
-    
+
     # Output arguments
     parser.add_argument(
         "--output_dir",
@@ -332,14 +334,14 @@ def main():
         default="./outputs/eval",
         help="Base directory for outputs",
     )
-    
+
     # Special modes
     parser.add_argument(
         "--benchmark",
         action="store_true",
         help="Run benchmark mode comparing all samplers with fixed seed",
     )
-    
+
     # Hardware arguments
     parser.add_argument(
         "--device",
@@ -352,7 +354,7 @@ def main():
         action="store_true",
         help="Use FP16 precision",
     )
-    
+
     # ESRGAN upsampling arguments
     parser.add_argument(
         "--use_esrgan",
@@ -365,13 +367,13 @@ def main():
         default="./esrgan_models",
         help="Directory to cache ESRGAN model weights",
     )
-    
+
     args = parser.parse_args()
-    
+
     # Load model
     print("Loading model...")
     print_vram_usage("Initial")
-    
+
     model, _, options = load_model(
         glide_path=args.model_path,
         use_fp16=args.use_fp16,
@@ -379,39 +381,39 @@ def main():
     )
     model.eval()
     model = model.to(args.device)
-    
+
     print_vram_usage("After loading GLIDE")
-    
+
     # Initialize ESRGAN if requested
     esrgan = None
     if args.use_esrgan:
         print("\nLoading ESRGAN model...")
         esrgan = ESRGANUpsampler(device=args.device, cache_dir=args.esrgan_cache_dir)
         print_vram_usage("After loading ESRGAN")
-    
+
     # Get prompts
     if args.prompt_file:
         prompts = load_prompts_from_file(args.prompt_file)
     else:
         prompts = [args.prompt]
-    
+
     # Get output directory
     output_base = Path(args.output_dir)
     output_dir = get_next_output_dir(output_base)
     print(f"Output directory: {output_dir}")
-    
+
     # Get samplers to use
     if args.sampler == "all":
         # Use the fixed samplers that work with GLIDE
         samplers = ["plms", "ddim", "euler", "euler_a", "dpm++_2m", "dpm++_2m_karras"]
     else:
         samplers = [args.sampler]
-    
+
     # Run benchmark mode if requested
     if args.benchmark:
         if len(prompts) > 1:
             print("Warning: Benchmark mode uses only the first prompt")
-        
+
         run_benchmark(
             model=model,
             options=options,
@@ -425,16 +427,16 @@ def main():
             esrgan=esrgan,
         )
         return
-    
+
     # Normal sampling mode
     all_images = []
-    
+
     for prompt_idx, prompt in enumerate(prompts):
         print(f"\nPrompt {prompt_idx + 1}/{len(prompts)}: {prompt}")
-        
+
         for sampler_name in samplers:
             print(f"  Sampling with {sampler_name}...")
-            
+
             try:
                 images, upsampled_images, elapsed = sample_single(
                     model=model,
@@ -448,9 +450,11 @@ def main():
                     use_karras=args.use_karras,
                     esrgan=esrgan,
                 )
-                
+
                 # Save individual images
-                for batch_idx, (img, upsampled_img) in enumerate(zip(images, upsampled_images)):
+                for batch_idx, (img, upsampled_img) in enumerate(
+                    zip(images, upsampled_images)
+                ):
                     if len(samplers) == 1 and args.batch_size == 1:
                         # Simple naming when single sampler and batch
                         filename = f"sample{prompt_idx + 1}.png"
@@ -459,21 +463,21 @@ def main():
                         # More complex naming for multiple samplers/batches
                         filename = f"prompt{prompt_idx + 1}_{sampler_name}_batch{batch_idx + 1}.png"
                         upsampled_filename = f"prompt{prompt_idx + 1}_{sampler_name}_batch{batch_idx + 1}_esrgan.png"
-                    
+
                     img_path = output_dir / filename
                     img.save(img_path)
                     all_images.append(img)
-                    
+
                     # Save upsampled image if available
                     if upsampled_img is not None:
                         upsampled_path = output_dir / upsampled_filename
                         upsampled_img.save(upsampled_path)
-                
+
                 print(f"    ✓ Generated {len(images)} image(s) in {elapsed:.2f}s")
-                
+
             except Exception as e:
                 print(f"    ✗ Failed: {str(e)}")
-    
+
     # Create and save grid if we have multiple images
     if len(all_images) > 1 and len(all_images) in [4, 16, 64, 256]:
         print("\nCreating image grid...")
@@ -482,10 +486,12 @@ def main():
         grid.save(grid_path)
         print(f"Saved grid to: {grid_path}")
     elif len(all_images) > 1:
-        print(f"\nNote: Generated {len(all_images)} images. Grid requires exactly 4, 16, 64, or 256 images.")
-    
+        print(
+            f"\nNote: Generated {len(all_images)} images. Grid requires exactly 4, 16, 64, or 256 images."
+        )
+
     print(f"\nAll outputs saved to: {output_dir}")
-    
+
     # Final VRAM report
     print_vram_usage("Final")
 

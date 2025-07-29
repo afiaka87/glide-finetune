@@ -10,17 +10,17 @@ from .base import Sampler, SamplerRegistry
 @SamplerRegistry.register("plms")
 class PLMSSampler(Sampler):
     """PLMS sampler - uses the existing guided-diffusion implementation."""
-    
+
     @property
     def name(self) -> str:
         return "plms"
-    
+
     def sample(
         self,
         num_steps: int,
         cond_fn: Optional[Callable] = None,
         progress: bool = True,
-        **kwargs
+        **kwargs,
     ) -> th.Tensor:
         """Sample using PLMS method."""
         # Use existing plms_sample_loop from guided-diffusion

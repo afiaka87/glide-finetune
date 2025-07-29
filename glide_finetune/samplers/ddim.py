@@ -10,21 +10,21 @@ from .base import Sampler, SamplerRegistry
 @SamplerRegistry.register("ddim")
 class DDIMSampler(Sampler):
     """DDIM sampler - deterministic sampling."""
-    
+
     @property
     def name(self) -> str:
         return "ddim"
-    
+
     def sample(
         self,
         num_steps: int,
         eta: float = 0.0,
         progress: bool = True,
         cond_fn: Optional[Callable] = None,
-        **kwargs
+        **kwargs,
     ) -> th.Tensor:
         """Sample using DDIM method.
-        
+
         Args:
             num_steps: Number of sampling steps
             eta: DDIM eta parameter (0.0 for deterministic)
