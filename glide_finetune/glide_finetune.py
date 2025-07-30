@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 from typing import Any, Dict, List, Tuple
 
 import PIL.Image
@@ -222,6 +223,7 @@ def update_metrics(
     gradient_accumualation_steps: int,
     glide_model: th.nn.Module,
     wds_stats: Any = None,
+    step_time: float = None,
 ) -> Dict[str, float]:
     """Update and return training metrics."""
     # Combine all metrics
@@ -238,7 +240,18 @@ def update_metrics(
     if wds_stats is not None:
         wds_summary = wds_stats.get_summary()
         # Add wds_ prefix to all WebDataset metrics
-        wds_metrics = {f"wds_{k}": v for k, v in wds_summary.items()}
+        wds_metrics = {}
+        for k, v in wds_summary.items():
+            # Special handling for NSFW distribution to filter out hex strings
+            if k == "metadata_nsfw_distribution" and isinstance(v, dict):
+                valid_nsfw_categories = {"UNLIKELY", "UNSURE", "NSFW", "True", "False", "?"}
+                filtered_dist = {
+                    cat: count for cat, count in v.items() 
+                    if cat in valid_nsfw_categories or (len(cat) <= 10 and not all(c in "0123456789abcdef" for c in cat.lower()))
+                }
+                wds_metrics[f"wds_{k}"] = filtered_dist
+            else:
+                wds_metrics[f"wds_{k}"] = v
         log.update(wds_metrics)
 
     # Add VRAM metrics
@@ -256,6 +269,11 @@ def update_metrics(
     # Calculate total samples processed
     samples_processed = (global_step + 1) * batch_size
     log["samples_seen"] = samples_processed
+
+    # Calculate samples per second if step time is provided
+    if step_time is not None and step_time > 0:
+        samples_per_second = batch_size / step_time
+        log["samples_per_second"] = samples_per_second
 
     # Calculate parameter norm (cheap operation)
     param_norm = 0.0
@@ -338,6 +356,9 @@ def training_loop(
 
     try:
         for train_idx, batch in enumerate(dataloader):
+            # Start timing the step
+            step_start_time = time.time()
+            
             # Early stopping check
             if config["early_stop"] > 0 and train_idx >= config["early_stop"]:
                 early_stop_val = config["early_stop"]
@@ -382,6 +403,9 @@ def training_loop(
             optimizer.step()
             glide_model.zero_grad()
 
+            # Calculate step time
+            step_time = time.time() - step_start_time
+
             # Update metrics
             config["log"] = update_metrics(
                 config["log"],
@@ -394,6 +418,7 @@ def training_loop(
                 config["gradient_accumualation_steps"],
                 glide_model,
                 config.get("wds_stats"),
+                step_time,
             )
 
             # Log metrics to wandb
@@ -552,6 +577,10 @@ def print_metrics(
     # Create metrics display
     metrics_str = f"Step {global_step}: loss: {accumulated_loss.item():.4f}"
     metrics_str += f", lr: {current_lr:.2e}"
+    
+    # Add samples per second if available
+    if "samples_per_second" in log:
+        metrics_str += f", samples/s: {log['samples_per_second']:.2f}"
 
     # Add quartile losses
     q_losses = [f"q{i}: {step_metrics.get(f'loss_q{i}', 0.0):.4f}" for i in range(4)]
@@ -600,7 +629,13 @@ def print_metrics(
 
         if "metadata_nsfw_distribution" in summary:
             nsfw_dist = summary["metadata_nsfw_distribution"]
-            nsfw_str = ", ".join(f"{k}: {v}" for k, v in nsfw_dist.items())
+            # Filter out long hex strings and keep only known NSFW categories
+            valid_nsfw_categories = {"UNLIKELY", "UNSURE", "NSFW", "True", "False", "?"}
+            filtered_dist = {
+                k: v for k, v in nsfw_dist.items() 
+                if k in valid_nsfw_categories or (len(k) <= 10 and not all(c in "0123456789abcdef" for c in k.lower()))
+            }
+            nsfw_str = ", ".join(f"{k}: {v}" for k, v in filtered_dist.items())
             print(f"    NSFW distribution: {nsfw_str}")
 
 
