@@ -40,6 +40,72 @@ uv sync
 # uv run python train_glide.py --help
 ```
 
+## Quick Start
+
+Here's the simplest way to start training:
+
+```sh
+# Basic training with recommended settings
+uv run python train_glide.py \
+  --data_dir './path/to/your/images' \
+  --batch_size 4 \
+  --learning_rate 1e-4 \
+  --use_8bit_adam \
+  --use_tf32 \
+  --checkpoints_dir './checkpoints'
+```
+
+This uses:
+- 8-bit AdamW optimizer for 50% memory savings
+- TensorFloat-32 for ~3x faster training on modern GPUs
+- Default settings that work well for most datasets
+
+## Dataset Formats
+
+### Standard Dataset Format
+
+For regular image-caption pairs, organize your dataset as:
+
+```
+data_dir/
+├── image1.jpg
+├── image1.txt  # Caption for image1
+├── image2.png
+├── image2.txt  # Caption for image2
+└── ...
+```
+
+- Each image should have a corresponding `.txt` file with the same name
+- Caption files should contain a single line of text describing the image
+- Supported image formats: `.jpg`, `.jpeg`, `.png`, `.webp`
+- Images will be automatically resized to 64x64 during training
+
+### WebDataset Format
+
+For large-scale training, use WebDataset format (`.tar` files):
+
+```
+data_dir/
+├── shard-000000.tar
+├── shard-000001.tar
+└── ...
+```
+
+Each tar file should contain:
+- Image files (e.g., `00001.jpg`, `00001.png`)
+- Caption files with matching names (e.g., `00001.txt`)
+- Optional metadata files (e.g., `00001.json`)
+
+Example WebDataset usage:
+```sh
+uv run python train_glide.py \
+  --data_dir './path/to/tars/' \
+  --use_webdataset \
+  --wds_caption_key 'txt' \
+  --wds_image_key 'jpg' \
+  --wds_dataset_name 'webdataset'  # or 'laion' for LAION-specific filtering
+```
+
 ## Example usage
 
 ### Finetune the base model
@@ -124,7 +190,12 @@ uv run python train_glide.py \
 2. **Speed optimization**: For faster training on Ampere GPUs (RTX 30xx, A100):
    - `--use_tf32` for up to 3x speedup with minimal precision loss
 
-3. **Wandb logging**: The training automatically logs to Weights & Biases unless `--early_stop` is set
+3. **Image preprocessing**: The code automatically handles images with white padding:
+   - White borders are detected and removed before resizing
+   - Works best with product images, logos, or centered objects
+   - Applied consistently across both standard and WebDataset loaders
+
+4. **Wandb logging**: The training automatically logs to Weights & Biases unless `--early_stop` is set
    - Training metrics: loss, learning rate, quartile losses, parameter norms
    - VRAM usage: allocated, reserved, and percentage used
    - Sample images: both 64x64 base and 256x256 ESRGAN versions if enabled
@@ -134,7 +205,7 @@ uv run python train_glide.py \
      - Metadata distributions (e.g., NSFW ratings, similarity scores)
      - Average preprocessing time per sample
 
-4. **Image Compression**: All generated images are automatically saved as high-quality JPEG files
+5. **Image Compression**: All generated images are automatically saved as high-quality JPEG files
    - Uses quality=95 for excellent visual fidelity
    - Reduces file sizes by 50-70% compared to PNG
    - Speeds up uploads to Weights & Biases
@@ -419,7 +490,7 @@ usage: train_glide.py [-h] [--data_dir DATA_DIR] [--batch_size BATCH_SIZE]
                       [--side_x SIDE_X] [--side_y SIDE_Y]
                       [--resize_ratio RESIZE_RATIO] [--uncond_p UNCOND_P]
                       [--train_upsample] [--resume_ckpt RESUME_CKPT]
-                      [--checkpoints_dir CHECKPOINTS_DIR] [--use_fp16]
+                      [--checkpoints_dir CHECKPOINTS_DIR] [--use_tf32]
                       [--device DEVICE] [--log_frequency LOG_FREQUENCY]
                       [--freeze_transformer] [--freeze_diffusion]
                       [--project_name PROJECT_NAME]
@@ -464,7 +535,7 @@ options:
                         Checkpoint to resume from
   --checkpoints_dir CHECKPOINTS_DIR, -ckpt CHECKPOINTS_DIR
                         Directory to save checkpoints
-  --use_fp16, -fp16     Use mixed precision training
+  --use_tf32            Enable TensorFloat-32 for faster training on Ampere+ GPUs (recommended)
   --device DEVICE, -dev DEVICE
                         Device to use (e.g., cuda, cpu)
   --log_frequency LOG_FREQUENCY, -freq LOG_FREQUENCY
