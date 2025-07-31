@@ -1,3 +1,4 @@
+import os
 import time
 from pathlib import Path
 from random import choice, randint, random
@@ -6,6 +7,7 @@ from typing import Union
 import PIL
 import torch
 import torch as th
+import torch.nn.functional as F
 from torch.utils.data import Dataset
 from torchvision import transforms as T
 
@@ -142,10 +144,14 @@ class TextImageDataset(Dataset):
         self.prefix = folder
         self.side_x = side_x
         self.side_y = side_y
+        self.resolution = side_x  # Assuming square images
         self.tokenizer = tokenizer
         self.uncond_p = uncond_p
         self.enable_upsample = enable_glide_upsample
         self.upscale_factor = upscale_factor
+        
+        # Create transform for final resizing
+        self.transform = T.Resize((self.resolution, self.resolution), interpolation=T.InterpolationMode.BILINEAR)
 
     def __len__(self):
         return len(self.keys)
@@ -166,15 +172,36 @@ class TextImageDataset(Dataset):
     def get_caption(self, ind):
         key = self.keys[ind]
         text_file = self.text_files[key]
-        descriptions = open(text_file, "r").readlines()
-        descriptions = list(filter(lambda t: len(t) > 0, descriptions))
+        
+        # Check if file exists and is readable
+        if not os.path.exists(text_file):
+            print(f"Caption file not found: {text_file} (index {ind}, key {key})")
+            print("  -> Using unconditional tokens")
+            return get_uncond_tokens_mask(self.tokenizer)
+            
+        # Check file size
+        file_size = os.path.getsize(text_file)
+        if file_size == 0:
+            print(f"Empty caption file: {text_file} (index {ind}, key {key})")
+            print("  -> Using unconditional tokens")
+            return get_uncond_tokens_mask(self.tokenizer)
+            
         try:
+            descriptions = open(text_file, "r").readlines()
+            descriptions = list(filter(lambda t: len(t) > 0, descriptions))
+            
+            if not descriptions:
+                print(f"No valid captions in file: {text_file} (index {ind}, key {key})")
+                print("  -> Using unconditional tokens")
+                return get_uncond_tokens_mask(self.tokenizer)
+                
             description = choice(descriptions).strip()
             return get_tokens_and_mask(tokenizer=self.tokenizer, prompt=description)
-        except IndexError:
-            print(f"An exception occurred trying to load file {text_file}.")
-            print(f"Skipping index {ind}")
-            return self.skip_sample(ind)
+        except Exception as e:
+            print(f"Error reading caption file: {text_file} (index {ind}, key {key})")
+            print(f"  Error: {type(e).__name__}: {e}")
+            print("  -> Using unconditional tokens")
+            return get_uncond_tokens_mask(self.tokenizer)
 
     def __getitem__(self, ind):
         key = self.keys[ind]
@@ -202,8 +229,8 @@ class TextImageDataset(Dataset):
             )
             base_tensor = pil_image_to_norm_tensor(base_pil_image)
             return (
-                th.tensor(tokens),
-                th.tensor(mask, dtype=th.bool),
+                tokens,
+                mask,
                 base_tensor,
                 upsample_tensor,
             )
@@ -216,4 +243,24 @@ class TextImageDataset(Dataset):
         # Crop the image to remove white padding
         base_tensor = pil_image_to_norm_tensor(base_pil_image)
         base_tensor = trim_white_padding_tensor(base_tensor)
-        return th.tensor(tokens), th.tensor(mask, dtype=th.bool), base_tensor
+        
+        # Verify image dimensions after trimming
+        expected_shape = (3, self.resolution, self.resolution)
+        if base_tensor.shape != expected_shape:
+            print(f"WARNING: Image shape mismatch after trimming for {image_file}")
+            print(f"  Expected: {expected_shape}, Got: {base_tensor.shape}")
+            print(f"  Index: {ind}, Key: {key}")
+            # Resize to correct dimensions
+            if base_tensor.shape[0] == 3:  # Correct channels
+                base_tensor = F.interpolate(
+                    base_tensor.unsqueeze(0), 
+                    size=(self.resolution, self.resolution), 
+                    mode='bilinear', 
+                    align_corners=False
+                ).squeeze(0)
+                print(f"  -> Resized to {base_tensor.shape}")
+            else:
+                print("  -> Skipping due to incorrect channels")
+                return self.skip_sample(ind)
+                
+        return tokens, mask, base_tensor
