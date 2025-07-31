@@ -13,3 +13,4 @@ TODOS.md
 current_prediction.png
 glide_checkpoints/
 .scratch/
+*.pt
