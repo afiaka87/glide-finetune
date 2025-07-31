@@ -14,3 +14,7 @@ current_prediction.png
 glide_checkpoints/
 .scratch/
 *.pt
+
+# Dataset-specific training scripts
+scripts/run-finetune-laion.sh
+scripts/run-finetune-cc12m.sh

@@ -12,128 +12,18 @@ import io
 import json
 import random
 import time
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, Optional, Tuple
 
 import PIL.Image
 import torch as th
-import torchvision.transforms.functional as TF
 import webdataset as wds
-from PIL import Image
 
 from glide_finetune.glide_util import get_tokens_and_mask, get_uncond_tokens_mask
+from glide_finetune.image_processing import (
+    random_center_crop,
+    trim_white_padding_pil,
+)
 from glide_finetune.train_util import pil_image_to_norm_tensor
-
-# -----------------------------------------------------------------------------#
-# -------------  white-padding removal (pure torch, no OpenCV) ----------------#
-# -----------------------------------------------------------------------------#
-
-
-def _trim_white_padding_tensor(
-    img: th.Tensor,
-    white_thresh: Union[int, float] = 245,
-    morph_kernel: int | None = None,
-) -> th.Tensor:
-    """
-    Remove uniform white padding that was added to make a square canvas.
-
-    Args
-    ----
-    img          :  (C, H, W) uint8 tensor in [0, 255].
-    white_thresh :  pixel values > white_thresh are treated as white.
-    morph_kernel :  optional closing (odd int, e.g. 3 or 5) to bridge gaps.
-
-    Returns
-    -------
-    Cropped tensor (C, h', w').  If no content is found, returns the input img.
-    """
-    assert img.ndim == 3 and img.dtype == th.uint8, "expect (C,H,W) uint8 tensor"
-
-    # 1. binary mask where *any* channel is non-white
-    content = (img < white_thresh).any(dim=0)  # (H,W) bool
-
-    # 2. optional morphological closing to fill tiny holes
-    if morph_kernel and morph_kernel > 1:
-        pad = morph_kernel // 2
-        content = (
-            th.nn.functional.max_pool2d(
-                content.unsqueeze(0).unsqueeze(0).float(),
-                kernel_size=morph_kernel,
-                stride=1,
-                padding=pad,
-            )
-            .squeeze()
-            .bool()
-        )
-
-    # 3. bounding box of non-white rows / cols
-    rows = th.where(content.any(dim=1))[0]
-    cols = th.where(content.any(dim=0))[0]
-    if rows.numel() == 0 or cols.numel() == 0:
-        return img  # all-white edge-case
-
-    top, bottom = rows[0].item(), rows[-1].item() + 1
-    left, right = cols[0].item(), cols[-1].item() + 1
-    return img[:, int(top) : int(bottom), int(left) : int(right)]
-
-
-def trim_white_padding_pil(pil_img: Image.Image, thresh: int = 245) -> Image.Image:
-    """
-    Convenience wrapper: PIL.Image → tensor trim → PIL.Image.
-    """
-    t = TF.pil_to_tensor(pil_img.convert("RGB"))  # (C,H,W) uint8
-    t = _trim_white_padding_tensor(t, white_thresh=thresh)
-    result: Image.Image = TF.to_pil_image(t)  # back to PIL
-    return result
-
-
-# -----------------------------------------------------------------------------#
-# ------------------  light random-centre crop (PIL)  -------------------------#
-# -----------------------------------------------------------------------------#
-
-
-def random_center_crop(
-    img: Image.Image,
-    min_scale: float = 0.7,
-    jitter_frac: float = 0.1,
-    out_size: Tuple[int, int] | None = None,
-) -> Image.Image:
-    """
-    Take a crop roughly around the centre, with mild random scale + offset.
-
-    * min_scale   : lower bound of the side-length as a fraction of original.
-    * jitter_frac : how far (fraction of leftover border) the crop can shift.
-    * out_size    : if given, resize the crop to this (w, h) with bicubic.
-
-    Returns a PIL.Image.
-    """
-    w, h = img.size
-    assert 0.0 < min_scale <= 1.0
-
-    # choose random scale
-    scale = random.uniform(min_scale, 1.0)
-    crop_w = int(w * scale)
-    crop_h = int(h * scale)
-
-    # centre coordinates
-    cx, cy = w // 2, h // 2
-    left = cx - crop_w // 2
-    top = cy - crop_h // 2
-
-    # jitter within allowed range
-    max_dx = int((w - crop_w) * jitter_frac)
-    max_dy = int((h - crop_h) * jitter_frac)
-    left += random.randint(-max_dx, max_dx)
-    top += random.randint(-max_dy, max_dy)
-
-    # clamp to image bounds
-    left = max(0, min(left, w - crop_w))
-    top = max(0, min(top, h - crop_h))
-
-    crop = img.crop((left, top, left + crop_w, top + crop_h))
-    if out_size is not None:
-        crop = crop.resize(out_size, resample=PIL.Image.BICUBIC)
-    return crop
-
 
 # -----------------------------------------------------------------------------#
 # ----------------------  WebDataset Statistics Tracking  ---------------------#
@@ -331,7 +221,7 @@ class WebDatasetStats:
 
                 # For NSFW field, count categories
                 elif field == "NSFW":
-                    nsfw_counts = {}
+                    nsfw_counts: Dict[str, int] = {}
                     for v in values:
                         if v is not None:
                             nsfw_counts[str(v)] = nsfw_counts.get(str(v), 0) + 1
@@ -344,7 +234,7 @@ class WebDatasetStats:
 
                 # For status field, count success/failure
                 elif field == "status":
-                    status_counts = {}
+                    status_counts: Dict[str, int] = {}
                     for v in values:
                         if v is not None:
                             status_counts[str(v)] = status_counts.get(str(v), 0) + 1
@@ -497,7 +387,7 @@ def glide_wds_loader(
 
         # 1. remove white borders
         original_pil = pil
-        pil = trim_white_padding_pil(pil, thresh=245)
+        pil = trim_white_padding_pil(pil, white_thresh=245)
         white_padding_removed = pil.size != original_pil.size
 
         # 2. light random-centre crop (only if large enough)
