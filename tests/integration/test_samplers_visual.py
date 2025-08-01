@@ -139,15 +139,19 @@ class TestSamplersVisual:
             f"(avg mean: {avg_mean:.3f})"
         )
 
-        # Check for the "gray noise" issue - if std is high but image looks 
-        # like pure noise
-        # A good image should have both structure (some low-frequency content) 
-        # and detail
-        # Pure noise would have very high std relative to the mean
-        noise_ratio = avg_std / (avg_mean + 1e-6)
-        assert noise_ratio < 1.0, (
-            f"{sampler_name} may be producing pure noise "
-            f"(noise ratio: {noise_ratio:.3f})"
+        # Check for the "gray noise" issue - images should have reasonable variance
+        # A good image should have both structure and detail
+        # Pure noise would have very high std (close to 0.5 for uniform noise)
+        # while a flat gray image would have very low std (close to 0)
+        assert 0.05 < avg_std < 0.45, (
+            f"{sampler_name} produced unusual variance "
+            f"(std: {avg_std:.3f}, expected 0.05-0.45)"
+        )
+        
+        # Also check that images aren't completely saturated
+        assert 0.05 < avg_mean < 0.95, (
+            f"{sampler_name} produced unusual brightness "
+            f"(mean: {avg_mean:.3f}, expected 0.05-0.95)"
         )
 
     def test_sampler_consistency(self, test_model_and_diffusion, device, tmp_path):
