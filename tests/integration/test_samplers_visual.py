@@ -175,7 +175,7 @@ class TestSamplersVisual:
             device=device,
             prediction_respacing="100",
             sampler_name="plms",
-            sampler_kwargs={"num_steps": 100},
+            sampler_kwargs={},
         )
 
         # Generate with Euler (potentially broken)
@@ -191,7 +191,7 @@ class TestSamplersVisual:
             device=device,
             prediction_respacing="50",
             sampler_name="euler",
-            sampler_kwargs={"num_steps": 50},
+            sampler_kwargs={},
         )
 
         # Save both for comparison
