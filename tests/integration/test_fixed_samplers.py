@@ -295,6 +295,8 @@ class TestSamplersGPU:
         diffusion.num_timesteps = 1000
         betas, _, _ = get_glide_cosine_schedule(1000)
         diffusion.betas = betas
+        # Add timestep_map for respaced schedule support
+        diffusion.timestep_map = list(range(1000))
         return diffusion
 
     @pytest.fixture

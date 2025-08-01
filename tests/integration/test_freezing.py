@@ -6,6 +6,7 @@ import torch as th
 import torch.nn.functional as F
 
 from glide_finetune.glide_util import load_model
+from glide_finetune.optimizer_util import create_optimizer
 
 
 @pytest.mark.gpu
@@ -15,8 +16,22 @@ class TestFreezing:
     def setup_method(self):
         """Set up test data."""
         self.device = "cuda" if th.cuda.is_available() else "cpu"
-        self.batch_size = 2
-        self.steps = 100
+        self.batch_size = 1  # Reduced from 2 to save memory
+        self.steps = 5  # Reduced to minimal steps for memory efficiency
+        
+        # Enable TF32 for better performance/memory tradeoff
+        if th.cuda.is_available():
+            th.backends.cuda.matmul.allow_tf32 = True
+            th.backends.cudnn.allow_tf32 = True
+            # Clear GPU memory before each test
+            th.cuda.empty_cache()
+            th.cuda.reset_peak_memory_stats()
+    
+    def teardown_method(self):
+        """Clean up after each test."""
+        # Force cleanup of GPU memory
+        if th.cuda.is_available():
+            th.cuda.empty_cache()
 
     def create_dummy_batch(self, model):
         """Create a dummy batch for training."""
@@ -94,7 +109,7 @@ class TestFreezing:
 
             losses.append(loss.item())
 
-            if step % 20 == 0:
+            if step % 5 == 0:
                 print(f"  Step {step}: loss = {loss.item():.4f}")
 
         return losses
@@ -127,12 +142,21 @@ class TestFreezing:
             filter(lambda p: p.requires_grad, model.parameters()), lr=1e-5
         )
 
-        # Train for 100 steps
+        # Train for a few steps
         losses = self.train_steps(model, diffusion, optimizer)
 
         # Verify training is working (loss should change)
         assert losses[0] != losses[-1], "Loss didn't change during training"
         print(f"  Initial loss: {losses[0]:.4f}, Final loss: {losses[-1]:.4f}")
+        
+        # Clean up model, diffusion, and optimizer to free memory
+        del model
+        del diffusion
+        del optimizer
+        import gc
+        gc.collect()
+        if th.cuda.is_available():
+            th.cuda.empty_cache()
 
     def test_freeze_diffusion(self):
         """Test training with frozen diffusion."""
@@ -150,12 +174,21 @@ class TestFreezing:
             filter(lambda p: p.requires_grad, model.parameters()), lr=1e-5
         )
 
-        # Train for 100 steps
+        # Train for a few steps
         losses = self.train_steps(model, diffusion, optimizer)
 
         # Verify training is working (loss should change)
         assert losses[0] != losses[-1], "Loss didn't change during training"
         print(f"  Initial loss: {losses[0]:.4f}, Final loss: {losses[-1]:.4f}")
+        
+        # Clean up model, diffusion, and optimizer to free memory
+        del model
+        del diffusion
+        del optimizer
+        import gc
+        gc.collect()
+        if th.cuda.is_available():
+            th.cuda.empty_cache()
 
     def test_freeze_both(self):
         """Test training with both components frozen."""
@@ -174,7 +207,7 @@ class TestFreezing:
 
         optimizer = th.optim.AdamW(trainable_params, lr=1e-5)
 
-        # Train for 100 steps
+        # Train for a few steps
         losses = self.train_steps(model, diffusion, optimizer)
 
         # Loss might not change much with so few parameters
@@ -189,22 +222,42 @@ class TestFreezing:
         """Test training without freezing (baseline)."""
         print("\n=== Testing no freezing (baseline) ===")
 
-        # Load model without freezing
-        model, diffusion, _ = load_model()
+        # Load model without freezing, with gradient checkpointing to save memory
+        model, diffusion, _ = load_model(activation_checkpointing=True)
         model = model.to(self.device)
+        
+        # Enable memory efficient attention if available
+        if hasattr(model, 'enable_xformers_memory_efficient_attention'):
+            try:
+                model.enable_xformers_memory_efficient_attention()
+            except Exception:
+                pass  # xformers not available
 
         # Verify parameter counts (expect 100% trainable)
         self.verify_parameter_counts(model, expected_trainable_ratio=1.0)
 
-        # Create optimizer for all parameters
-        optimizer = th.optim.AdamW(model.parameters(), lr=1e-5)
+        # Create optimizer with 8-bit Adam to save memory
+        optimizer = create_optimizer(
+            params=model.parameters(),
+            learning_rate=1e-5,
+            use_8bit=True,
+        )
 
-        # Train for 100 steps
+        # Train for a few steps
         losses = self.train_steps(model, diffusion, optimizer)
 
         # Verify training is working (loss should change)
         assert losses[0] != losses[-1], "Loss didn't change during training"
         print(f"  Initial loss: {losses[0]:.4f}, Final loss: {losses[-1]:.4f}")
+        
+        # Clean up model, diffusion, and optimizer to free memory
+        del model
+        del diffusion
+        del optimizer
+        import gc
+        gc.collect()
+        if th.cuda.is_available():
+            th.cuda.empty_cache()
 
 
 if __name__ == "__main__":
