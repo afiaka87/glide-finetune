@@ -66,6 +66,9 @@ class TextImageDataset(Dataset):
         use_captions=False,
         enable_glide_upsample=False,
         upscale_factor=4,
+        # CLIP embedding cache parameters
+        use_clip_cache=False,
+        clip_model_name="ViT-L/14",
     ):
         super().__init__()
         folder = Path(folder)
@@ -95,6 +98,17 @@ class TextImageDataset(Dataset):
         self.uncond_p = uncond_p
         self.enable_upsample = enable_glide_upsample
         self.upscale_factor = upscale_factor
+        
+        # CLIP embedding cache
+        self.use_clip_cache = use_clip_cache
+        self.clip_model_name = clip_model_name
+        self.clip_cache_stats = {"hits": 0, "misses": 0, "errors": 0}
+        
+        if use_clip_cache:
+            print(f"CLIP embedding cache enabled for model: {clip_model_name}")
+            # Count available clip files
+            clip_files = list(folder.glob("**/*.clip"))
+            print(f"Found {len(clip_files)} cached CLIP embeddings")
 
     def __len__(self):
         return len(self.keys)
@@ -147,6 +161,42 @@ class TextImageDataset(Dataset):
             print(f"  Error: {type(e).__name__}: {e}")
             print("  -> Using unconditional tokens")
             return get_uncond_tokens_mask(self.tokenizer)
+    
+    def load_clip_embedding(self, ind):
+        """Load CLIP embedding from cache file if available."""
+        if not self.use_clip_cache:
+            return None
+            
+        key = self.keys[ind]
+        if not self.text_files or key not in self.text_files:
+            return None
+            
+        # Get corresponding .clip file path
+        text_file = self.text_files[key]
+        clip_file = text_file.with_suffix('.clip')
+        
+        if not clip_file.exists():
+            self.clip_cache_stats["misses"] += 1
+            return None
+            
+        try:
+            import torch
+            clip_data = torch.load(clip_file, map_location='cpu')
+            
+            # Validate clip model matches
+            if clip_data.get("clip_model") != self.clip_model_name:
+                self.clip_cache_stats["misses"] += 1
+                return None
+                
+            # Return embedding tensor
+            embedding = clip_data["embedding"]
+            self.clip_cache_stats["hits"] += 1
+            return embedding
+            
+        except Exception as e:
+            self.clip_cache_stats["errors"] += 1
+            print(f"Error loading CLIP embedding from {clip_file}: {e}")
+            return None
 
     def __getitem__(self, ind):
         key = self.keys[ind]
@@ -155,6 +205,9 @@ class TextImageDataset(Dataset):
             tokens, mask = get_uncond_tokens_mask(self.tokenizer)
         else:
             tokens, mask = self.get_caption(ind)
+        
+        # Load CLIP embedding if available
+        clip_embedding = self.load_clip_embedding(ind)
 
         try:
             original_pil_image = PIL.Image.open(image_file).convert("RGB")
@@ -188,12 +241,21 @@ class TextImageDataset(Dataset):
             )
             base_tensor = pil_image_to_norm_tensor(base_pil_image)
             
-            return (
-                tokens,
-                mask,
-                base_tensor,
-                upsample_tensor,
-            )
+            if self.use_clip_cache:
+                return (
+                    tokens,
+                    mask,
+                    base_tensor,
+                    upsample_tensor,
+                    clip_embedding,
+                )
+            else:
+                return (
+                    tokens,
+                    mask,
+                    base_tensor,
+                    upsample_tensor,
+                )
 
         # Apply preprocessing: trim white padding first, then resize
         processed_pil_image = preprocess_image_with_padding_removal(
@@ -208,4 +270,11 @@ class TextImageDataset(Dataset):
         # Convert to tensor
         base_tensor = pil_image_to_norm_tensor(processed_pil_image)
         
-        return tokens, mask, base_tensor
+        if self.use_clip_cache:
+            return tokens, mask, base_tensor, clip_embedding
+        else:
+            return tokens, mask, base_tensor
+    
+    def get_clip_cache_stats(self):
+        """Get CLIP embedding cache statistics."""
+        return self.clip_cache_stats.copy()

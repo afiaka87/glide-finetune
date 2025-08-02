@@ -80,7 +80,7 @@ def run_glide_finetune(
     upsample_factor=4,
     image_to_upsample="low_res_face.png",
     use_8bit_adam=False,
-    early_stop=0,
+    test_run=0,
     wds_dataset_name="laion",
     sampler_name="plms",
     test_steps=100,
@@ -92,6 +92,31 @@ def run_glide_finetune(
     compile_mode="default",
     use_esrgan=False,
     esrgan_cache_dir="./esrgan_models",
+    # CLIP adapter parameters
+    use_clip=False,
+    clip_model_name="ViT-L/14",
+    clip_gate_init=0.0,
+    adapter_warmup_steps=10000,
+    adapter_lr=1e-5,
+    adapter_wd=1e-2,
+    adapter_beta2=0.98,
+    adapter_training_phase="adapter_only",
+    use_lora=False,
+    lora_rank=32,
+    adapter_dropout=0.1,
+    stability_threshold=10.0,
+    clip_cache_embeddings=False,
+    use_clip_cache=False,
+    clip_cache_dir=None,
+    adapter_grad_clip=1.0,
+    main_grad_clip=1.0,
+    dry_run_interval=0,
+    dry_run_samples=5,
+    kl_loss_interval=100,
+    kl_loss_weight=0.01,
+    early_stop_threshold=0.1,
+    early_stop_patience=1000,
+    baseline_eval_interval=500,
 ):
     if "~" in data_dir:
         data_dir = os.path.expanduser(data_dir)
@@ -101,9 +126,9 @@ def run_glide_finetune(
     # Create the checkpoint/output directories
     os.makedirs(checkpoints_dir, exist_ok=True)
 
-    # Start wandb logging (disabled for early_stop test runs)
-    if early_stop > 0:
-        print("Early stopping enabled - disabling wandb logging")
+    # Start wandb logging (disabled for test runs)
+    if test_run > 0:
+        print("Test run mode enabled - disabling wandb logging")
 
         # Create a mock wandb run object that does nothing
         class MockWandbRun:
@@ -130,16 +155,38 @@ def run_glide_finetune(
     initial_checkpoint = (
         "" if resume_ckpt else ""
     )  # Use OpenAI checkpoint if not resuming
-    glide_model, glide_diffusion, glide_options = load_model(
-        glide_path=initial_checkpoint,
-        use_fp16=use_fp16,
-        freeze_transformer=freeze_transformer,
-        freeze_diffusion=freeze_diffusion,
-        activation_checkpointing=activation_checkpointing,
-        model_type="base" if not enable_upsample else "upsample",
-        torch_compile=torch_compile,
-        compile_mode=compile_mode,
-    )
+    
+    if use_clip:
+        # Load CLIP-enabled model
+        from glide_finetune.adapters import load_glide_model_with_clip
+        
+        glide_model, glide_diffusion, glide_options = load_glide_model_with_clip(
+            glide_path=initial_checkpoint,
+            use_fp16=use_fp16,
+            freeze_transformer=freeze_transformer,
+            freeze_diffusion=freeze_diffusion,
+            activation_checkpointing=activation_checkpointing,
+            model_type="base" if not enable_upsample else "upsample",
+            clip_model_name=clip_model_name,
+            use_clip=True,
+            clip_gate_init=clip_gate_init,
+            adapter_dropout=adapter_dropout,
+            use_lora=use_lora,
+            lora_rank=lora_rank,
+        )
+        print(f"Loaded CLIP-enabled model with {clip_model_name}")
+    else:
+        # Load standard GLIDE model
+        glide_model, glide_diffusion, glide_options = load_model(
+            glide_path=initial_checkpoint,
+            use_fp16=use_fp16,
+            freeze_transformer=freeze_transformer,
+            freeze_diffusion=freeze_diffusion,
+            activation_checkpointing=activation_checkpointing,
+            model_type="base" if not enable_upsample else "upsample",
+            torch_compile=torch_compile,
+            compile_mode=compile_mode,
+        )
     glide_model.train()
     number_of_params = sum(x.numel() for x in glide_model.parameters())
     print(f"Number of parameters: {number_of_params}")
@@ -177,6 +224,9 @@ def run_glide_finetune(
             words_to_skip=[],
             dataset_name=wds_dataset_name,
             laion_no_filter=laion_no_filter,
+            use_clip_cache=use_clip_cache,
+            clip_cache_dir=clip_cache_dir,
+            clip_model_name=clip_model_name if use_clip else None,
         )
     else:
         dataset = TextImageDataset(
@@ -191,6 +241,9 @@ def run_glide_finetune(
             use_captions=use_captions,
             enable_glide_upsample=enable_upsample,
             upscale_factor=upsample_factor,  # TODO: make this a parameter
+            use_clip_cache=use_clip_cache,
+            clip_cache_dir=clip_cache_dir,
+            clip_model_name=clip_model_name if use_clip else None,
         )
 
     print(f"[Main] Dataset created: {dataset}")
@@ -219,12 +272,55 @@ def run_glide_finetune(
     print("[Main] DataLoader created")
 
     # Optimizer setup
-    optimizer = create_optimizer(
-        params=[x for x in glide_model.parameters() if x.requires_grad],
-        learning_rate=learning_rate,
-        weight_decay=adam_weight_decay,
-        use_8bit=use_8bit_adam,
-    )
+    if use_clip:
+        # Create separate optimizers for CLIP adapter training
+        from glide_finetune.adapters import create_clip_adapter_optimizer
+        
+        optimizer, optimizer_info = create_clip_adapter_optimizer(
+            glide_model,
+            adapter_lr=adapter_lr,
+            adapter_wd=adapter_wd,
+            adapter_beta2=adapter_beta2,
+            main_lr=learning_rate if adapter_training_phase == "full" else None,
+            main_wd=adam_weight_decay,
+            train_phases=adapter_training_phase,
+        )
+        
+        print(f"Created CLIP adapter optimizer with training phase: {adapter_training_phase}")
+        for name, count in optimizer_info['param_counts'].items():
+            print(f"  {name} parameters: {count:,}")
+    else:
+        # Standard optimizer
+        optimizer = create_optimizer(
+            params=[x for x in glide_model.parameters() if x.requires_grad],
+            learning_rate=learning_rate,
+            weight_decay=adam_weight_decay,
+            use_8bit=use_8bit_adam,
+        )
+
+    # Setup CLIP adapter trainer if using CLIP
+    clip_trainer = None
+    if use_clip:
+        from glide_finetune.adapters import ClipAdapterTrainer
+        
+        clip_trainer = ClipAdapterTrainer(
+            model=glide_model,
+            diffusion=glide_diffusion,
+            optimizer=optimizer,
+            warmup_steps=adapter_warmup_steps,
+            stability_threshold=stability_threshold,
+            checkpoint_dir=os.path.join(checkpoints_dir, "clip_adapter_checkpoints"),
+            adapter_grad_clip=adapter_grad_clip,
+            main_grad_clip=main_grad_clip,
+            early_stop_threshold=early_stop_threshold,
+            early_stop_patience=early_stop_patience,
+            baseline_eval_interval=baseline_eval_interval,
+        )
+        
+        # Store dry run parameters for training loop
+        clip_trainer.dry_run_interval = dry_run_interval
+        clip_trainer.dry_run_samples = dry_run_samples
+        print(f"Created CLIP adapter trainer with {adapter_warmup_steps} warmup steps")
 
     # Training setup - create run-specific output directory
     training_base_dir = "./outputs/training"
@@ -326,7 +422,8 @@ def run_glide_finetune(
             epoch=epoch,
             gradient_accumualation_steps=1,
             train_upsample=enable_upsample,
-            early_stop=early_stop,
+            early_stop=test_run,
+            clip_trainer=clip_trainer,
             sampler_name=sampler_name,
             test_steps=test_steps,
             warmup_steps=warmup_steps,
@@ -341,6 +438,8 @@ def run_glide_finetune(
             use_esrgan=use_esrgan,
             esrgan_cache_dir=esrgan_cache_dir,
             wds_stats=wds_stats if use_webdataset else None,
+            kl_loss_interval=kl_loss_interval,
+            kl_loss_weight=kl_loss_weight,
         )
 
         # Update global step counter for WebDataset
@@ -520,7 +619,7 @@ def parse_args():
         help="torch.compile mode: default/reduce-overhead/max-autotune",
     )
     parser.add_argument(
-        "--early_stop",
+        "--test_run",
         type=int,
         default=0,
         help="Stop training after this many steps (0 = disabled). Useful for testing.",
@@ -549,6 +648,150 @@ def parse_args():
         "--laion_no_filter",
         action="store_true",
         help="Skip LAION metadata filtering (faster loading, no metadata requirements)",
+    )
+    
+    # CLIP Adapter arguments
+    parser.add_argument(
+        "--use_clip",
+        action="store_true",
+        help="Enable CLIP adapter for dual text conditioning",
+    )
+    parser.add_argument(
+        "--clip_model_name",
+        type=str,
+        default="ViT-L/14",
+        choices=["ViT-B/32", "ViT-B/16", "ViT-L/14", "ViT-L/14@336px", "RN50", "RN101", "RN50x4", "RN50x16", "RN50x64"],
+        help="CLIP model architecture to use (default: ViT-L/14)",
+    )
+    parser.add_argument(
+        "--clip_gate_init",
+        type=float,
+        default=0.0,
+        help="Initial value for CLIP adapter gates (0.0 = no CLIP influence initially)",
+    )
+    parser.add_argument(
+        "--adapter_warmup_steps",
+        type=int,
+        default=10000,
+        help="Number of steps to gradually increase CLIP adapter influence from 0 to 0.5",
+    )
+    parser.add_argument(
+        "--adapter_lr",
+        type=float,
+        default=1e-5,
+        help="Learning rate for CLIP adapter components (default: 1e-5, 100x smaller than main LR)",
+    )
+    parser.add_argument(
+        "--adapter_wd",
+        type=float,
+        default=1e-2,
+        help="Weight decay for CLIP adapter components",
+    )
+    parser.add_argument(
+        "--adapter_beta2",
+        type=float,
+        default=0.98,
+        help="Adam beta2 for adapter optimizer (default: 0.98 for better stability)",
+    )
+    parser.add_argument(
+        "--adapter_training_phase",
+        type=str,
+        default="adapter_only",
+        choices=["adapter_only", "adapter_gates", "full"],
+        help="Training phase: adapter_only (safest), adapter_gates, or full fine-tuning",
+    )
+    parser.add_argument(
+        "--use_lora",
+        action="store_true",
+        help="Use LoRA instead of full MLP in CLIP adapter (more parameter efficient)",
+    )
+    parser.add_argument(
+        "--lora_rank",
+        type=int,
+        default=32,
+        help="Rank for LoRA decomposition in adapter",
+    )
+    parser.add_argument(
+        "--adapter_dropout",
+        type=float,
+        default=0.1,
+        help="Dropout rate in CLIP adapter MLP",
+    )
+    parser.add_argument(
+        "--stability_threshold",
+        type=float,
+        default=10.0,
+        help="Loss spike threshold for automatic checkpoint rollback",
+    )
+    parser.add_argument(
+        "--clip_cache_embeddings",
+        action="store_true",
+        help="Cache CLIP embeddings to speed up training",
+    )
+    parser.add_argument(
+        "--use_clip_cache",
+        action="store_true",
+        help="Use pre-computed CLIP embeddings from cache during training",
+    )
+    parser.add_argument(
+        "--clip_cache_dir",
+        type=str,
+        default=None,
+        help="Directory containing pre-computed CLIP embeddings (defaults to data_dir/clip_cache)",
+    )
+    parser.add_argument(
+        "--adapter_grad_clip",
+        type=float,
+        default=1.0,
+        help="Max gradient norm for CLIP adapter parameters (default: 1.0)",
+    )
+    parser.add_argument(
+        "--main_grad_clip",
+        type=float,
+        default=1.0,
+        help="Max gradient norm for main model parameters (default: 1.0)",
+    )
+    parser.add_argument(
+        "--dry_run_interval",
+        type=int,
+        default=0,
+        help="Run dry-run test every N steps to verify adapter doesn't affect outputs (0 = disabled)",
+    )
+    parser.add_argument(
+        "--dry_run_samples",
+        type=int,
+        default=5,
+        help="Number of samples to test in each dry-run (default: 5)",
+    )
+    parser.add_argument(
+        "--kl_loss_interval",
+        type=int,
+        default=100,
+        help="Compute KL divergence loss every N steps (0 = disabled)",
+    )
+    parser.add_argument(
+        "--kl_loss_weight",
+        type=float,
+        default=0.01,
+        help="Weight for KL divergence regularization loss (default: 0.01)",
+    )
+    parser.add_argument(
+        "--early_stop_threshold",
+        type=float,
+        default=0.1,
+        help="Max allowed degradation in pretrained performance before early stopping (0.1 = 10%)",
+    )
+    parser.add_argument(
+        "--early_stop_patience",
+        type=int,
+        default=1000,
+        help="Steps to wait before early stopping after degradation detected",
+    )
+    parser.add_argument(
+        "--baseline_eval_interval",
+        type=int,
+        default=500,
+        help="How often to evaluate pretrained performance for early stopping",
     )
     args = parser.parse_args()
 
@@ -613,7 +856,7 @@ if __name__ == "__main__":
         upsample_factor=args.upscale_factor,
         image_to_upsample=args.image_to_upsample,
         use_8bit_adam=args.use_8bit_adam,
-        early_stop=args.early_stop,
+        test_run=args.test_run,
         wds_dataset_name=args.wds_dataset_name,
         sampler_name=args.sampler,
         test_steps=args.test_steps,
@@ -625,4 +868,29 @@ if __name__ == "__main__":
         compile_mode=args.compile_mode,
         use_esrgan=args.use_esrgan,
         esrgan_cache_dir=args.esrgan_cache_dir,
+        # CLIP adapter parameters
+        use_clip=args.use_clip,
+        clip_model_name=args.clip_model_name,
+        clip_gate_init=args.clip_gate_init,
+        adapter_warmup_steps=args.adapter_warmup_steps,
+        adapter_lr=args.adapter_lr,
+        adapter_wd=args.adapter_wd,
+        adapter_beta2=args.adapter_beta2,
+        adapter_training_phase=args.adapter_training_phase,
+        use_lora=args.use_lora,
+        lora_rank=args.lora_rank,
+        adapter_dropout=args.adapter_dropout,
+        stability_threshold=args.stability_threshold,
+        clip_cache_embeddings=args.clip_cache_embeddings,
+        use_clip_cache=args.use_clip_cache,
+        clip_cache_dir=args.clip_cache_dir,
+        adapter_grad_clip=args.adapter_grad_clip,
+        main_grad_clip=args.main_grad_clip,
+        dry_run_interval=args.dry_run_interval,
+        dry_run_samples=args.dry_run_samples,
+        kl_loss_interval=args.kl_loss_interval,
+        kl_loss_weight=args.kl_loss_weight,
+        early_stop_threshold=args.early_stop_threshold,
+        early_stop_patience=args.early_stop_patience,
+        baseline_eval_interval=args.baseline_eval_interval,
     )

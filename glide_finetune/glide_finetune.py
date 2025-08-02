@@ -1,7 +1,7 @@
 import os
 import sys
 import time
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Union
 
 import PIL.Image
 import torch as th
@@ -77,11 +77,114 @@ def prompt_with_timeout(prompt: str, timeout: int = 20, default: bool = True) ->
         return default
 
 
+def compute_kl_divergence_loss(
+    glide_model: Text2ImUNet,
+    x_t: th.Tensor,
+    timesteps: th.Tensor,
+    tokens: th.Tensor,
+    masks: th.Tensor,
+    clip_embeddings: th.Tensor = None,
+    temperature: float = 1.0,
+) -> Tuple[th.Tensor, Dict[str, float]]:
+    """
+    Compute KL divergence between model outputs with and without CLIP adapter.
+    
+    Args:
+        glide_model: The model
+        x_t: Noised input
+        timesteps: Diffusion timesteps
+        tokens: Text tokens
+        masks: Token masks
+        clip_embeddings: CLIP embeddings (optional)
+        temperature: Temperature for KL divergence calculation
+        
+    Returns:
+        kl_loss: KL divergence loss (scalar)
+        kl_metrics: Dictionary of KL metrics
+    """
+    # Enable debugging if model supports it
+    if hasattr(glide_model, '_debug_clip'):
+        glide_model._debug_clip = True
+    
+    # Get output with CLIP
+    with th.no_grad():
+        # Ensure CLIP is being used
+        output_with_clip = glide_model(
+            x_t,
+            timesteps,
+            tokens=tokens,
+            mask=masks,
+            clip_embeddings=clip_embeddings,
+            use_clip_override=True,  # Force use of CLIP
+        )
+    
+    # Get output without CLIP (baseline)
+    with th.no_grad():
+        output_without_clip = glide_model(
+            x_t,
+            timesteps,
+            tokens=tokens,
+            mask=masks,
+            use_clip_override=False,  # Force disable CLIP
+        )
+    
+    # Disable debugging
+    if hasattr(glide_model, '_debug_clip'):
+        glide_model._debug_clip = False
+    
+    # Split outputs to get predicted noise
+    eps_with_clip, _ = th.split(output_with_clip, output_with_clip.shape[1] // 2, dim=1)
+    eps_without_clip, _ = th.split(output_without_clip, output_without_clip.shape[1] // 2, dim=1)
+    
+    # Compute KL divergence between the two noise predictions
+    # Use a more stable approach - compute MSE-based pseudo-KL divergence
+    # This avoids issues with softmax on very large tensors
+    
+    # Normalize the predictions to have zero mean and unit variance
+    eps_with_clip_norm = (eps_with_clip - eps_with_clip.mean()) / (eps_with_clip.std() + 1e-8)
+    eps_without_clip_norm = (eps_without_clip - eps_without_clip.mean()) / (eps_without_clip.std() + 1e-8)
+    
+    # Compute a stable KL-like divergence based on squared differences
+    # This is more stable than softmax-based KL for diffusion models
+    diff = eps_with_clip_norm - eps_without_clip_norm
+    kl_div = (diff ** 2).mean() / (2 * temperature)
+    
+    # Also compute L2 distance for comparison
+    l2_dist = th.nn.functional.mse_loss(eps_with_clip, eps_without_clip)
+    
+    # Compute per-timestep metrics
+    timestep_bins = [0, 250, 500, 750, 1000]
+    kl_metrics = {
+        'kl_divergence': kl_div.item(),
+        'l2_distance': l2_dist.item(),
+    }
+    
+    # Compute KL for different timestep ranges
+    for i in range(len(timestep_bins) - 1):
+        mask = (timesteps >= timestep_bins[i]) & (timesteps < timestep_bins[i + 1])
+        if mask.any():
+            eps_with_q = eps_with_clip[mask]
+            eps_without_q = eps_without_clip[mask]
+            
+            # Normalize per timestep range
+            eps_with_q_norm = (eps_with_q - eps_with_q.mean()) / (eps_with_q.std() + 1e-8)
+            eps_without_q_norm = (eps_without_q - eps_without_q.mean()) / (eps_without_q.std() + 1e-8)
+            
+            # Compute stable KL-like divergence
+            diff_q = eps_with_q_norm - eps_without_q_norm
+            kl_q = (diff_q ** 2).mean() / (2 * temperature)
+            kl_metrics[f'kl_q{i}'] = kl_q.item()
+    
+    return kl_div, kl_metrics
+
+
 def base_train_step(
     glide_model: Text2ImUNet,
     glide_diffusion: SpacedDiffusion,
-    batch: Tuple[th.Tensor, th.Tensor, th.Tensor],
+    batch: Union[Tuple[th.Tensor, th.Tensor, th.Tensor], Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor]],
     device: str,
+    compute_kl_loss: bool = False,
+    kl_loss_weight: float = 0.0,
 ):
     """
     Perform a single training step.
@@ -89,34 +192,62 @@ def base_train_step(
         Args:
             glide_model: The model to train.
             glide_diffusion: The diffusion to use.
-            batch: A tuple of (tokens, masks, reals) where tokens is a tensor of shape
-                (batch_size, seq_len), masks is a tensor of shape (batch_size, seq_len)
-                and reals is a tensor of shape (batch_size, 3, side_x, side_y)
-                normalized to [-1, 1].
+            batch: Either a 3-tuple of (tokens, masks, reals) or a 4-tuple of
+                (tokens, masks, reals, clip_embeddings) where:
+                - tokens is a tensor of shape (batch_size, seq_len)
+                - masks is a tensor of shape (batch_size, seq_len)
+                - reals is a tensor of shape (batch_size, 3, side_x, side_y)
+                  normalized to [-1, 1]
+                - clip_embeddings (optional) is a tensor of shape (batch_size, clip_dim)
             device: The device to use for getting model outputs and computing loss.
+            compute_kl_loss: Whether to compute KL divergence loss (only for CLIP models)
+            kl_loss_weight: Weight for KL divergence regularization
         Returns:
             A tuple of (loss, metrics_dict) where metrics_dict contains detailed
             metrics.
     """
-    tokens, masks, reals = batch
+    # Handle both 3-tuple and 4-tuple batches
+    clip_embeddings = None
+    if len(batch) == 3:
+        tokens, masks, reals = batch
+    elif len(batch) == 4:
+        tokens, masks, reals, clip_embeddings = batch
+    else:
+        raise ValueError(f"Expected batch to have 3 or 4 elements, got {len(batch)}")
+    
     tokens = tokens.to(device)
     masks = masks.to(device)
     reals = reals.to(device)
+    if clip_embeddings is not None:
+        clip_embeddings = clip_embeddings.to(device)
 
     timesteps = th.randint(
         0, len(glide_diffusion.betas) - 1, (reals.shape[0],), device=device
     )
     noise = th.randn_like(reals, device=device)
     x_t = glide_diffusion.q_sample(reals, timesteps, noise=noise)
-    model_output = glide_model(
-        x_t,
-        timesteps,
-        tokens=tokens,
-        mask=masks,
-    )
+    
+    # Check if model supports CLIP embeddings
+    if hasattr(glide_model, 'forward') and 'clip_embeddings' in glide_model.forward.__code__.co_varnames:
+        model_output = glide_model(
+            x_t,
+            timesteps,
+            tokens=tokens,
+            mask=masks,
+            clip_embeddings=clip_embeddings,
+        )
+    else:
+        # Fallback for models without CLIP support
+        model_output = glide_model(
+            x_t,
+            timesteps,
+            tokens=tokens,
+            mask=masks,
+        )
+    
     epsilon, _ = th.split(model_output, model_output.shape[1] // 2, dim=1)
     loss = th.nn.functional.mse_loss(epsilon, noise.detach())
-
+    
     # Calculate quartile losses for monitoring
     quartile_bounds = [0, 250, 500, 750, 1000]
     quartile_losses = {}
@@ -130,15 +261,32 @@ def base_train_step(
             quartile_losses[f"loss_q{i}"] = quartile_loss.item()
         else:
             quartile_losses[f"loss_q{i}"] = 0.0
+    
+    # Compute KL divergence if using CLIP adapter
+    kl_metrics = {}
+    if compute_kl_loss and hasattr(glide_model, 'use_clip') and glide_model.use_clip and clip_embeddings is not None:
+        kl_div, kl_metrics = compute_kl_divergence_loss(
+            glide_model, x_t, timesteps, tokens, masks, clip_embeddings
+        )
+        
+        # Add KL loss as regularization if weight > 0
+        if kl_loss_weight > 0:
+            loss = loss + kl_loss_weight * kl_div
+            kl_metrics['kl_loss_weight'] = kl_loss_weight
+    
+    # Combine all metrics
+    all_metrics = {**quartile_losses, **kl_metrics}
 
-    return loss, quartile_losses
+    return loss, all_metrics
 
 
 def upsample_train_step(
     glide_model: Text2ImUNet,
     glide_diffusion: SpacedDiffusion,
-    batch: Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor],
+    batch: Union[Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor], Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]],
     device: str,
+    compute_kl_loss: bool = False,
+    kl_loss_weight: float = 0.0,
 ):
     """
     Perform a single training step for the upsampling model.
@@ -146,20 +294,34 @@ def upsample_train_step(
     Args:
         glide_model: The model to train.
         glide_diffusion: The diffusion to use.
-        batch: A tuple of (tokens, masks, low_res, high_res) where tokens is
-            a tensor of shape (batch_size, seq_len), masks is a tensor of shape
-            (batch_size, seq_len), low_res is a tensor of shape (batch_size, 3,
-            side_x, side_y), and high_res is a tensor of shape (batch_size, 3,
-            side_x*4, side_y*4).
+        batch: Either a 4-tuple of (tokens, masks, low_res, high_res) or a 5-tuple of
+            (tokens, masks, low_res, high_res, clip_embeddings) where:
+            - tokens is a tensor of shape (batch_size, seq_len)
+            - masks is a tensor of shape (batch_size, seq_len)
+            - low_res is a tensor of shape (batch_size, 3, side_x, side_y)
+            - high_res is a tensor of shape (batch_size, 3, side_x*4, side_y*4)
+            - clip_embeddings (optional) is a tensor of shape (batch_size, clip_dim)
         device: The device to use for getting model outputs and computing loss.
+        compute_kl_loss: Whether to compute KL divergence loss (only for CLIP models)
+        kl_loss_weight: Weight for KL divergence regularization
     Returns:
         A tuple of (loss, metrics_dict) where metrics_dict contains detailed metrics.
     """
-    tokens, masks, low_res_image, high_res_image = batch
+    # Handle both 4-tuple and 5-tuple batches
+    clip_embeddings = None
+    if len(batch) == 4:
+        tokens, masks, low_res_image, high_res_image = batch
+    elif len(batch) == 5:
+        tokens, masks, low_res_image, high_res_image, clip_embeddings = batch
+    else:
+        raise ValueError(f"Expected batch to have 4 or 5 elements, got {len(batch)}")
+    
     tokens = tokens.to(device)
     masks = masks.to(device)
     low_res_image = low_res_image.to(device)
     high_res_image = high_res_image.to(device)
+    if clip_embeddings is not None:
+        clip_embeddings = clip_embeddings.to(device)
 
     timesteps = th.randint(
         0, len(glide_diffusion.betas) - 1, (low_res_image.shape[0],), device=device
@@ -168,13 +330,27 @@ def upsample_train_step(
     noised_high_res_image = glide_diffusion.q_sample(
         high_res_image, timesteps, noise=noise
     )
-    model_output = glide_model(
-        noised_high_res_image,
-        timesteps,
-        low_res=low_res_image,
-        tokens=tokens,
-        mask=masks,
-    )
+    
+    # Check if model supports CLIP embeddings
+    if hasattr(glide_model, 'forward') and 'clip_embeddings' in glide_model.forward.__code__.co_varnames:
+        model_output = glide_model(
+            noised_high_res_image,
+            timesteps,
+            low_res=low_res_image,
+            tokens=tokens,
+            mask=masks,
+            clip_embeddings=clip_embeddings,
+        )
+    else:
+        # Fallback for models without CLIP support
+        model_output = glide_model(
+            noised_high_res_image,
+            timesteps,
+            low_res=low_res_image,
+            tokens=tokens,
+            mask=masks,
+        )
+    
     epsilon, _ = th.split(model_output, model_output.shape[1] // 2, dim=1)
     loss = th.nn.functional.mse_loss(epsilon, noise.detach())
 
@@ -191,7 +367,10 @@ def upsample_train_step(
             quartile_losses[f"loss_q{i}"] = quartile_loss.item()
         else:
             quartile_losses[f"loss_q{i}"] = 0.0
-
+    
+    # Note: KL divergence loss is not implemented for upsampling model
+    # as it requires special handling for low_res conditioning
+    
     return loss, quartile_losses
 
 
@@ -393,15 +572,53 @@ def training_loop(
             }
 
             # Training step
+            # Check if we should compute KL loss
+            compute_kl = False
+            kl_weight = 0.0
+            if config.get("clip_trainer") is not None and config.get("kl_loss_interval", 0) > 0:
+                # Compute KL loss at specified intervals
+                if global_step % config["kl_loss_interval"] == 0:
+                    compute_kl = True
+                    kl_weight = config.get("kl_loss_weight", 0.0)
+            
             accumulated_loss, step_metrics = train_step_fn(
                 glide_model=glide_model,
                 glide_diffusion=glide_diffusion,
                 batch=batch,
                 device=config["device"],
+                compute_kl_loss=compute_kl,
+                kl_loss_weight=kl_weight,
             )
             accumulated_loss.backward()
+            
+            # Clip gradients if using CLIP adapter
+            if config.get("clip_trainer") is not None:
+                clip_trainer = config["clip_trainer"]
+                grad_norms = clip_trainer.clip_gradients()
+                # Add gradient norm metrics
+                step_metrics.update({
+                    f"clip/{k}": v for k, v in grad_norms.items()
+                })
+            
             optimizer.step()
             glide_model.zero_grad()
+            
+            # Update CLIP adapter gates if using CLIP
+            if config.get("clip_trainer") is not None:
+                clip_trainer.step = global_step
+                clip_trainer.update_gates()
+                
+                # Check stability and potentially rollback
+                is_stable = clip_trainer.check_stability(accumulated_loss.item())
+                if not is_stable:
+                    print(f"Loss spike detected at step {global_step}! Considering rollback...")
+                    # TODO: Implement checkpoint rollback logic
+                
+                # Add CLIP metrics to step_metrics
+                clip_metrics = clip_trainer.get_metrics()
+                step_metrics.update({
+                    f"clip/{k}": v for k, v in clip_metrics.items()
+                })
 
             # Calculate step time
             step_time = time.time() - step_start_time
@@ -438,6 +655,16 @@ def training_loop(
                     config.get("wds_stats"),
                 )
                 config["first_log"] = False
+            
+            # Dry-run testing if using CLIP adapter
+            if (config.get("clip_trainer") is not None and 
+                hasattr(config["clip_trainer"], "dry_run_interval") and
+                config["clip_trainer"].dry_run_interval > 0 and
+                global_step > 0 and global_step % config["clip_trainer"].dry_run_interval == 0):
+                
+                dry_run_samples = getattr(config["clip_trainer"], "dry_run_samples", 5)
+                test_results = config["clip_trainer"].run_dry_run_test(batch, num_samples=dry_run_samples)
+                config["clip_trainer"].log_dry_run_metrics(test_results, config.get("wandb_run"))
 
             # Sample generation
             if global_step > 0 and global_step % config["sample_interval"] == 0:
@@ -881,6 +1108,7 @@ def run_glide_finetune_epoch(
     gradient_accumualation_steps=1,
     epoch: int = 0,
     train_upsample: bool = False,
+    clip_trainer=None,  # CLIP adapter trainer
     upsample_factor=4,
     image_to_upsample="low_res_face.png",
     early_stop: int = 0,
@@ -896,6 +1124,8 @@ def run_glide_finetune_epoch(
     use_esrgan: bool = False,
     esrgan_cache_dir: str = "./esrgan_models",
     wds_stats: Any = None,
+    kl_loss_interval: int = 100,
+    kl_loss_weight: float = 0.01,
 ):
     """Run a single epoch of GLIDE fine-tuning with error handling and checkpointing."""
     # Select training step function
@@ -946,6 +1176,9 @@ def run_glide_finetune_epoch(
         "eval_prompts": eval_prompts,
         "esrgan": esrgan,
         "wds_stats": wds_stats,
+        "clip_trainer": clip_trainer,  # Add CLIP trainer to config
+        "kl_loss_interval": kl_loss_interval,
+        "kl_loss_weight": kl_loss_weight,
     }
 
     # Run training loop

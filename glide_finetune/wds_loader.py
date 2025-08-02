@@ -12,6 +12,7 @@ import io
 import json
 import random
 import time
+from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 import PIL.Image
@@ -65,6 +66,11 @@ class WebDatasetStats:
 
         # Metadata field tracking
         self.metadata_fields: Dict[str, list[Any]] = {}
+        
+        # CLIP cache statistics
+        self.clip_cache_hits = 0
+        self.clip_cache_misses = 0
+        self.clip_cache_errors = 0
 
     def update_sample(
         self,
@@ -241,8 +247,81 @@ class WebDatasetStats:
                     metadata_stats["metadata_status_distribution"] = status_counts
 
             stats.update(metadata_stats)
+        
+        # Add CLIP cache statistics if applicable
+        if self.clip_cache_hits > 0 or self.clip_cache_misses > 0:
+            clip_cache_total = self.clip_cache_hits + self.clip_cache_misses
+            stats.update({
+                "clip_cache_hits": self.clip_cache_hits,
+                "clip_cache_misses": self.clip_cache_misses,
+                "clip_cache_errors": self.clip_cache_errors,
+                "clip_cache_hit_rate": self.clip_cache_hits / clip_cache_total if clip_cache_total > 0 else 0.0,
+            })
 
         return stats
+
+
+# -----------------------------------------------------------------------------#
+# ------------------------  CLIP Cache Helper Functions  ----------------------#
+# -----------------------------------------------------------------------------#
+
+
+def sanitize_model_name(model_name: str) -> str:
+    """Convert CLIP model name to filesystem-safe string."""
+    return model_name.replace("/", "-").replace("@", "-")
+
+
+def load_clip_embedding_from_cache(
+    tar_name: str,
+    sample_key: str,
+    clip_cache_dir: str,
+    clip_model_name: str,
+    stats: WebDatasetStats,
+) -> Optional[th.Tensor]:
+    """Load CLIP embedding from cache for a specific sample."""
+    if not clip_cache_dir:
+        return None
+        
+    # Construct cache file path
+    cache_path = Path(clip_cache_dir)
+    model_dir = cache_path / sanitize_model_name(clip_model_name)
+    cache_file = model_dir / "embeddings" / f"{tar_name}.pt"
+    
+    if not cache_file.exists():
+        stats.clip_cache_misses += 1
+        return None
+        
+    try:
+        # Load cache file
+        cache_data = th.load(cache_file, map_location='cpu')
+        
+        # Verify metadata matches
+        metadata = cache_data.get("metadata", {})
+        if metadata.get("clip_model") != clip_model_name:
+            stats.clip_cache_misses += 1
+            return None
+            
+        # Get embeddings dictionary
+        embeddings = cache_data.get("embeddings", {})
+        if sample_key not in embeddings:
+            stats.clip_cache_misses += 1
+            return None
+            
+        # Extract embedding
+        embedding_data = embeddings[sample_key]
+        embedding = embedding_data.get("embedding")
+        
+        if embedding is None:
+            stats.clip_cache_misses += 1
+            return None
+            
+        stats.clip_cache_hits += 1
+        return embedding
+        
+    except Exception as e:
+        stats.clip_cache_errors += 1
+        print(f"Error loading CLIP embedding from {cache_file} for key {sample_key}: {e}")
+        return None
 
 
 # -----------------------------------------------------------------------------#
@@ -276,11 +355,31 @@ def glide_wds_loader(
     dataset_name: str = "laion",  # 'laion', 'alamy', or 'webdataset'
     upscale_factor: int = 4,
     laion_no_filter: bool = False,
+    use_clip_cache: bool = False,
+    clip_cache_dir: str | None = None,
+    clip_model_name: str = "ViT-L/14",
 ) -> Tuple[Any, WebDatasetStats]:
     words_to_skip = words_to_skip or []
 
     # Create statistics tracker
     stats = WebDatasetStats()
+    
+    # Track current tar file for CLIP cache lookup
+    current_tar_name = None
+    
+    # Load all CLIP cache metadata if using cache
+    clip_cache_metadata = {}
+    if use_clip_cache and clip_cache_dir:
+        cache_path_obj = Path(clip_cache_dir)
+        model_dir = cache_path_obj / sanitize_model_name(clip_model_name)
+        metadata_file = model_dir / "tar_metadata.json"
+        
+        if metadata_file.exists():
+            try:
+                with open(metadata_file, 'r') as f:
+                    clip_cache_metadata = json.load(f)
+            except Exception as e:
+                print(f"Warning: Could not load CLIP cache metadata: {e}")
 
     # ------------------------------------------------------------------#
     #  dataset creation + optional filtering
@@ -353,6 +452,13 @@ def glide_wds_loader(
 
     def _preprocess(item):
         start_time = time.time()
+        
+        # Extract tar file name from __url__ field
+        tar_url = item.get("__url__", "")
+        tar_name = Path(tar_url).name if tar_url else None
+        
+        # Extract sample key
+        sample_key = item.get("__key__", None)
 
         # Extract metadata if available
         metadata = None
@@ -400,6 +506,13 @@ def glide_wds_loader(
         base_pil = pil.resize(base_size, resample=PIL.Image.BICUBIC)
         base_tensor = pil_image_to_norm_tensor(base_pil)  # (3,64,64) float32
 
+        # ---------- CLIP embedding loading ----------
+        clip_embedding = None
+        if use_clip_cache and tar_name and sample_key:
+            clip_embedding = load_clip_embedding_from_cache(
+                tar_name, sample_key, clip_cache_dir, clip_model_name, stats
+            )
+
         # Update statistics
         processing_time = time.time() - start_time
         stats.update_sample(
@@ -417,6 +530,14 @@ def glide_wds_loader(
         if enable_upsample:
             up_pil = pil.resize(up_size, resample=PIL.Image.BICUBIC)
             up_tensor = pil_image_to_norm_tensor(up_pil)
+            if use_clip_cache:
+                return (
+                    th.tensor(tokens),
+                    th.tensor(mask, dtype=th.bool),
+                    base_tensor,
+                    up_tensor,
+                    clip_embedding,
+                )
             return (
                 th.tensor(tokens),
                 th.tensor(mask, dtype=th.bool),
@@ -424,6 +545,8 @@ def glide_wds_loader(
                 up_tensor,
             )
 
+        if use_clip_cache:
+            return th.tensor(tokens), th.tensor(mask, dtype=th.bool), base_tensor, clip_embedding
         return th.tensor(tokens), th.tensor(mask, dtype=th.bool), base_tensor
 
     # warn_and_continue: skip corrupt samples, keep training rolling

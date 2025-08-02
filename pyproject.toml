@@ -8,6 +8,7 @@ license = {file = "LICENSE"}
 dependencies = [
     "aiohttp>=3.9.3",
     "bitsandbytes>=0.41.0",
+    "clip @ git+https://github.com/openai/CLIP.git",
     "einops>=0.8.0",
     "ftfy>=6.2.0",
     "glide-text2im",
@@ -48,6 +49,9 @@ dev = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.uv]
 dev-dependencies = [
