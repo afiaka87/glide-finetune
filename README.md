@@ -707,13 +707,60 @@ With proper tuning, CLIP adapters can:
 
 Training typically shows improvement within 5,000-10,000 steps for adapter-only training.
 
-### Production Scripts for LAION
+### Production Training Scripts
 
-Ready-to-use scripts for training on LAION datasets are available in the `scripts/` directory:
+Ready-to-use training solutions are available for CLIP adapter workflows:
+
+#### Python Training Script (Recommended)
+
+**`train_glide_clip_adapter.py`** - Production-ready Python script with comprehensive logging and error handling:
+
+```sh
+# Basic three-phase training
+python train_glide_clip_adapter.py --phase 1 --all_phases
+
+# Single phase with custom paths
+python train_glide_clip_adapter.py \
+  --phase 2 \
+  --data_dir /path/to/data \
+  --clip_cache_dir /path/to/cache \
+  --checkpoint_base_dir /path/to/checkpoints
+
+# Test mode for validation
+python train_glide_clip_adapter.py --phase 1 --test_mode 100
+
+# Save/load configurations
+python train_glide_clip_adapter.py --save_config my_config.json
+python train_glide_clip_adapter.py --config my_config.json --phase 1
+```
+
+**Key Features:**
+- **Automatic Logging**: All training logs saved to `./logs/<run_id>/` with timestamps
+- **Configuration Management**: Save/load training configs as JSON files  
+- **Robust Error Handling**: Graceful shutdown, comprehensive error logs
+- **Phase Management**: Automatic checkpoint discovery and phase transitions
+- **Hardware Optimization**: TF32, cuDNN benchmarking, memory optimizations
+- **Signal Handling**: Ctrl+C saves checkpoint before exit
+- **Log Organization**: Separate files for training, errors, and phase-specific logs
+
+**Log Directory Structure:**
+```
+./logs/clip_adapter_20250802_143022/
+├── config.json              # Complete training configuration
+├── training.log              # Main training log (info/warnings/errors)
+├── errors.log                # Error-only log for debugging
+├── phase_1.log               # Phase-specific detailed logs
+├── phase_2.log               
+└── phase_3.log               
+```
+
+#### Legacy Bash Scripts
+
+For compatibility, bash scripts are still available in the `scripts/` directory:
 
 - **`precompute-clip-laion.sh`** - Precompute CLIP embeddings for your LAION dataset
-- **`run-finetune-laion-clip.sh`** - Single-phase CLIP adapter training
-- **`run-finetune-laion-clip-3phase.sh`** - Advanced three-phase training (recommended)
+- **`run-finetune-laion-clip.sh`** - Single-phase CLIP adapter training  
+- **`run-finetune-laion-clip-3phase.sh`** - Advanced three-phase training
 
 See `scripts/CLIP_TRAINING_README.md` for detailed usage instructions.
 
