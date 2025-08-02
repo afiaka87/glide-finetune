@@ -535,27 +535,31 @@ def glide_wds_loader(
             up_tensor = pil_image_to_norm_tensor(up_pil)
             if use_clip_cache:
                 return (
-                    th.tensor(tokens),
-                    th.tensor(mask, dtype=th.bool),
+                    tokens.detach().clone() if isinstance(tokens, th.Tensor) else th.tensor(tokens),
+                    mask.detach().clone() if isinstance(mask, th.Tensor) else th.tensor(mask, dtype=th.bool),
                     base_tensor,
                     up_tensor,
                     clip_embedding,
                 )
             return (
-                th.tensor(tokens),
-                th.tensor(mask, dtype=th.bool),
+                tokens.detach().clone() if isinstance(tokens, th.Tensor) else th.tensor(tokens),
+                mask.detach().clone() if isinstance(mask, th.Tensor) else th.tensor(mask, dtype=th.bool),
                 base_tensor,
                 up_tensor,
             )
 
         if use_clip_cache:
             return (
-                th.tensor(tokens),
-                th.tensor(mask, dtype=th.bool),
+                tokens.detach().clone() if isinstance(tokens, th.Tensor) else th.tensor(tokens),
+                mask.detach().clone() if isinstance(mask, th.Tensor) else th.tensor(mask, dtype=th.bool),
                 base_tensor,
                 clip_embedding,
             )
-        return th.tensor(tokens), th.tensor(mask, dtype=th.bool), base_tensor
+        return (
+            tokens.detach().clone() if isinstance(tokens, th.Tensor) else th.tensor(tokens),
+            mask.detach().clone() if isinstance(mask, th.Tensor) else th.tensor(mask, dtype=th.bool),
+            base_tensor
+        )
 
     # warn_and_continue: skip corrupt samples, keep training rolling
     dataset = dataset.map(_preprocess, handler=wds.handlers.warn_and_continue)
