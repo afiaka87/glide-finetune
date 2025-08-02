@@ -66,7 +66,7 @@ def trim_white_padding_tensor(
     # Find rows/cols that contain any non-white pixel
     rows = torch.where(content.any(dim=1))[0]
     cols = torch.where(content.any(dim=0))[0]
-    
+
     if rows.numel() == 0 or cols.numel() == 0:
         # All-white edge case - return original
         return img
@@ -74,23 +74,23 @@ def trim_white_padding_tensor(
     # Get bounding box
     top, bottom = rows[0].item(), rows[-1].item() + 1
     left, right = cols[0].item(), cols[-1].item() + 1
-    
-    return img[:, int(top):int(bottom), int(left):int(right)]
+
+    return img[:, int(top) : int(bottom), int(left) : int(right)]
 
 
 def trim_white_padding_pil(
-    pil_img: Image.Image, 
+    pil_img: Image.Image,
     white_thresh: int = 245,
     morph_kernel: Optional[int] = None,
 ) -> Image.Image:
     """
     Convenience wrapper: PIL.Image → tensor trim → PIL.Image.
-    
+
     Args:
         pil_img: PIL Image to trim
         white_thresh: threshold for white detection (0-255)
         morph_kernel: optional morphological closing kernel size
-        
+
     Returns:
         Trimmed PIL Image
     """
@@ -111,7 +111,7 @@ def random_center_crop(
 ) -> Image.Image:
     """
     Take a crop roughly around the centre, with mild random scale + offset.
-    
+
     This provides additional augmentation after white padding removal,
     helping the model learn to handle various object positions.
 
@@ -149,11 +149,11 @@ def random_center_crop(
 
     # Perform crop
     crop = img.crop((left, top, left + crop_w, top + crop_h))
-    
+
     # Optionally resize to target size
     if out_size is not None:
         crop = crop.resize(out_size, resample=PIL.Image.BICUBIC)
-        
+
     return crop
 
 
@@ -167,9 +167,9 @@ def preprocess_image_with_padding_removal(
 ) -> Image.Image:
     """
     Complete preprocessing pipeline: trim white padding, optional random crop, resize.
-    
+
     This is the recommended preprocessing flow for images with white padding.
-    
+
     Args:
         pil_img: Input PIL Image
         target_size: Final output size (width, height)
@@ -177,24 +177,24 @@ def preprocess_image_with_padding_removal(
         use_random_crop: Whether to apply random center cropping
         min_crop_scale: Minimum scale for random crop
         crop_jitter: Jitter fraction for random crop
-        
+
     Returns:
         Preprocessed PIL Image at target_size
     """
     # Step 1: Remove white padding
     trimmed = trim_white_padding_pil(pil_img, white_thresh=white_thresh)
-    
+
     # Step 2: Optional random center crop (only if image is larger than target)
-    if (use_random_crop and 
-        trimmed.width > target_size[0] and 
-        trimmed.height > target_size[1]):
+    if (
+        use_random_crop
+        and trimmed.width > target_size[0]
+        and trimmed.height > target_size[1]
+    ):
         trimmed = random_center_crop(
-            trimmed, 
-            min_scale=min_crop_scale, 
-            jitter_frac=crop_jitter
+            trimmed, min_scale=min_crop_scale, jitter_frac=crop_jitter
         )
-    
+
     # Step 3: Resize to final target size
     final = trimmed.resize(target_size, resample=PIL.Image.BICUBIC)
-    
+
     return final

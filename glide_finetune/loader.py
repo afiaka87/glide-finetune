@@ -98,12 +98,12 @@ class TextImageDataset(Dataset):
         self.uncond_p = uncond_p
         self.enable_upsample = enable_glide_upsample
         self.upscale_factor = upscale_factor
-        
+
         # CLIP embedding cache
         self.use_clip_cache = use_clip_cache
         self.clip_model_name = clip_model_name
         self.clip_cache_stats = {"hits": 0, "misses": 0, "errors": 0}
-        
+
         if use_clip_cache:
             print(f"CLIP embedding cache enabled for model: {clip_model_name}")
             # Count available clip files
@@ -129,31 +129,31 @@ class TextImageDataset(Dataset):
     def get_caption(self, ind):
         key = self.keys[ind]
         text_file = self.text_files[key]
-        
+
         # Check if file exists and is readable
         if not os.path.exists(text_file):
             print(f"Caption file not found: {text_file} (index {ind}, key {key})")
             print("  -> Using unconditional tokens")
             return get_uncond_tokens_mask(self.tokenizer)
-            
+
         # Check file size
         file_size = os.path.getsize(text_file)
         if file_size == 0:
             print(f"Empty caption file: {text_file} (index {ind}, key {key})")
             print("  -> Using unconditional tokens")
             return get_uncond_tokens_mask(self.tokenizer)
-            
+
         try:
             descriptions = open(text_file, "r").readlines()
             descriptions = list(filter(lambda t: len(t) > 0, descriptions))
-            
+
             if not descriptions:
                 print(
                     f"No valid captions in file: {text_file} (index {ind}, key {key})"
                 )
                 print("  -> Using unconditional tokens")
                 return get_uncond_tokens_mask(self.tokenizer)
-                
+
             description = choice(descriptions).strip()
             return get_tokens_and_mask(tokenizer=self.tokenizer, prompt=description)
         except Exception as e:
@@ -161,38 +161,39 @@ class TextImageDataset(Dataset):
             print(f"  Error: {type(e).__name__}: {e}")
             print("  -> Using unconditional tokens")
             return get_uncond_tokens_mask(self.tokenizer)
-    
+
     def load_clip_embedding(self, ind):
         """Load CLIP embedding from cache file if available."""
         if not self.use_clip_cache:
             return None
-            
+
         key = self.keys[ind]
         if not self.text_files or key not in self.text_files:
             return None
-            
+
         # Get corresponding .clip file path
         text_file = self.text_files[key]
-        clip_file = text_file.with_suffix('.clip')
-        
+        clip_file = text_file.with_suffix(".clip")
+
         if not clip_file.exists():
             self.clip_cache_stats["misses"] += 1
             return None
-            
+
         try:
             import torch
-            clip_data = torch.load(clip_file, map_location='cpu')
-            
+
+            clip_data = torch.load(clip_file, map_location="cpu")
+
             # Validate clip model matches
             if clip_data.get("clip_model") != self.clip_model_name:
                 self.clip_cache_stats["misses"] += 1
                 return None
-                
+
             # Return embedding tensor
             embedding = clip_data["embedding"]
             self.clip_cache_stats["hits"] += 1
             return embedding
-            
+
         except Exception as e:
             self.clip_cache_stats["errors"] += 1
             print(f"Error loading CLIP embedding from {clip_file}: {e}")
@@ -205,7 +206,7 @@ class TextImageDataset(Dataset):
             tokens, mask = get_uncond_tokens_mask(self.tokenizer)
         else:
             tokens, mask = self.get_caption(ind)
-        
+
         # Load CLIP embedding if available
         clip_embedding = self.load_clip_embedding(ind)
 
@@ -218,29 +219,26 @@ class TextImageDataset(Dataset):
         if self.enable_upsample:
             # First apply white padding removal
             trimmed_pil = trim_white_padding_pil(original_pil_image, white_thresh=245)
-            
+
             # Apply random center crop if image is large enough
             if trimmed_pil.width > self.side_x and trimmed_pil.height > self.side_y:
                 trimmed_pil = random_center_crop(
-                    trimmed_pil,
-                    min_scale=self.resize_ratio,
-                    jitter_frac=0.1
+                    trimmed_pil, min_scale=self.resize_ratio, jitter_frac=0.1
                 )
-            
+
             # Create high-res version for upsampling
             upsample_pil_image = trimmed_pil.resize(
                 (self.side_x * self.upscale_factor, self.side_y * self.upscale_factor),
-                resample=PIL.Image.BICUBIC
+                resample=PIL.Image.BICUBIC,
             )
             upsample_tensor = pil_image_to_norm_tensor(upsample_pil_image)
-            
+
             # Create base low-res version
             base_pil_image = trimmed_pil.resize(
-                (self.side_x, self.side_y), 
-                resample=PIL.Image.BICUBIC
+                (self.side_x, self.side_y), resample=PIL.Image.BICUBIC
             )
             base_tensor = pil_image_to_norm_tensor(base_pil_image)
-            
+
             if self.use_clip_cache:
                 return (
                     tokens,
@@ -266,15 +264,15 @@ class TextImageDataset(Dataset):
             min_crop_scale=self.resize_ratio,  # Use resize_ratio as min crop scale
             crop_jitter=0.1,
         )
-        
+
         # Convert to tensor
         base_tensor = pil_image_to_norm_tensor(processed_pil_image)
-        
+
         if self.use_clip_cache:
             return tokens, mask, base_tensor, clip_embedding
         else:
             return tokens, mask, base_tensor
-    
+
     def get_clip_cache_stats(self):
         """Get CLIP embedding cache statistics."""
         return self.clip_cache_stats.copy()
