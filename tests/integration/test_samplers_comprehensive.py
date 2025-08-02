@@ -409,7 +409,7 @@ class TestSamplerComparison:
 
 @pytest.mark.slow
 class TestFinalVerification:
-    """Final comprehensive verification test that saves outputs for manual 
+    """Final comprehensive verification test that saves outputs for manual
     inspection."""
 
     def test_final_sampler_verification(self, test_model_and_diffusion, device):

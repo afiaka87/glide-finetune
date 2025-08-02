@@ -57,18 +57,22 @@ def test_checkpoint_integration_cpu():
                 for d in os.listdir(checkpoint_dir)
                 if os.path.isdir(os.path.join(checkpoint_dir, d))
             ]
-            
+
             if run_dirs:
                 run_dir = os.path.join(checkpoint_dir, run_dirs[0])
                 files = os.listdir(run_dir)
-                
+
                 # Check for checkpoint files
                 pt_files = [
-                    f for f in files if f.endswith(".pt") and not f.endswith(".optimizer.pt")
+                    f
+                    for f in files
+                    if f.endswith(".pt") and not f.endswith(".optimizer.pt")
                 ]
-                
+
                 # With early_stop, only the final checkpoint should be saved
-                assert len(pt_files) == 1, f"Found {len(pt_files)} checkpoint files with early_stop - expected 1 (final checkpoint)"
+                assert len(pt_files) == 1, (
+                    f"Found {len(pt_files)} checkpoint files with early_stop - expected 1 (final checkpoint)"
+                )
                 print("✅ Correctly saved final checkpoint with early_stop")
         else:
             print("✅ No checkpoint directory created with early_stop")

@@ -2,6 +2,7 @@
 
 import gc
 import os
+
 import pytest
 import torch
 
@@ -27,9 +28,9 @@ def cleanup_gpu_memory():
         gc.collect()
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats()
-    
+
     yield
-    
+
     # Clean after test
     if torch.cuda.is_available():
         gc.collect()

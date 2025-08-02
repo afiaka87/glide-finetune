@@ -62,7 +62,7 @@ class TestGPUTraining:
                 "1",
                 "--test_guidance_scale",
                 "4.0",
-                "--early_stop",
+                "--test_run",
                 "100",  # Stop after 100 steps
             ]
 
@@ -174,7 +174,7 @@ class TestGPUTraining:
                 "a small bird",
                 "--test_batch_size",
                 "1",
-                "--early_stop",
+                "--test_run",
                 "50",  # Stop after 50 steps
             ]
 
@@ -196,8 +196,8 @@ class TestGPUTraining:
             assert "Early stopping at step" in output
 
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-    def test_early_stop_exact_count(self):
-        """Test that early stopping stops at exactly the specified number of steps."""
+    def test_run_exact_count(self):
+        """Test that test run stops at exactly the specified number of steps."""
         data_dir = "/home/sam/Data/captioned-birds-8k"
 
         if not os.path.exists(data_dir):
@@ -207,7 +207,7 @@ class TestGPUTraining:
             checkpoint_dir = Path(tmpdir) / "test_checkpoints"
             checkpoint_dir.mkdir(exist_ok=True)
 
-            early_stop_steps = 25
+            test_run_steps = 25
 
             cmd = [
                 sys.executable,
@@ -237,8 +237,8 @@ class TestGPUTraining:
                 "a bird",
                 "--test_batch_size",
                 "1",
-                "--early_stop",
-                str(early_stop_steps),
+                "--test_run",
+                str(test_run_steps),
             ]
 
             result = subprocess.run(
@@ -251,6 +251,6 @@ class TestGPUTraining:
             assert result.returncode == 0, f"Training failed: {result.stderr}"
 
             output = result.stdout + result.stderr
-            assert f"Early stopping at step {early_stop_steps}" in output, (
-                f"Did not stop at exactly {early_stop_steps} steps"
+            assert f"Early stopping at step {test_run_steps}" in output, (
+                f"Did not stop at exactly {test_run_steps} steps"
             )

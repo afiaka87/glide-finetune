@@ -1,6 +1,5 @@
 """Visual tests for sampler outputs to diagnose quality issues."""
 
-
 import numpy as np
 import pytest
 import torch
@@ -147,7 +146,7 @@ class TestSamplersVisual:
             f"{sampler_name} produced unusual variance "
             f"(std: {avg_std:.3f}, expected 0.05-0.45)"
         )
-        
+
         # Also check that images aren't completely saturated
         assert 0.05 < avg_mean < 0.95, (
             f"{sampler_name} produced unusual brightness "
@@ -155,7 +154,7 @@ class TestSamplersVisual:
         )
 
     def test_sampler_consistency(self, test_model_and_diffusion, device, tmp_path):
-        """Test that PLMS (known working) produces different results than 
+        """Test that PLMS (known working) produces different results than
         broken samplers."""
         model, diffusion, options = test_model_and_diffusion
 

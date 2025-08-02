@@ -210,7 +210,9 @@ class TestGlideFinetuneEpoch:
 
         # Create simple dataloader with a few batches
         dataset = [create_mock_batch() for _ in range(5)]
-        dataloader: Any = dataset  # Simple list works for testing, typed as Any to match DataLoader
+        dataloader: Any = (
+            dataset  # Simple list works for testing, typed as Any to match DataLoader
+        )
 
         # Mock glide_options
         glide_options = {

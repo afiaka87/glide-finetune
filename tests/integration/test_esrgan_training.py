@@ -31,7 +31,7 @@ def create_dummy_dataset(data_dir: Path, num_samples: int = 4):
     not torch.cuda.is_available(), reason="GPU required for ESRGAN test"
 )
 def test_esrgan_training_vram():
-    """Test that training with ESRGAN produces upsampled images without 
+    """Test that training with ESRGAN produces upsampled images without
     running out of VRAM."""
 
     with tempfile.TemporaryDirectory() as temp_dir:

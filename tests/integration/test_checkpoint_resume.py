@@ -107,6 +107,7 @@ class TestCheckpointResume:
 
         # Clean up GPU memory before resuming
         import torch
+
         torch.cuda.empty_cache()
 
         # Now resume training

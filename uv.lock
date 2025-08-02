@@ -169,6 +169,19 @@ wheels = [
 ]
 
 [[package]]
+name = "clip"
+version = "1.0"
+source = { git = "https://github.com/openai/CLIP.git#dcba3cb2e2827b402d2701e7e1c7d9fed8a20ef1" }
+dependencies = [
+    { name = "ftfy" },
+    { name = "packaging" },
+    { name = "regex" },
+    { name = "torch" },
+    { name = "torchvision" },
+    { name = "tqdm" },
+]
+
+[[package]]
 name = "colorama"
 version = "0.4.6"
 source = { registry = "https://pypi.org/simple" }
@@ -376,6 +389,7 @@ source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
     { name = "bitsandbytes" },
+    { name = "clip" },
     { name = "einops" },
     { name = "ftfy" },
     { name = "glide-text2im" },
@@ -426,6 +440,7 @@ dev = [
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.9.3" },
     { name = "bitsandbytes", specifier = ">=0.41.0" },
+    { name = "clip", git = "https://github.com/openai/CLIP.git" },
     { name = "einops", specifier = ">=0.8.0" },
     { name = "ftfy", specifier = ">=6.2.0" },
     { name = "glide-text2im", git = "https://github.com/crowsonkb/glide-text2im.git" },
