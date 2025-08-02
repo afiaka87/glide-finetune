@@ -296,8 +296,8 @@ def load_clip_embedding_from_cache(
         return None
 
     try:
-        # Load cache file
-        cache_data = th.load(cache_file, map_location="cpu")
+        # Load cache file (PyTorch 2.6+ requires weights_only=False for numpy arrays)
+        cache_data = th.load(cache_file, map_location="cpu", weights_only=False)
 
         # Verify metadata matches
         metadata = cache_data.get("metadata", {})
