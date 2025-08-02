@@ -1149,3 +1149,166 @@ Examples of valuable additions:
 - Architectural patterns that simplified complex features
 - Common pitfalls and how to avoid them
 - Integration challenges with external libraries
+
+## CLIP Adapter "Swirling Colors" Issue Resolution (Added 2025-08-02)
+
+### Problem
+When running the CLIP adapter model with `./scripts/run-finetune-laion-clip-3phase.sh`, the model was producing "strange swirling color patterns" instead of coherent images, even with `clip_gate=0.0` (which should behave identically to the base GLIDE model).
+
+### Root Cause Analysis
+
+The issue was caused by improper weight loading when replacing AttentionBlocks with DualAttentionBlocks:
+
+1. **Architecture Mismatch**: The code was replacing AttentionBlocks AFTER loading pretrained weights, causing weight loading failures
+2. **Reference Copying Bug**: The code was copying the `attention` object by reference (`dual_block.attention = module.attention`), which caused issues
+3. **Missing encoder_channels**: The `encoder_channels` parameter wasn't being detected properly when creating DualAttentionBlocks
+
+### Key Insights
+
+1. **Modern Attention Processor Pattern**: Modern implementations (IP-Adapter, diffusers) use an "attention processor" pattern where they modify HOW attention is computed without replacing the entire block. GLIDE's older architecture doesn't support this pattern.
+
+2. **Weight Loading Order Matters**: When modifying model architecture, the order of operations is critical:
+   - Bad: Create model → Replace blocks → Load weights (weights don't match new architecture)
+   - Good: Create model → Load weights → Replace blocks (can copy weights properly)
+
+3. **Encoder Channels Detection**: The `encoder_channels` attribute may not be stored directly on AttentionBlock. Instead, detect it from the weight shape: `encoder_channels = module.encoder_kv.weight.shape[1]`
+
+### Solution Applied
+
+1. **Fixed Forward Pass**: Added early return in DualAttentionBlock.forward() when `clip_encoder_out is None`:
+   ```python
+   if clip_encoder_out is None:
+       return super().forward(x, encoder_out)
+   ```
+
+2. **Fixed Weight Copying**: Removed the problematic attention object reference copying
+
+3. **Fixed encoder_channels Detection**: Properly detect encoder_channels from weight shapes when replacing blocks
+
+### Test Results
+- The model now generates coherent images (sunsets, cars, etc.) instead of noise
+- With `clip_gate=0.0`, the model behaves identically to base GLIDE
+- The pixel difference test thresholds needed adjustment as gradient-heavy images (like sunsets) naturally have high pixel variation
+
+### Lessons Learned
+
+1. **Always Test with Real Images**: The initial diagnosis was confused because the test was flagging legitimate sunset images as "noise" due to overly strict pixel difference thresholds
+
+2. **Attention Mechanisms are Delicate**: Small changes in attention computation can completely break model outputs. Always ensure backward compatibility when modifying attention blocks.
+
+3. **Modern vs Legacy Architectures**: When adapting modern techniques (like IP-Adapter) to older architectures (like GLIDE), significant architectural changes may be needed. The attention processor pattern used by diffusers is cleaner but requires framework support.
+
+## Training Appears Frozen - Log Frequency Issue (Added 2025-08-02)
+
+### Problem
+When running `./scripts/run-finetune-laion-synthetic-clip-3phase.sh`, training appeared to be frozen after the initial evaluation grid generation and first rollback save. The console showed no progress after:
+```
+[Rollback] Saved best state at step 0 with loss 0.018546
+```
+
+### Root Cause
+The training was actually running fine! The issue was that `log_frequency` was set to 100, meaning console output would only appear every 100 training steps. With a batch size of 4 and WebDataset loading, this could take several minutes before any progress was visible.
+
+### Key Insights
+
+1. **Log Frequency Impact**: With `log_frequency=100` and small batch sizes, there can be long periods with no console output, making the training appear frozen
+2. **Initial Rollback Save**: The message `[Rollback] Saved best state at step 0` is normal - the stability monitor saves an initial checkpoint when training starts
+3. **WebDataset Warning**: The warning about `shardshuffle=None` is benign when using pre-shuffled data
+
+### Lessons Learned
+
+1. **Set Appropriate Log Frequency**: For debugging or monitoring training progress, use `log_frequency=1` or a small value (1-10). For production runs, higher values (50-100) reduce overhead
+2. **Add Progress Indicators**: Consider adding a progress bar or periodic "heartbeat" messages for long-running operations
+3. **Document Expected Behavior**: When operations might take time without output, add logging to indicate the process is running
+
+### Recommended Settings
+- **Development/Debugging**: `--log_frequency 1` for immediate feedback
+- **Production Training**: `--log_frequency 50` or `100` to reduce logging overhead
+- **Large Batch Sizes**: Can use higher log frequencies since steps complete faster
+- **Small Batch Sizes**: Use lower log frequencies to see progress sooner
+
+## Checkpoint Compatibility Between Non-CLIP and CLIP Models (Added 2025-08-02)
+
+### Problem
+When trying to resume CLIP adapter training from a checkpoint saved without CLIP components, the training fails with:
+1. Missing key errors for all CLIP-related parameters (682+ keys)
+2. Optimizer state dict mismatch: "loaded state dict contains a parameter group that doesn't match the size of optimizer's group"
+
+This occurs when attempting to use a standard GLIDE checkpoint as the starting point for CLIP adapter training.
+
+### Root Cause Analysis
+
+The issue stems from architectural differences between standard GLIDE and CLIP-enabled GLIDE:
+
+1. **Model Architecture Changes**:
+   - CLIP-enabled model adds hundreds of new parameters:
+     - DualAttentionBlock components: `clip_gate`, `clip_kv.weight`, `clip_kv.bias` for each attention layer
+     - CLIP model weights: full ViT-B/32 transformer (~87M parameters)
+     - CLIP adapter components: MLP adapter, conditioning adapter
+   - Total: 682+ new parameters that don't exist in standard GLIDE checkpoints
+
+2. **Optimizer State Incompatibility**:
+   - Standard GLIDE: Single parameter group with all model parameters
+   - CLIP-enabled GLIDE: Multiple parameter groups (adapter params, main model params) with different learning rates
+   - PyTorch's optimizer.load_state_dict() requires exact match in parameter group structure
+
+### Solution Implemented
+
+1. **Non-strict Model Loading**:
+   ```python
+   missing_keys, unexpected_keys = model.load_state_dict(model_state, strict=False)
+   ```
+   - Loads existing GLIDE weights successfully
+   - Missing CLIP components remain at their initialized values
+   - Provides informative warnings about missing keys
+
+2. **Graceful Optimizer State Handling**:
+   ```python
+   try:
+       optimizer.load_state_dict(optimizer_data["optimizer_state_dict"])
+   except ValueError as e:
+       if "parameter group" in str(e):
+           print("⚠️  Optimizer state incompatible - starting fresh")
+   ```
+   - Catches parameter group mismatch errors
+   - Continues with fresh optimizer state for new architecture
+   - Preserves model weights while resetting optimization state
+
+### Key Insights
+
+1. **Partial Checkpoint Loading is Valid**: When transitioning from non-CLIP to CLIP models, it's perfectly fine to:
+   - Load only the GLIDE backbone weights
+   - Initialize CLIP components randomly
+   - Start with fresh optimizer state
+
+2. **Architecture Evolution**: This pattern is common when extending pretrained models:
+   - Base model checkpoint → Extended model with adapters
+   - Need flexible checkpoint loading to support architecture changes
+
+3. **Clear User Communication**: The updated logging clearly explains what's happening:
+   - "Missing keys in checkpoint (will use initialized values): 682 keys"
+   - "Optimizer state incompatible (different number of parameter groups)"
+   - "This typically happens when loading a non-CLIP checkpoint into a CLIP model"
+
+### Best Practices for Checkpoint Compatibility
+
+1. **Always use `strict=False`** when loading checkpoints that might have architectural differences
+2. **Wrap optimizer loading in try-except** to handle parameter group mismatches gracefully
+3. **Provide clear warnings** about what was and wasn't loaded from the checkpoint
+4. **Document expected behavior** in scripts and help text
+5. **Consider checkpoint versioning** or metadata to track architecture changes
+
+### Usage Examples
+
+```bash
+# Resume from non-CLIP checkpoint (loads GLIDE weights, initializes CLIP randomly)
+./scripts/run-finetune-laion-synthetic-clip-3phase.sh 1 /path/to/glide/checkpoint.pt
+
+# Start fresh CLIP training (no checkpoint)
+./scripts/run-finetune-laion-synthetic-clip-3phase.sh 1 ""
+
+# Resume from CLIP checkpoint (full compatibility)
+./scripts/run-finetune-laion-synthetic-clip-3phase.sh 2  # Auto-resumes from phase 1
+```
+
+This approach enables smooth transitions between model architectures while preserving valuable pretrained weights.
