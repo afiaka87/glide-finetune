@@ -167,7 +167,31 @@ Added `--wds_tar_size` parameter (default 10000) to estimate dataset size for pr
 ## Git Workflow
 
 ### Commit Best Practices
-- Add relevant files individually from now on (for commits) rather than -A
+
+#### Granular Commits
+When committing to git, always use a granular approach rather than `git add -A`:
+1. **Stage Related Changes Together**: Add 1-2 files that are affected by a specific feature or fix
+2. **Commit with Clear Purpose**: Each commit should represent one logical change
+3. **Iterate Through Changes**: After committing one set of related files, move to the next set
+4. **Avoid Monolithic Commits**: Never dump all changes into a single commit
+
+Example workflow:
+```bash
+# Fix type annotations in adapter modules
+git add glide_finetune/adapters/clip_adapter.py
+git add glide_finetune/adapters/dual_attention.py
+git commit -m "Fix type annotations in CLIP adapter modules"
+
+# Update configuration separately
+git add mypy.ini
+git commit -m "Update mypy configuration for stricter type checking"
+
+# Document the changes
+git add CLAUDE.md
+git commit -m "Document type safety improvements and best practices"
+```
+
+This approach creates a clear history where each commit can be understood, reviewed, and if necessary, reverted independently.
 
 We don't do attribution directly in the git commit message.
 
