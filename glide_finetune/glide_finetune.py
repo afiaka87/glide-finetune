@@ -1,7 +1,7 @@
 import os
 import sys
 import time
-from typing import Any, Dict, List, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import PIL.Image
 import torch as th
@@ -83,12 +83,12 @@ def compute_kl_divergence_loss(
     timesteps: th.Tensor,
     tokens: th.Tensor,
     masks: th.Tensor,
-    clip_embeddings: th.Tensor = None,
+    clip_embeddings: Optional[th.Tensor] = None,
     temperature: float = 1.0,
 ) -> Tuple[th.Tensor, Dict[str, float]]:
     """
     Compute KL divergence between model outputs with and without CLIP adapter.
-    
+
     Args:
         glide_model: The model
         x_t: Noised input
@@ -97,15 +97,15 @@ def compute_kl_divergence_loss(
         masks: Token masks
         clip_embeddings: CLIP embeddings (optional)
         temperature: Temperature for KL divergence calculation
-        
+
     Returns:
         kl_loss: KL divergence loss (scalar)
         kl_metrics: Dictionary of KL metrics
     """
     # Enable debugging if model supports it
-    if hasattr(glide_model, '_debug_clip'):
+    if hasattr(glide_model, "_debug_clip"):
         glide_model._debug_clip = True
-    
+
     # Get output with CLIP
     with th.no_grad():
         # Ensure CLIP is being used
@@ -117,7 +117,7 @@ def compute_kl_divergence_loss(
             clip_embeddings=clip_embeddings,
             use_clip_override=True,  # Force use of CLIP
         )
-    
+
     # Get output without CLIP (baseline)
     with th.no_grad():
         output_without_clip = glide_model(
@@ -127,61 +127,85 @@ def compute_kl_divergence_loss(
             mask=masks,
             use_clip_override=False,  # Force disable CLIP
         )
-    
+
     # Disable debugging
-    if hasattr(glide_model, '_debug_clip'):
+    if hasattr(glide_model, "_debug_clip"):
         glide_model._debug_clip = False
-    
+
     # Split outputs to get predicted noise
     eps_with_clip, _ = th.split(output_with_clip, output_with_clip.shape[1] // 2, dim=1)
-    eps_without_clip, _ = th.split(output_without_clip, output_without_clip.shape[1] // 2, dim=1)
-    
-    # Compute KL divergence between the two noise predictions
-    # Use a more stable approach - compute MSE-based pseudo-KL divergence
-    # This avoids issues with softmax on very large tensors
-    
-    # Normalize the predictions to have zero mean and unit variance
-    eps_with_clip_norm = (eps_with_clip - eps_with_clip.mean()) / (eps_with_clip.std() + 1e-8)
-    eps_without_clip_norm = (eps_without_clip - eps_without_clip.mean()) / (eps_without_clip.std() + 1e-8)
-    
-    # Compute a stable KL-like divergence based on squared differences
-    # This is more stable than softmax-based KL for diffusion models
-    diff = eps_with_clip_norm - eps_without_clip_norm
-    kl_div = (diff ** 2).mean() / (2 * temperature)
-    
+    eps_without_clip, _ = th.split(
+        output_without_clip, output_without_clip.shape[1] // 2, dim=1
+    )
+
+    # Compute proper KL divergence between the two noise predictions
+    # Apply temperature scaling for stability as recommended by research
+
+    # Flatten tensors for distribution computation
+    eps_with_clip_flat = eps_with_clip.reshape(-1)
+    eps_without_clip_flat = eps_without_clip.reshape(-1)
+
+    # Apply temperature scaling to control distribution sharpness
+    eps_with_clip_temp = eps_with_clip_flat / temperature
+    eps_without_clip_temp = eps_without_clip_flat / temperature
+
+    # Convert to log probabilities using log_softmax for numerical stability
+    log_p_with_clip = th.nn.functional.log_softmax(eps_with_clip_temp, dim=0)
+    log_p_without_clip = th.nn.functional.log_softmax(eps_without_clip_temp, dim=0)
+
+    # Compute proper KL divergence: KL(P_with_clip || P_without_clip)
+    # KL(P||Q) = sum(P * log(P/Q)) = sum(P * (log(P) - log(Q)))
+    p_with_clip = th.exp(log_p_with_clip)
+    kl_div = th.nn.functional.kl_div(
+        log_p_without_clip,  # log(Q) - target distribution
+        p_with_clip,  # P - input distribution
+        reduction="batchmean",
+        log_target=False,
+    )
+
+    # Add temperature weighting as per research recommendations
+    kl_div = kl_div * (temperature**2)
+
     # Also compute L2 distance for comparison
     l2_dist = th.nn.functional.mse_loss(eps_with_clip, eps_without_clip)
-    
+
     # Compute per-timestep metrics
     timestep_bins = [0, 250, 500, 750, 1000]
     kl_metrics = {
-        'kl_divergence': kl_div.item(),
-        'l2_distance': l2_dist.item(),
+        "kl_divergence": kl_div.item(),
+        "l2_distance": l2_dist.item(),
     }
-    
+
     # Compute KL for different timestep ranges
     for i in range(len(timestep_bins) - 1):
         mask = (timesteps >= timestep_bins[i]) & (timesteps < timestep_bins[i + 1])
         if mask.any():
             eps_with_q = eps_with_clip[mask]
             eps_without_q = eps_without_clip[mask]
-            
+
             # Normalize per timestep range
-            eps_with_q_norm = (eps_with_q - eps_with_q.mean()) / (eps_with_q.std() + 1e-8)
-            eps_without_q_norm = (eps_without_q - eps_without_q.mean()) / (eps_without_q.std() + 1e-8)
-            
+            eps_with_q_norm = (eps_with_q - eps_with_q.mean()) / (
+                eps_with_q.std() + 1e-8
+            )
+            eps_without_q_norm = (eps_without_q - eps_without_q.mean()) / (
+                eps_without_q.std() + 1e-8
+            )
+
             # Compute stable KL-like divergence
             diff_q = eps_with_q_norm - eps_without_q_norm
-            kl_q = (diff_q ** 2).mean() / (2 * temperature)
-            kl_metrics[f'kl_q{i}'] = kl_q.item()
-    
+            kl_q = (diff_q**2).mean() / (2 * temperature)
+            kl_metrics[f"kl_q{i}"] = kl_q.item()
+
     return kl_div, kl_metrics
 
 
 def base_train_step(
     glide_model: Text2ImUNet,
     glide_diffusion: SpacedDiffusion,
-    batch: Union[Tuple[th.Tensor, th.Tensor, th.Tensor], Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor]],
+    batch: Union[
+        Tuple[th.Tensor, th.Tensor, th.Tensor],
+        Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor],
+    ],
     device: str,
     compute_kl_loss: bool = False,
     kl_loss_weight: float = 0.0,
@@ -200,7 +224,8 @@ def base_train_step(
                   normalized to [-1, 1]
                 - clip_embeddings (optional) is a tensor of shape (batch_size, clip_dim)
             device: The device to use for getting model outputs and computing loss.
-            compute_kl_loss: Whether to compute KL divergence loss (only for CLIP models)
+            compute_kl_loss: Whether to compute KL divergence loss (only for
+                CLIP models)
             kl_loss_weight: Weight for KL divergence regularization
         Returns:
             A tuple of (loss, metrics_dict) where metrics_dict contains detailed
@@ -214,7 +239,7 @@ def base_train_step(
         tokens, masks, reals, clip_embeddings = batch
     else:
         raise ValueError(f"Expected batch to have 3 or 4 elements, got {len(batch)}")
-    
+
     tokens = tokens.to(device)
     masks = masks.to(device)
     reals = reals.to(device)
@@ -226,9 +251,12 @@ def base_train_step(
     )
     noise = th.randn_like(reals, device=device)
     x_t = glide_diffusion.q_sample(reals, timesteps, noise=noise)
-    
+
     # Check if model supports CLIP embeddings
-    if hasattr(glide_model, 'forward') and 'clip_embeddings' in glide_model.forward.__code__.co_varnames:
+    if (
+        hasattr(glide_model, "forward")
+        and "clip_embeddings" in glide_model.forward.__code__.co_varnames
+    ):
         model_output = glide_model(
             x_t,
             timesteps,
@@ -244,10 +272,10 @@ def base_train_step(
             tokens=tokens,
             mask=masks,
         )
-    
+
     epsilon, _ = th.split(model_output, model_output.shape[1] // 2, dim=1)
     loss = th.nn.functional.mse_loss(epsilon, noise.detach())
-    
+
     # Calculate quartile losses for monitoring
     quartile_bounds = [0, 250, 500, 750, 1000]
     quartile_losses = {}
@@ -261,19 +289,24 @@ def base_train_step(
             quartile_losses[f"loss_q{i}"] = quartile_loss.item()
         else:
             quartile_losses[f"loss_q{i}"] = 0.0
-    
+
     # Compute KL divergence if using CLIP adapter
-    kl_metrics = {}
-    if compute_kl_loss and hasattr(glide_model, 'use_clip') and glide_model.use_clip and clip_embeddings is not None:
+    kl_metrics: Dict[str, float] = {}
+    if (
+        compute_kl_loss
+        and hasattr(glide_model, "use_clip")
+        and glide_model.use_clip
+        and clip_embeddings is not None
+    ):
         kl_div, kl_metrics = compute_kl_divergence_loss(
             glide_model, x_t, timesteps, tokens, masks, clip_embeddings
         )
-        
+
         # Add KL loss as regularization if weight > 0
         if kl_loss_weight > 0:
             loss = loss + kl_loss_weight * kl_div
-            kl_metrics['kl_loss_weight'] = kl_loss_weight
-    
+            kl_metrics["kl_loss_weight"] = kl_loss_weight
+
     # Combine all metrics
     all_metrics = {**quartile_losses, **kl_metrics}
 
@@ -283,7 +316,10 @@ def base_train_step(
 def upsample_train_step(
     glide_model: Text2ImUNet,
     glide_diffusion: SpacedDiffusion,
-    batch: Union[Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor], Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor]],
+    batch: Union[
+        Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor],
+        Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor, th.Tensor],
+    ],
     device: str,
     compute_kl_loss: bool = False,
     kl_loss_weight: float = 0.0,
@@ -315,7 +351,7 @@ def upsample_train_step(
         tokens, masks, low_res_image, high_res_image, clip_embeddings = batch
     else:
         raise ValueError(f"Expected batch to have 4 or 5 elements, got {len(batch)}")
-    
+
     tokens = tokens.to(device)
     masks = masks.to(device)
     low_res_image = low_res_image.to(device)
@@ -330,9 +366,12 @@ def upsample_train_step(
     noised_high_res_image = glide_diffusion.q_sample(
         high_res_image, timesteps, noise=noise
     )
-    
+
     # Check if model supports CLIP embeddings
-    if hasattr(glide_model, 'forward') and 'clip_embeddings' in glide_model.forward.__code__.co_varnames:
+    if (
+        hasattr(glide_model, "forward")
+        and "clip_embeddings" in glide_model.forward.__code__.co_varnames
+    ):
         model_output = glide_model(
             noised_high_res_image,
             timesteps,
@@ -350,7 +389,7 @@ def upsample_train_step(
             tokens=tokens,
             mask=masks,
         )
-    
+
     epsilon, _ = th.split(model_output, model_output.shape[1] // 2, dim=1)
     loss = th.nn.functional.mse_loss(epsilon, noise.detach())
 
@@ -367,10 +406,10 @@ def upsample_train_step(
             quartile_losses[f"loss_q{i}"] = quartile_loss.item()
         else:
             quartile_losses[f"loss_q{i}"] = 0.0
-    
+
     # Note: KL divergence loss is not implemented for upsampling model
     # as it requires special handling for low_res conditioning
-    
+
     return loss, quartile_losses
 
 
@@ -402,7 +441,7 @@ def update_metrics(
     gradient_accumualation_steps: int,
     glide_model: th.nn.Module,
     wds_stats: Any = None,
-    step_time: float = None,
+    step_time: Optional[float] = None,
 ) -> Dict[str, float]:
     """Update and return training metrics."""
     # Combine all metrics
@@ -423,10 +462,22 @@ def update_metrics(
         for k, v in wds_summary.items():
             # Special handling for NSFW distribution to filter out hex strings
             if k == "metadata_nsfw_distribution" and isinstance(v, dict):
-                valid_nsfw_categories = {"UNLIKELY", "UNSURE", "NSFW", "True", "False", "?"}
+                valid_nsfw_categories = {
+                    "UNLIKELY",
+                    "UNSURE",
+                    "NSFW",
+                    "True",
+                    "False",
+                    "?",
+                }
                 filtered_dist = {
-                    cat: count for cat, count in v.items() 
-                    if cat in valid_nsfw_categories or (len(cat) <= 10 and not all(c in "0123456789abcdef" for c in cat.lower()))
+                    cat: count
+                    for cat, count in v.items()
+                    if cat in valid_nsfw_categories
+                    or (
+                        len(cat) <= 10
+                        and not all(c in "0123456789abcdef" for c in cat.lower())
+                    )
                 }
                 wds_metrics[f"wds_{k}"] = filtered_dist
             else:
@@ -512,32 +563,33 @@ def training_loop(
     # Setup SIGINT handler
     checkpoint_manager.setup_sigint_handler(get_current_state)
 
-    # Generate initial samples before training starts
-    print("\nGenerating initial samples before training...")
-    with th.no_grad():
-        if config.get("eval_prompts"):
-            generate_eval_grid(
-                glide_model,
-                glide_options,
-                config,
-                config["eval_prompts"],
-                0,  # train_idx = 0 for initial
-                config["epoch_offset"],  # global_step
-            )
-        else:
-            generate_sample(
-                glide_model,
-                glide_options,
-                config,
-                0,  # train_idx = 0 for initial
-                config["epoch_offset"],  # global_step
-            )
+    # Generate initial samples before training starts (skip in test mode)
+    if config.get("early_stop", 0) == 0:  # Only generate if not in test mode
+        print("\nGenerating initial samples before training...")
+        with th.no_grad():
+            if config.get("eval_prompts"):
+                generate_eval_grid(
+                    glide_model,
+                    glide_options,
+                    config,
+                    config["eval_prompts"],
+                    0,  # train_idx = 0 for initial
+                    config["epoch_offset"],  # global_step
+                )
+            else:
+                generate_sample(
+                    glide_model,
+                    glide_options,
+                    config,
+                    0,  # train_idx = 0 for initial
+                    config["epoch_offset"],  # global_step
+                )
 
     try:
         for train_idx, batch in enumerate(dataloader):
             # Start timing the step
             step_start_time = time.time()
-            
+
             # Early stopping check
             if config["early_stop"] > 0 and train_idx >= config["early_stop"]:
                 early_stop_val = config["early_stop"]
@@ -575,12 +627,15 @@ def training_loop(
             # Check if we should compute KL loss
             compute_kl = False
             kl_weight = 0.0
-            if config.get("clip_trainer") is not None and config.get("kl_loss_interval", 0) > 0:
+            if (
+                config.get("clip_trainer") is not None
+                and config.get("kl_loss_interval", 0) > 0
+            ):
                 # Compute KL loss at specified intervals
                 if global_step % config["kl_loss_interval"] == 0:
                     compute_kl = True
                     kl_weight = config.get("kl_loss_weight", 0.0)
-            
+
             accumulated_loss, step_metrics = train_step_fn(
                 glide_model=glide_model,
                 glide_diffusion=glide_diffusion,
@@ -590,35 +645,34 @@ def training_loop(
                 kl_loss_weight=kl_weight,
             )
             accumulated_loss.backward()
-            
+
             # Clip gradients if using CLIP adapter
             if config.get("clip_trainer") is not None:
                 clip_trainer = config["clip_trainer"]
                 grad_norms = clip_trainer.clip_gradients()
                 # Add gradient norm metrics
-                step_metrics.update({
-                    f"clip/{k}": v for k, v in grad_norms.items()
-                })
-            
+                step_metrics.update({f"clip/{k}": v for k, v in grad_norms.items()})
+
             optimizer.step()
             glide_model.zero_grad()
-            
+
             # Update CLIP adapter gates if using CLIP
             if config.get("clip_trainer") is not None:
                 clip_trainer.step = global_step
                 clip_trainer.update_gates()
-                
+
                 # Check stability and potentially rollback
                 is_stable = clip_trainer.check_stability(accumulated_loss.item())
                 if not is_stable:
-                    print(f"Loss spike detected at step {global_step}! Considering rollback...")
+                    print(
+                        f"Loss spike detected at step {global_step}! "
+                        f"Considering rollback..."
+                    )
                     # TODO: Implement checkpoint rollback logic
-                
+
                 # Add CLIP metrics to step_metrics
                 clip_metrics = clip_trainer.get_metrics()
-                step_metrics.update({
-                    f"clip/{k}": v for k, v in clip_metrics.items()
-                })
+                step_metrics.update({f"clip/{k}": v for k, v in clip_metrics.items()})
 
             # Calculate step time
             step_time = time.time() - step_start_time
@@ -655,16 +709,22 @@ def training_loop(
                     config.get("wds_stats"),
                 )
                 config["first_log"] = False
-            
+
             # Dry-run testing if using CLIP adapter
-            if (config.get("clip_trainer") is not None and 
-                hasattr(config["clip_trainer"], "dry_run_interval") and
-                config["clip_trainer"].dry_run_interval > 0 and
-                global_step > 0 and global_step % config["clip_trainer"].dry_run_interval == 0):
-                
+            if (
+                config.get("clip_trainer") is not None
+                and hasattr(config["clip_trainer"], "dry_run_interval")
+                and config["clip_trainer"].dry_run_interval > 0
+                and global_step > 0
+                and global_step % config["clip_trainer"].dry_run_interval == 0
+            ):
                 dry_run_samples = getattr(config["clip_trainer"], "dry_run_samples", 5)
-                test_results = config["clip_trainer"].run_dry_run_test(batch, num_samples=dry_run_samples)
-                config["clip_trainer"].log_dry_run_metrics(test_results, config.get("wandb_run"))
+                test_results = config["clip_trainer"].run_dry_run_test(
+                    batch, num_samples=dry_run_samples
+                )
+                config["clip_trainer"].log_dry_run_metrics(
+                    test_results, config.get("wandb_run")
+                )
 
             # Sample generation
             if global_step > 0 and global_step % config["sample_interval"] == 0:
@@ -804,7 +864,7 @@ def print_metrics(
     # Create metrics display
     metrics_str = f"Step {global_step}: loss: {accumulated_loss.item():.4f}"
     metrics_str += f", lr: {current_lr:.2e}"
-    
+
     # Add samples per second if available
     if "samples_per_second" in log:
         metrics_str += f", samples/s: {log['samples_per_second']:.2f}"
@@ -859,8 +919,12 @@ def print_metrics(
             # Filter out long hex strings and keep only known NSFW categories
             valid_nsfw_categories = {"UNLIKELY", "UNSURE", "NSFW", "True", "False", "?"}
             filtered_dist = {
-                k: v for k, v in nsfw_dist.items() 
-                if k in valid_nsfw_categories or (len(k) <= 10 and not all(c in "0123456789abcdef" for c in k.lower()))
+                k: v
+                for k, v in nsfw_dist.items()
+                if k in valid_nsfw_categories
+                or (
+                    len(k) <= 10 and not all(c in "0123456789abcdef" for c in k.lower())
+                )
             }
             nsfw_str = ", ".join(f"{k}: {v}" for k, v in filtered_dist.items())
             print(f"    NSFW distribution: {nsfw_str}")
