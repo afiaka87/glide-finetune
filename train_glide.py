@@ -151,15 +151,13 @@ def run_glide_finetune(
         print("Wandb setup.")
 
     # Model setup
-    # First load the base model or from OpenAI checkpoint
-    initial_checkpoint = (
-        "" if resume_ckpt else ""
-    )  # Use OpenAI checkpoint if not resuming
-    
+    # Use resume checkpoint if provided, otherwise use OpenAI checkpoint
+    initial_checkpoint = resume_ckpt if resume_ckpt else None
+
     if use_clip:
         # Load CLIP-enabled model
         from glide_finetune.adapters import load_glide_model_with_clip
-        
+
         glide_model, glide_diffusion, glide_options = load_glide_model_with_clip(
             glide_path=initial_checkpoint,
             use_fp16=use_fp16,
@@ -190,10 +188,6 @@ def run_glide_finetune(
     glide_model.train()
     number_of_params = sum(x.numel() for x in glide_model.parameters())
     print(f"Number of parameters: {number_of_params}")
-    number_of_trainable_params = sum(
-        x.numel() for x in glide_model.parameters() if x.requires_grad
-    )
-    print(f"Trainable parameters: {number_of_trainable_params}")
 
     # Move model to device before creating optimizer
     glide_model.to(device)
@@ -242,7 +236,6 @@ def run_glide_finetune(
             enable_glide_upsample=enable_upsample,
             upscale_factor=upsample_factor,  # TODO: make this a parameter
             use_clip_cache=use_clip_cache,
-            clip_cache_dir=clip_cache_dir,
             clip_model_name=clip_model_name if use_clip else None,
         )
 
@@ -254,12 +247,115 @@ def run_glide_finetune(
         # WebDataset needs to be batched before DataLoader
         print(f"[Main] Batching WebDataset with batch_size={batch_size}")
         dataset = dataset.batched(batch_size)
+
+        # Define collate function to properly stack batched samples
+        def collate_webdataset_batch(batch):
+            # WebDataset with batched() can return data in different formats
+            # Check if batch is a list containing the actual batch data
+            if isinstance(batch, list) and len(batch) == 1:
+                batch = batch[0]
+
+            # Now check the format of the batch
+            if isinstance(batch, (list, tuple)):
+                # Special case: 4-element tuple with last element None or list of Nones (missing CLIP embeddings)
+                if (
+                    len(batch) == 4
+                    and isinstance(batch[0], th.Tensor)
+                    and isinstance(batch[1], th.Tensor)
+                    and isinstance(batch[2], th.Tensor)
+                ):
+                    # Check if element 3 is None or a list of Nones
+                    if batch[3] is None:
+                        # This is valid - CLIP embeddings are missing from cache
+                        return batch
+                    elif isinstance(batch[3], list) and all(
+                        x is None for x in batch[3]
+                    ):
+                        # This is also valid - list of None CLIP embeddings
+                        # Convert to None for consistency
+                        return (batch[0], batch[1], batch[2], None)
+                    elif isinstance(batch[3], th.Tensor):
+                        # This is valid - CLIP embeddings present
+                        return batch
+
+                # Check if it's already batched tensors (tokens, masks, images, [clip])
+                if len(batch) in [3, 4] and all(
+                    isinstance(x, (th.Tensor, type(None))) for x in batch
+                ):
+                    # At least the first 3 elements must be tensors
+                    if all(
+                        isinstance(batch[i], th.Tensor)
+                        for i in range(min(3, len(batch)))
+                    ):
+                        # Verify all non-None tensors have the same batch size
+                        batch_sizes = [
+                            x.shape[0]
+                            for x in batch
+                            if x is not None and isinstance(x, th.Tensor)
+                        ]
+                        if len(set(batch_sizes)) == 1:
+                            # All have the same batch size - this is pre-batched data
+                            return batch
+                # Otherwise it's a list of samples that need to be collated
+                elif len(batch) > 0 and isinstance(batch[0], (list, tuple)):
+                    # This is a list of samples - collate them
+                    if len(batch[0]) == 4:  # With CLIP embeddings
+                        tokens_list, masks_list, images_list, clip_list = zip(*batch)
+                        return (
+                            th.stack(list(tokens_list)),
+                            th.stack(list(masks_list)),
+                            th.stack(list(images_list)),
+                            th.stack(list(clip_list))
+                            if clip_list[0] is not None
+                            else None,
+                        )
+                    elif len(batch[0]) == 3:  # Without CLIP embeddings
+                        tokens_list, masks_list, images_list = zip(*batch)
+                        return (
+                            th.stack(list(tokens_list)),
+                            th.stack(list(masks_list)),
+                            th.stack(list(images_list)),
+                        )
+
+            # If we get here, something unexpected happened
+            print("ERROR: Unexpected batch format")
+            print(f"  batch type: {type(batch)}")
+            print(
+                f"  batch length: {len(batch) if hasattr(batch, '__len__') else 'N/A'}"
+            )
+            if isinstance(batch, (list, tuple)) and len(batch) > 0:
+                print(f"  first element type: {type(batch[0])}")
+                if hasattr(batch[0], "shape"):
+                    print(f"  first element shape: {batch[0].shape}")
+                # Debug: print all shapes
+                for i, elem in enumerate(batch):
+                    if elem is None:
+                        print(f"  element {i}: None")
+                    elif hasattr(elem, "shape"):
+                        print(f"  element {i} shape: {elem.shape}")
+                # Check if this might be valid but wasn't caught
+                if len(batch) == 4 and all(
+                    isinstance(x, (th.Tensor, type(None))) for x in batch
+                ):
+                    print("  This looks like a valid batch with CLIP embeddings!")
+                    non_none_tensors = [x for x in batch if x is not None]
+                    if len(non_none_tensors) >= 3:
+                        batch_sizes = [x.shape[0] for x in non_none_tensors]
+                        print(f"  Batch sizes: {batch_sizes}")
+                        print(f"  Unique batch sizes: {set(batch_sizes)}")
+                        if len(set(batch_sizes)) == 1:
+                            print(
+                                "  ERROR: This should have been accepted! The check is failing."
+                            )
+            raise ValueError("Unexpected batch format")
+
         dataloader = th.utils.data.DataLoader(
             dataset,
             batch_size=None,  # WebDataset handles batching
             shuffle=False,
             num_workers=0,
             pin_memory=(device == "cuda"),
+            collate_fn=collate_webdataset_batch,
         )
     else:
         dataloader = th.utils.data.DataLoader(
@@ -275,7 +371,7 @@ def run_glide_finetune(
     if use_clip:
         # Create separate optimizers for CLIP adapter training
         from glide_finetune.adapters import create_clip_adapter_optimizer
-        
+
         optimizer, optimizer_info = create_clip_adapter_optimizer(
             glide_model,
             adapter_lr=adapter_lr,
@@ -285,10 +381,18 @@ def run_glide_finetune(
             main_wd=adam_weight_decay,
             train_phases=adapter_training_phase,
         )
-        
-        print(f"Created CLIP adapter optimizer with training phase: {adapter_training_phase}")
-        for name, count in optimizer_info['param_counts'].items():
+
+        print(
+            f"Created CLIP adapter optimizer with training phase: {adapter_training_phase}"
+        )
+        for name, count in optimizer_info["param_counts"].items():
             print(f"  {name} parameters: {count:,}")
+
+        # Print trainable parameters after freezing
+        trainable_params = sum(
+            p.numel() for p in glide_model.parameters() if p.requires_grad
+        )
+        print(f"Total trainable parameters after freezing: {trainable_params:,}")
     else:
         # Standard optimizer
         optimizer = create_optimizer(
@@ -302,7 +406,7 @@ def run_glide_finetune(
     clip_trainer = None
     if use_clip:
         from glide_finetune.adapters import ClipAdapterTrainer
-        
+
         clip_trainer = ClipAdapterTrainer(
             model=glide_model,
             diffusion=glide_diffusion,
@@ -316,10 +420,8 @@ def run_glide_finetune(
             early_stop_patience=early_stop_patience,
             baseline_eval_interval=baseline_eval_interval,
         )
-        
-        # Store dry run parameters for training loop
-        clip_trainer.dry_run_interval = dry_run_interval
-        clip_trainer.dry_run_samples = dry_run_samples
+
+        # Note: dry run parameters are handled separately in training loop
         print(f"Created CLIP adapter trainer with {adapter_warmup_steps} warmup steps")
 
     # Training setup - create run-specific output directory
@@ -339,7 +441,7 @@ def run_glide_finetune(
             print("unexpected directory naming scheme")
             # ignore
     existing_runs_int = sorted(existing_runs_int)
-    next_run = 0 if len(existing_runs) == 0 else existing_runs_int[-1] + 1
+    next_run = 0 if len(existing_runs_int) == 0 else existing_runs_int[-1] + 1
     run_id = str(next_run).zfill(4)
     current_run_ckpt_dir = os.path.join(checkpoints_dir, run_id)
     current_run_outputs_dir = os.path.join(training_base_dir, run_id)
@@ -649,7 +751,7 @@ def parse_args():
         action="store_true",
         help="Skip LAION metadata filtering (faster loading, no metadata requirements)",
     )
-    
+
     # CLIP Adapter arguments
     parser.add_argument(
         "--use_clip",
@@ -660,7 +762,17 @@ def parse_args():
         "--clip_model_name",
         type=str,
         default="ViT-L/14",
-        choices=["ViT-B/32", "ViT-B/16", "ViT-L/14", "ViT-L/14@336px", "RN50", "RN101", "RN50x4", "RN50x16", "RN50x64"],
+        choices=[
+            "ViT-B/32",
+            "ViT-B/16",
+            "ViT-L/14",
+            "ViT-L/14@336px",
+            "RN50",
+            "RN101",
+            "RN50x4",
+            "RN50x16",
+            "RN50x64",
+        ],
         help="CLIP model architecture to use (default: ViT-L/14)",
     )
     parser.add_argument(
