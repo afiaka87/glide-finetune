@@ -1,7 +1,7 @@
 import math
 from abc import ABC, abstractmethod
 from itertools import product
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 import attr
 import numpy as np
@@ -87,7 +87,7 @@ class AttentionMask(ABC):
             assert n_pad > 0
             m[:, self.block_size - n_pad :] = False
 
-        return m & self._block_layout(blk_shape, head_idx, query_idx, key_idx, blk_idx)
+        return cast(np.ndarray, m & self._block_layout(blk_shape, head_idx, query_idx, key_idx, blk_idx))
 
 
 @attr.s
@@ -106,7 +106,7 @@ class DenseAttentionMask(AttentionMask):
     def _block_layout(
         self, blk_shape: Any, head_idx: int, query_idx: int, key_idx: int, blk_idx: int
     ) -> np.ndarray:
-        return np.ones([self.block_size, self.block_size], dtype=np.bool)
+        return cast(np.ndarray, np.ones([self.block_size, self.block_size], dtype=np.bool))
 
 
 @attr.s
@@ -126,11 +126,11 @@ class DenseCausalAttentionMask(AttentionMask):
         self, blk_shape: Any, head_idx: int, query_idx: int, key_idx: int, blk_idx: int
     ) -> np.ndarray:
         if query_idx > key_idx:
-            return np.ones(2 * [self.block_size], dtype=np.bool)
+            return cast(np.ndarray, np.ones(2 * [self.block_size], dtype=np.bool))
         elif query_idx < key_idx:
-            return np.zeros(2 * [self.block_size], dtype=np.bool)
+            return cast(np.ndarray, np.zeros(2 * [self.block_size], dtype=np.bool))
         else:
-            return np.tril(np.ones(2 * [self.block_size], dtype=np.bool))
+            return cast(np.ndarray, np.tril(np.ones(2 * [self.block_size], dtype=np.bool)))
 
 
 @attr.s(eq=False, repr=False)

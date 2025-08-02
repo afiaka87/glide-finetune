@@ -1,5 +1,5 @@
 import math
-from typing import Callable, Optional
+from typing import Callable, Optional, cast
 
 import attr
 import torch
@@ -22,7 +22,7 @@ class ZeroKeyBiasGrad(torch.autograd.Function):
 
 
 def zero_key_bias_grad(x: torch.Tensor) -> torch.Tensor:
-    return ZeroKeyBiasGrad.apply(x)
+    return cast(torch.Tensor, ZeroKeyBiasGrad.apply(x))
 
 
 @attr.s(eq=False, repr=False)

@@ -1,6 +1,6 @@
 import os
 from functools import lru_cache
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
 import attr
 import numpy as np
@@ -31,8 +31,9 @@ class CLIPModel:
         tokens = []
         lens = []
         for prompt in prompts:
+            max_len = getattr(self.text_encoder, 'max_text_len')
             sub_tokens, sub_len = self.tokenizer.padded_tokens_and_len(
-                self.tokenizer.encode(prompt), self.text_encoder.max_text_len
+                self.tokenizer.encode(prompt), max_len
             )
             tokens.append(sub_tokens)
             lens.append(sub_len)
@@ -44,11 +45,11 @@ class CLIPModel:
     def text_embeddings(self, prompts: List[str]) -> torch.Tensor:
         tokens, lens = self.encode_prompts(prompts)
         z_t = self.text_encoder(tokens, lens)
-        return z_t / (torch.linalg.norm(z_t, dim=-1, keepdim=True) + 1e-12)
+        return cast(torch.Tensor, z_t / (torch.linalg.norm(z_t, dim=-1, keepdim=True) + 1e-12))
 
     def image_embeddings(self, images: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         z_i = self.image_encoder((images + 1) * 127.5, t)
-        return z_i / (torch.linalg.norm(z_i, dim=-1, keepdim=True) + 1e-12)
+        return cast(torch.Tensor, z_i / (torch.linalg.norm(z_i, dim=-1, keepdim=True) + 1e-12))
 
     def cond_fn(
         self, prompts: List[str], grad_scale: float

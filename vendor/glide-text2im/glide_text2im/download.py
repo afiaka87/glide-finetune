@@ -1,6 +1,6 @@
 import os
 from functools import lru_cache
-from typing import Dict, Optional
+from typing import Dict, Optional, cast
 
 import requests
 import torch as th
@@ -74,4 +74,4 @@ def load_checkpoint(
         cache_dir=cache_dir,
         chunk_size=chunk_size,
     )
-    return th.load(path, map_location=device)
+    return cast(Dict[str, th.Tensor], th.load(path, map_location=device))

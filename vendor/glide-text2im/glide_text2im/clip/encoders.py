@@ -140,7 +140,7 @@ class ImageEmbedding(nn.Module):
             else F.embedding(cast(torch.Tensor, t), self.w_t)[:, None]
         )
         x = torch.cat((sot, x), dim=1) + self.w_pos[None]
-        return self.ln(x)
+        return cast(torch.Tensor, self.ln(x))
 
 
 @attr.s(eq=False, repr=False)
@@ -224,14 +224,15 @@ class AttentionResblock(nn.Module):
 
         if hasattr(self.attn_fn, "pytorch_attn_bias"):
             bias = self.attn_fn.pytorch_attn_bias
+            assert bias is not None
             assert len(bias.shape) in {2, 3}
 
             if len(bias.shape) == 2:
                 w = torch.softmax(
-                    w + self.attn_fn.pytorch_attn_bias[None, None], dim=-1
+                    w + bias[None, None], dim=-1
                 )
             elif len(bias.shape) == 3:
-                w = torch.softmax(w + self.attn_fn.pytorch_attn_bias[None], dim=-1)
+                w = torch.softmax(w + bias[None], dim=-1)
         else:
             w = torch.softmax(w, dim=-1)
 
@@ -244,7 +245,7 @@ class AttentionResblock(nn.Module):
         assert r.shape[1] == n_context
 
         r = self.f_c(r)
-        return m + r
+        return cast(torch.Tensor, m + r)
 
 
 @attr.s(eq=False, repr=False)
@@ -281,7 +282,7 @@ class FullyConnectedResblock(nn.Module):
         r = self.ln(r)
 
         r = self.f_2(F.gelu(self.f_1(r)))
-        return m + r
+        return cast(torch.Tensor, m + r)
 
 
 @attr.s(eq=False, repr=False)
@@ -303,7 +304,7 @@ class TransformerBlock(nn.Module):
         self.f_mlp = FullyConnectedResblock(self.n_state, self.n_resblocks, self.device)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.f_mlp(self.f_attn(x))
+        return cast(torch.Tensor, self.f_mlp(self.f_attn(x)))
 
 
 @attr.s(eq=False, repr=False)
@@ -339,7 +340,7 @@ class TextFeatureExtractor(nn.Module):
             return x[:, 0]
 
         x = self.ln(x)
-        return self.f(x[:, 0])
+        return cast(torch.Tensor, self.f(x[:, 0]))
 
 
 @attr.s(eq=False, repr=False)
@@ -361,7 +362,7 @@ class ImageFeatureExtractor(nn.Module):
             return x[:, 0]
 
         x = self.ln(x[:, :1])
-        return self.f(x[:, 0])
+        return cast(torch.Tensor, self.f(x[:, 0]))
 
 
 @attr.s(eq=False, repr=False)
@@ -396,7 +397,7 @@ class TextEncoder(nn.Module):
         mask = DenseCausalAttentionMask(*args)
         attn_fn = to_attention_info(mask)
 
-        m = 1 - make_full_layout(mask).astype(np.float32)
+        m: np.ndarray = 1 - make_full_layout(mask).astype(np.float32)
         m[m == 1] = -1e10
         attn_fn.pytorch_attn_bias = torch.from_numpy(m).to(self.device)
 
@@ -451,7 +452,7 @@ class TextEncoder(nn.Module):
             n_batch,
             self.n_embd if not return_probe_features else self.n_state,
         ]
-        return h
+        return cast(torch.Tensor, h)
 
 
 @attr.s(eq=False, repr=False)
@@ -488,7 +489,7 @@ class ImageEncoder(nn.Module):
         mask = DenseAttentionMask(*args)
         attn_fn = to_attention_info(mask)
 
-        m = 1 - make_full_layout(mask).astype(np.float32)
+        m: np.ndarray = 1 - make_full_layout(mask).astype(np.float32)
         m[m == 1] = -1e10
         attn_fn.pytorch_attn_bias = torch.from_numpy(m).to(self.device)
 
@@ -540,4 +541,4 @@ class ImageEncoder(nn.Module):
             self.n_embd if not return_probe_features else self.n_state,
         ]
 
-        return h
+        return cast(torch.Tensor, h)
