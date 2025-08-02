@@ -136,8 +136,18 @@ class CheckpointManager:
         device = next(model.parameters()).device
 
         model_state = th.load(model_path, map_location=device)
-        model.load_state_dict(model_state)
-        print("✓ Loaded model state")
+        # Load with strict=False to handle missing CLIP components
+        missing_keys, unexpected_keys = model.load_state_dict(model_state, strict=False)
+        if missing_keys:
+            print(f"⚠️  Missing keys in checkpoint (will use initialized values): {len(missing_keys)} keys")
+            # Only print first few to avoid spam
+            if len(missing_keys) > 10:
+                print(f"   First 10: {missing_keys[:10]}")
+            else:
+                print(f"   Keys: {missing_keys}")
+        if unexpected_keys:
+            print(f"⚠️  Unexpected keys in checkpoint: {unexpected_keys}")
+        print("✓ Loaded model state (non-strict mode)")
 
         # Initialize return state
         state = {
@@ -171,28 +181,37 @@ class CheckpointManager:
         # Try to load optimizer state (optional)
         if os.path.exists(optimizer_path) and optimizer is not None:
             optimizer_data = th.load(optimizer_path, map_location=device)
-            optimizer.load_state_dict(optimizer_data["optimizer_state_dict"])
-            print("✓ Loaded optimizer state")
+            try:
+                optimizer.load_state_dict(optimizer_data["optimizer_state_dict"])
+                print("✓ Loaded optimizer state")
+                state["has_optimizer_state"] = True
+                
+                # Restore RNG states if available (only if optimizer loaded successfully)
+                if "torch_rng_state" in optimizer_data:
+                    rng_state = optimizer_data["torch_rng_state"]
+                    # Ensure RNG state is a ByteTensor on CPU
+                    if isinstance(rng_state, th.Tensor):
+                        rng_state = rng_state.cpu().byte()
+                    th.set_rng_state(rng_state)
+                    print("✓ Restored PyTorch RNG state")
 
-            state["has_optimizer_state"] = True
-
-            # Restore RNG states if available
-            if "torch_rng_state" in optimizer_data:
-                rng_state = optimizer_data["torch_rng_state"]
-                # Ensure RNG state is a ByteTensor on CPU
-                if isinstance(rng_state, th.Tensor):
-                    rng_state = rng_state.cpu().byte()
-                th.set_rng_state(rng_state)
-                print("✓ Restored PyTorch RNG state")
-
-            if "cuda_rng_state" in optimizer_data and th.cuda.is_available():
-                cuda_rng_state = optimizer_data["cuda_rng_state"]
-                if cuda_rng_state is not None:
-                    # Ensure CUDA RNG state is a ByteTensor on CPU
-                    if isinstance(cuda_rng_state, th.Tensor):
-                        cuda_rng_state = cuda_rng_state.cpu().byte()
-                    th.cuda.set_rng_state(cuda_rng_state)
-                    print("✓ Restored CUDA RNG state")
+                if "cuda_rng_state" in optimizer_data and th.cuda.is_available():
+                    cuda_rng_state = optimizer_data["cuda_rng_state"]
+                    if cuda_rng_state is not None:
+                        # Ensure CUDA RNG state is a ByteTensor on CPU
+                        if isinstance(cuda_rng_state, th.Tensor):
+                            cuda_rng_state = cuda_rng_state.cpu().byte()
+                        th.cuda.set_rng_state(cuda_rng_state)
+                        print("✓ Restored CUDA RNG state")
+                        
+            except ValueError as e:
+                if "parameter group" in str(e):
+                    print("⚠️  Optimizer state incompatible (different number of parameter groups)")
+                    print("   This typically happens when loading a non-CLIP checkpoint into a CLIP model")
+                    print("   Optimizer will start fresh with new parameters")
+                    state["has_optimizer_state"] = False
+                else:
+                    raise
         elif optimizer is not None:
             print("ℹ No optimizer state file found")
 
