@@ -1012,3 +1012,116 @@ def train_step(clip_embeddings: Optional[torch.Tensor] = None):  # Type safe
 4. **Generic types**: Add generic type parameters for better collection safety
 
 This type safety foundation significantly reduces the risk of runtime errors during CLIP adapter training and makes the codebase more maintainable and reliable.
+
+## Granular Git Commit Strategy (Added 2025-08-02)
+
+### Overview
+Successfully implemented a granular commit strategy to organize major CLIP adapter integration work across multiple development sessions into logical, reviewable commits.
+
+### Commit Organization Strategy
+
+#### 1. **Vendor Dependencies First**
+- Handle external dependencies early in commit history
+- Remove embedded .git repositories from vendor code to avoid submodule conflicts
+- Commit vendor code as regular files for easier management under MIT license
+
+#### 2. **Configuration and Documentation**
+- Commit configuration files (mypy.ini, .gitignore) with project documentation
+- Include CLAUDE.md as tracked file with development guidelines and history
+- Establish commit attribution policies early
+
+#### 3. **Core Infrastructure Before Features**
+- Commit foundational adapter modules before training integration
+- Group related functionality (all adapters/ modules in one commit)
+- Separate core logic from CLI/script integration
+
+#### 4. **Logical Functional Groupings**
+- **Core Training**: glide_finetune.py + stability_monitor.py 
+- **Data Loading**: wds_loader.py + loader.py + image_processing.py
+- **Utilities**: samplers/ + checkpoint_utils.py + glide_util.py
+- **CLI Integration**: train_glide.py with all new flags
+- **Scripts**: Group by functionality (precompute vs training vs testing)
+- **Tests**: Comprehensive test suite as cohesive unit
+
+#### 5. **Dependencies and Updates Last**
+- Commit test infrastructure and dependency updates at end
+- Include uv.lock and test fixture improvements together
+
+### Key Insights
+
+#### Vendor Code Management
+- **Problem**: Git detects embedded repositories and suggests submodules
+- **Solution**: Remove .git directories from vendor code before adding
+- **Benefit**: Simpler management, direct code control, easier patching
+
+#### Commit Message Quality
+- **Established Policy**: No attribution in commit messages (handled by git user system)
+- **Structure**: Clear title + bullet points describing specific changes
+- **Focus**: What was changed and why, not who changed it
+
+#### Historical Reconstruction
+- **Challenge**: Committing work from multiple previous sessions without access to that context
+- **Solution**: Used git status, CLAUDE.md history, and logical grouping to reconstruct development flow
+- **Result**: 12 logical commits representing ~2 months of development work
+
+### Commit Statistics
+- **Total Commits**: 12 granular commits
+- **Files Changed**: 70+ files across core, scripts, tests, and vendor code  
+- **Major Features**: CLIP adapter integration, training scripts, comprehensive test suite
+- **Vendor Code**: 30 files from glide-text2im fork properly integrated
+
+### Best Practices Established
+
+#### 1. **Vendor Code Handling**
+```bash
+# Remove embedded git before adding
+rm -rf vendor/package/.git vendor/package/.gitignore
+git add vendor/package/ --force
+```
+
+#### 2. **Logical Grouping Strategy**
+- Dependencies first (vendor code)
+- Configuration and docs  
+- Core infrastructure modules
+- Integration and CLI
+- Scripts and utilities
+- Tests and validation
+- Final updates and dependencies
+
+#### 3. **Commit Verification**
+```bash
+git status --porcelain  # Ensure nothing left uncommitted
+git log --oneline -15   # Review commit sequence
+```
+
+### Future Application
+This granular commit approach should be used for:
+- Major feature integrations spanning multiple sessions
+- Vendor dependency updates and changes
+- Large-scale refactoring efforts
+- Code quality improvements (linting, type checking)
+
+The strategy ensures reviewable commits, clear development history, and easier debugging when issues arise.
+
+## Development Best Practices (Added 2025-08-02)
+
+### Knowledge Capture Protocol
+
+After every major milestone or feature is completed, update this CLAUDE.md file with:
+- **Insights**: Key technical discoveries and patterns identified during implementation
+- **Knowledge**: Specific solutions to complex problems that may recur
+- **Wisdom**: Lessons learned about what works and what doesn't in this codebase
+- **Future Helpers**: Anything that would be helpful for future development sessions
+
+This practice ensures:
+1. Continuous knowledge accumulation across sessions
+2. Reduced time solving previously-encountered problems
+3. Better context for future architectural decisions
+4. A living document that evolves with the project
+
+Examples of valuable additions:
+- Debugging techniques that revealed subtle issues
+- Performance optimizations that made significant impact
+- Architectural patterns that simplified complex features
+- Common pitfalls and how to avoid them
+- Integration challenges with external libraries
