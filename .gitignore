@@ -8,7 +8,6 @@ outputs/
 wandb/
 finetune_checkpoints/
 docker_child/
-CLAUDE.md
 TODOS.md
 current_prediction.png
 glide_checkpoints/
@@ -18,3 +17,17 @@ glide_checkpoints/
 # Dataset-specific training scripts
 scripts/run-finetune-laion.sh
 scripts/run-finetune-cc12m.sh
+
+# Ignore all files that are scratch files or temporary. This should be obvious but here are some examples:
+*.log
+THE_PLAN.md
+laion-synthetic-clip_cache/
+test_checkpoints/
+GEMINIPLAN.md
+NOTES.md
+repomix*.xml
+RUFF_FORMATTING_SUMMARY.md
+
+
+# Ignore specific "vendor" directories
+vendor/clip-retrieval
