@@ -1,5 +1,7 @@
 """Euler and Euler Ancestral sampler implementations using DDPM parameterization."""
 
+from typing import List, Union
+
 import numpy as np
 import torch as th
 from tqdm import tqdm
@@ -59,7 +61,7 @@ class EulerSampler(Sampler):
         noisy_image = th.randn(self.shape, device=self.device)
 
         # Progress bar
-        step_indices: list[int] | tqdm[int] = list(range(len(timesteps)))
+        step_indices: Union[List[int], tqdm[int]] = list(range(len(timesteps)))
         if progress:
             step_indices = tqdm(step_indices)
 
@@ -83,7 +85,7 @@ class EulerSampler(Sampler):
             current_noise_level = alphas_cumprod[current_timestep]
 
             # Predict the clean image from the noisy image and predicted noise
-            # Formula: clean_image = (noisy_image - sqrt(1 - noise_level) * 
+            # Formula: clean_image = (noisy_image - sqrt(1 - noise_level) *
             # predicted_noise) / sqrt(noise_level)
             predicted_clean_image = (
                 noisy_image - np.sqrt(1 - current_noise_level) * predicted_noise

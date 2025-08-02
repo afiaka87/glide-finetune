@@ -38,7 +38,7 @@ class CheckpointManager:
 
         # Determine base filename
         if checkpoint_type == "emergency":
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             base_name = f"emergency_checkpoint_epoch{epoch}_step{step}_{timestamp}"
         elif checkpoint_type == "sigint":
             base_name = f"interrupted_checkpoint_epoch{epoch}_step{step}"
@@ -134,7 +134,7 @@ class CheckpointManager:
 
         # Get the device of the model (where its parameters are)
         device = next(model.parameters()).device
-        
+
         model_state = th.load(model_path, map_location=device)
         model.load_state_dict(model_state)
         print("✓ Loaded model state")

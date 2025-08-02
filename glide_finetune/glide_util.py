@@ -161,8 +161,10 @@ def load_model(
                     f"(mode={compile_mode})"
                 )
             else:
-                msg = ("⚠️  torch.compile not available (requires PyTorch 2.0+), "
-                       "skipping compilation")
+                msg = (
+                    "⚠️  torch.compile not available (requires PyTorch 2.0+), "
+                    "skipping compilation"
+                )
                 print(msg)
         except Exception as e:
             print(f"⚠️  Failed to compile model: {e}")

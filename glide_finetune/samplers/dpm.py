@@ -1,5 +1,7 @@
-"""DPM++ (Diffusion Probabilistic Model Plus Plus) sampler implementations using 
+"""DPM++ (Diffusion Probabilistic Model Plus Plus) sampler implementations using
 DDPM parameterization."""
+
+from typing import List, Union
 
 import numpy as np
 import torch as th
@@ -58,13 +60,13 @@ class DPMPlusPlusSampler(Sampler):
         # Start from pure noise
         noisy_image = th.randn(self.shape, device=self.device)
 
-        # DPM++ 2M specific - store previous clean image predictions for 
+        # DPM++ 2M specific - store previous clean image predictions for
         # second-order updates
         previous_clean_image = None
         previous_timestep = None
 
         # Progress bar
-        step_indices: list[int] | tqdm[int] = list(range(len(timesteps)))
+        step_indices: Union[List[int], tqdm[int]] = list(range(len(timesteps)))
         if progress:
             step_indices = tqdm(step_indices)
 
@@ -88,7 +90,7 @@ class DPMPlusPlusSampler(Sampler):
             current_noise_level = alphas_cumprod[current_timestep]
 
             # Predict the clean image from the noisy image and predicted noise
-            # Formula: clean_image = (noisy_image - sqrt(1 - noise_level) * 
+            # Formula: clean_image = (noisy_image - sqrt(1 - noise_level) *
             # predicted_noise) / sqrt(noise_level)
             predicted_clean_image = (
                 noisy_image - np.sqrt(1 - current_noise_level) * predicted_noise
@@ -109,7 +111,7 @@ class DPMPlusPlusSampler(Sampler):
                     next_noise_level = alphas_cumprod[next_timestep]
 
                     # Compute timestep sizes for DPM++ formula
-                    # We use log(noise_level) as our "time" variable for 
+                    # We use log(noise_level) as our "time" variable for
                     # numerical stability
                     log_snr_current = -0.5 * np.log(
                         current_noise_level
@@ -125,7 +127,7 @@ class DPMPlusPlusSampler(Sampler):
                         and abs(previous_step_size) > 1e-8
                     ):
                         # Second-order update
-                        # Compute the derivative estimate (rate of change of 
+                        # Compute the derivative estimate (rate of change of
                         # clean image)
                         clean_image_derivative = (
                             predicted_clean_image - previous_clean_image
@@ -141,7 +143,7 @@ class DPMPlusPlusSampler(Sampler):
                         extrapolated_clean_image = predicted_clean_image
 
                     # DDIM-style update to next timestep
-                    # Formula: next_image = sqrt(next_noise_level) * clean_image + 
+                    # Formula: next_image = sqrt(next_noise_level) * clean_image +
                     # sqrt(1 - next_noise_level) * noise_direction
                     noise_amount = (
                         eta
