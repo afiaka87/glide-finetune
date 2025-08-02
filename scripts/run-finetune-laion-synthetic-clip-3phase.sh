@@ -9,6 +9,9 @@
 # Arguments:
 #   PHASE: 1, 2, or 3 (default: 1)
 #   RESUME_CHECKPOINT: Path to checkpoint to resume from (optional)
+#                      NOTE: When resuming from a non-CLIP checkpoint:
+#                      - Model weights will load (missing CLIP weights initialized randomly)
+#                      - Optimizer state will NOT load (different parameter groups)
 #   TEST_MODE: Number of steps to run in test mode (0=disabled, default: 0)
 #              When > 0, wandb is disabled and training stops after N steps
 #
@@ -16,6 +19,7 @@
 #   ./run-finetune-laion-synthetic-clip-3phase.sh 1              # Run phase 1
 #   ./run-finetune-laion-synthetic-clip-3phase.sh 2              # Run phase 2 (auto-resumes from phase 1)
 #   ./run-finetune-laion-synthetic-clip-3phase.sh 1 "" 100       # Test mode: phase 1, 100 steps only
+#   ./run-finetune-laion-synthetic-clip-3phase.sh 1 /path/to/non-clip/checkpoint.pt  # Resume from non-CLIP model
 
 # Paths
 LAION_DATA_DIR="/mnt/9_1T_HDD_OLDER/DATASETS/Laion_Synthetic/laion_synth_5m_wds"
@@ -28,7 +32,8 @@ CLIP_MODEL="ViT-B/32"
 
 # Parse command line arguments
 PHASE=${1:-1}  # Default to phase 1
-RESUME_FROM=${2:-""}  # Optional resume checkpoint
+# RESUME_FROM=${2:-""}  # Optional resume checkpoint
+RESUME_FROM="/mnt/9_1T_HDD_OLDER/Checkpoints/glide-finetune/0050/interrupted_checkpoint_epoch0_step7393.pt"
 TEST_MODE=${3:-0}  # Optional test mode (0=off, N=stop after N steps)
 
 echo "================================================"
@@ -129,9 +134,9 @@ CMD="uv run python train_glide.py \
     --test_steps 20 \
     --sampler 'dpm++_2m_karras' \
     --checkpoints_dir '$CHECKPOINT_DIR' \
-    --project_name 'glide-clip-laion-synthetic-phase$PHASE' \
-    --log_frequency 100 \
-    --sample_interval 1000 \
+    --project_name 'glide-finetune-laion-nostalgia' \
+    --log_frequency 1 \
+    --sample_interval 100 \
     --use_clip \
     --clip_model_name '$CLIP_MODEL' \
     --use_clip_cache \
@@ -158,9 +163,15 @@ if [ $PHASE -eq 3 ]; then
 fi
 
 # Add resume checkpoint if provided
-if [ -n "$RESUME_FROM" ] && [ -f "$RESUME_FROM" ]; then
-    echo "Resuming from checkpoint: $RESUME_FROM"
-    CMD="$CMD --resume_ckpt '$RESUME_FROM'"
+if [ -n "$RESUME_FROM" ]; then
+    if [ -f "$RESUME_FROM" ]; then
+        echo "Resuming from checkpoint: $RESUME_FROM"
+        echo "NOTE: If resuming from a non-CLIP checkpoint, missing CLIP weights will be randomly initialized"
+        CMD="$CMD --resume_ckpt '$RESUME_FROM'"
+    else
+        echo "WARNING: Resume checkpoint not found: $RESUME_FROM"
+        echo "Starting fresh training..."
+    fi
 fi
 
 # Add test mode if enabled
@@ -182,7 +193,7 @@ echo "Starting training..."
 echo "================================================"
 
 # Execute the command
-eval $CMD
+eval "$CMD"
 
 echo "================================================"
 if [ $TEST_MODE -gt 0 ]; then
