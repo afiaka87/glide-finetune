@@ -68,7 +68,6 @@ uv run python train_glide.py \
     --project_name 'glide-finetune-laion-clip' \
     --log_frequency 100 \
     --sample_interval 1000 \
-    --checkpoint_interval 2500 \
     --use_clip \
     --clip_model_name "$CLIP_MODEL" \
     --use_clip_cache \
@@ -87,8 +86,8 @@ uv run python train_glide.py \
     --dry_run_samples 5 \
     --early_stop_threshold 0.1 \
     --early_stop_patience 2000 \
-    --baseline_eval_interval 1000 \
-    --use_wandb
+    --baseline_eval_interval 1000 
 
 # Add resume checkpoint if you want to continue from a previous run
 # --resume_ckpt "$CHECKPOINT_DIR/latest.pt" \
+#--checkpoint_interval 2500 \
