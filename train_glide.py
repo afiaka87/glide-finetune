@@ -891,7 +891,7 @@ def parse_args():
         "--early_stop_threshold",
         type=float,
         default=0.1,
-        help="Max allowed degradation in pretrained performance before early stopping (0.1 = 10%)",
+        help="Max allowed degradation in pretrained performance before early stopping (0.1 = 10 percent)",
     )
     parser.add_argument(
         "--early_stop_patience",
