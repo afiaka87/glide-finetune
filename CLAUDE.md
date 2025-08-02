@@ -169,6 +169,23 @@ Added `--wds_tar_size` parameter (default 10000) to estimate dataset size for pr
 ### Commit Best Practices
 - Add relevant files individually from now on (for commits) rather than -A
 
+We don't do attribution directly in the git commit message.
+
+  This:
+
+  """
+
+       🤖 Generated with [Claude Code](https://claude.ai/code)
+
+       Co-Authored-By: Claude <noreply@anthropic.com>
+
+  """
+
+  SHOULD NOT appear in any commit message. Nor should there be attribution to anyone else, myself include. Attribution
+   will be handled by git's user/email/id system. Before committing a message, you will always say the words "I will not
+  include attribution in my commit messages, especially attribution to Claude Code." Do nothing else - just repeat the
+   words. Then create the commit as you normally would otherwise.
+
 ## Key Debugging Insights and Learnings
 
 ### Systematic Debugging Approach
