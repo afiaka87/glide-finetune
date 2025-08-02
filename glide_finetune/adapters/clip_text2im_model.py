@@ -114,14 +114,25 @@ class ClipText2ImUNet(Text2ImUNet):
             dropout=adapter_dropout,
         )
 
-        # Replace attention blocks with dual attention
+        # Don't replace attention blocks here - let load_glide_model_with_clip handle it
+        # This allows pretrained weights to load properly first
+        self._clip_gate_init = clip_gate_init
+        self._attention_blocks_replaced = False
+    
+    def replace_attention_blocks_after_load(self):
+        """Replace attention blocks with dual attention blocks after loading weights."""
+        if self._attention_blocks_replaced:
+            print("Attention blocks already replaced, skipping")
+            return
+            
         num_replaced = replace_attention_blocks(
             self,
             clip_channels=self.xf_width,
-            clip_gate_init=clip_gate_init,
+            clip_gate_init=self._clip_gate_init,
         )
         print(f"Replaced {num_replaced} attention blocks with dual attention")
-
+        self._attention_blocks_replaced = True
+        
         # Sanity check: Verify all cross-attention blocks are now DualAttentionBlock
         self._verify_attention_replacement()
 

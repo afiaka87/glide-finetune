@@ -89,6 +89,11 @@ class DualAttentionBlock(AttentionBlock):
         Returns:
             Output tensor with same shape as input
         """
+        # CRITICAL FIX: When no CLIP features provided, use EXACT parent class behavior
+        if clip_encoder_out is None:
+            # Call parent's forward method directly to ensure identical behavior
+            return super().forward(x, encoder_out)
+        
         b, c, *spatial = x.shape
 
         # Self-attention path (always present)
@@ -278,12 +283,19 @@ def replace_attention_blocks(model, clip_channels: int, clip_gate_init: float = 
             module, DualAttentionBlock
         ):
             # Extract configuration from existing module
+            # CRITICAL: Detect encoder_channels properly by checking if encoder_kv exists
+            encoder_channels = None
+            if hasattr(module, "encoder_kv"):
+                # If encoder_kv exists, we need to figure out encoder_channels
+                # Check the weight shape: encoder_kv maps from encoder_channels to channels*2
+                encoder_channels = module.encoder_kv.weight.shape[1]
+            
             dual_block = DualAttentionBlock(
                 channels=module.channels,
                 num_heads=module.num_heads,
                 num_head_channels=getattr(module, "num_head_channels", -1),
                 use_checkpoint=module.use_checkpoint,
-                encoder_channels=getattr(module, "encoder_channels", None),
+                encoder_channels=encoder_channels,
                 clip_channels=clip_channels,
                 clip_gate_init=clip_gate_init,
             )
@@ -292,14 +304,19 @@ def replace_attention_blocks(model, clip_channels: int, clip_gate_init: float = 
             with torch.no_grad():
                 dual_block.norm.load_state_dict(module.norm.state_dict())
                 dual_block.qkv.load_state_dict(module.qkv.state_dict())
+                # Copy the attention object to ensure exact same behavior
                 dual_block.attention = module.attention
                 dual_block.proj_out.load_state_dict(module.proj_out.state_dict())
 
                 # Only copy encoder_kv if this is a cross-attention block
-                if hasattr(module, "encoder_kv") and hasattr(dual_block, "encoder_kv"):
-                    dual_block.encoder_kv.load_state_dict(
-                        module.encoder_kv.state_dict()
-                    )
+                if hasattr(module, "encoder_kv"):
+                    if not hasattr(dual_block, "encoder_kv"):
+                        print(f"WARNING: Original module has encoder_kv but dual_block doesn't!")
+                        print(f"  encoder_channels: {getattr(module, 'encoder_channels', None)}")
+                    else:
+                        dual_block.encoder_kv.load_state_dict(
+                            module.encoder_kv.state_dict()
+                        )
 
             setattr(parent, name, dual_block)
             return 1

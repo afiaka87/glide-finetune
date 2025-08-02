@@ -295,6 +295,10 @@ def load_glide_model_with_clip(
     print(
         f"Loaded pretrained GLIDE weights (missing {len(missing_keys)} CLIP components)"
     )
+    
+    # NOW replace attention blocks after weights are loaded
+    if use_clip:
+        model.replace_attention_blocks_after_load()
 
     if activation_checkpointing:
         model.use_checkpoint = True
