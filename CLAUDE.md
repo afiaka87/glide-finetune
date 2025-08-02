@@ -1312,3 +1312,118 @@ The issue stems from architectural differences between standard GLIDE and CLIP-e
 ```
 
 This approach enables smooth transitions between model architectures while preserving valuable pretrained weights.
+
+## Python Training Script Development (Added 2025-08-02)
+
+### Bash to Python Migration
+
+Successfully converted the three-phase CLIP adapter training from bash script (`run-finetune-laion-synthetic-clip-3phase.sh`) to a production-ready Python script (`train_glide_clip_adapter.py`).
+
+#### Key Improvements from Migration
+
+**1. Configuration Management**
+- Type-safe dataclass-based configuration system
+- JSON save/load for reproducible training setups
+- Command-line overrides for paths and model settings
+- Validation of all paths and dependencies before training starts
+
+**2. Comprehensive Logging System**
+```
+./logs/clip_adapter_YYYYMMDD_HHMMSS/
+├── config.json              # Complete configuration
+├── training.log              # Main training log  
+├── errors.log                # Error-only log
+├── phase_1.log               # Phase-specific logs
+├── phase_2.log
+└── phase_3.log
+```
+
+**3. Robust Error Handling**
+- Graceful signal handling (Ctrl+C, SIGTERM) with proper logging
+- Full stack traces logged to files for debugging
+- Automatic checkpoint discovery and validation
+- Hardware optimization setup (TF32, cuDNN) handled correctly
+
+**4. Production Features**
+- Automatic run ID generation with timestamps
+- Phase-specific log files for detailed analysis
+- Console + file logging with different verbosity levels
+- Configuration preservation for reproducibility
+
+#### Technical Insights from Migration
+
+**1. Hardware Optimization Parameter Handling**
+- `use_tf32` and `cudnn_benchmark` are NOT parameters to `run_glide_finetune()`
+- They are global PyTorch backend settings, like in `train_glide.py` main()
+- Must be set before calling training function: `th.backends.cuda.matmul.allow_tf32 = True`
+
+**2. Type Safety with MyPy**
+- Used `Optional[int]` for `current_phase` to avoid assignment type errors
+- Added `copy.copy()` for modifying dataclass instances safely
+- Import organization and unused import removal with Ruff
+
+**3. Logging Architecture**
+- Multiple handlers: console (INFO), file (INFO), error file (ERROR)
+- Phase-specific handlers added/removed dynamically
+- Proper formatter setup for timestamps and log levels
+- Exception handling logs full tracebacks to error files
+
+**4. Configuration Pattern**
+- Dataclass with defaults for LAION Synthetic paths
+- JSON serialization via `asdict()` for configuration persistence
+- Command-line argument overrides apply after config loading
+- Path validation before training starts
+
+#### Benefits Realized
+
+**Development Experience**:
+- Better error messages and debugging information
+- Easier to modify training parameters
+- IDE support with type hints and autocompletion
+- Cleaner code organization and maintainability
+
+**Production Reliability**:
+- Automatic log organization prevents losing training information
+- Configuration files enable exact reproduction of training runs
+- Graceful error handling prevents data loss
+- Hardware optimizations properly applied
+
+**Operational Benefits**:
+- No need to manually redirect stdout/stderr to files
+- Structured logs enable better monitoring and analysis
+- Automatic run IDs prevent log conflicts
+- Easy to integrate with monitoring systems
+
+#### Lessons Learned
+
+**1. Always Preserve Performance Features**
+- TF32 and cuDNN benchmark are critical for training speed
+- Need to understand where PyTorch settings vs function parameters are used
+- Hardware optimizations should be set globally, not passed as parameters
+
+**2. Logging Design Patterns**
+- Multiple log levels and destinations provide flexibility
+- Phase-specific logs help with debugging training issues
+- Error-only logs make problem identification faster
+- Console + file logging serves different purposes
+
+**3. Configuration Management**
+- Type-safe configs prevent runtime errors
+- JSON persistence enables reproducibility
+- Path validation catches issues early
+- Command-line overrides provide flexibility without changing configs
+
+**4. Migration Strategy**
+- Read existing bash script to understand all features
+- Implement equivalent functionality with better structure
+- Test thoroughly with linting and type checking
+- Document new capabilities for users
+
+#### Future Applications
+
+This pattern can be applied to other bash scripts in the codebase:
+- Pre-computation scripts could benefit from similar error handling
+- Sampling scripts could use configuration management
+- Any multi-step workflows would benefit from structured logging
+
+The investment in proper Python tooling (logging, type safety, configuration) pays dividends in debugging, maintenance, and operational reliability.
