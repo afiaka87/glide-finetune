@@ -42,4 +42,4 @@ class DDIMSampler(Sampler):
             eta=eta,
             cond_fn=cond_fn,
         )
-        return th.tensor(result)
+        return result

@@ -33,4 +33,4 @@ class PLMSSampler(Sampler):
             progress=progress,
             cond_fn=cond_fn,
         )
-        return th.tensor(result)
+        return result
