@@ -416,11 +416,19 @@ def main():
 
     args = parser.parse_args()
 
-    # Expand glob pattern to get tar file list
-    tar_files = glob(args.tar_urls)
-    if not tar_files:
-        print(f"No tar files found matching pattern: {args.tar_urls}")
-        return 1
+    # Handle both glob patterns and comma-separated lists
+    if "*" in args.tar_urls or "?" in args.tar_urls:
+        # It's a glob pattern
+        tar_files = sorted(glob(args.tar_urls))
+        if not tar_files:
+            print(f"No tar files found matching pattern: {args.tar_urls}")
+            return 1
+    else:
+        # It's a comma-separated list
+        tar_files = [u.strip() for u in args.tar_urls.split(",") if u.strip()]
+        if not tar_files:
+            print(f"No tar files specified in: {args.tar_urls}")
+            return 1
 
     print("CLIP WebDataset Embedding Precomputation")
     print("=" * 45)

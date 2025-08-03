@@ -23,17 +23,23 @@
 
 # Paths
 LAION_DATA_DIR="/mnt/9_1T_HDD_OLDER/DATASETS/Laion_Synthetic/laion_synth_5m_wds"
-CLIP_CACHE_DIR="./clip_cache"  # Use the local cache on faster drive
-CHECKPOINT_BASE="/mnt/9_1T_HDD_OLDER/Checkpoints/glide-finetune-clip-synthetic"
-EVAL_PROMPTS="/home/sam/GitHub/glide-finetune/examples/people_captions_16.txt"
+CLIP_CACHE_DIR="/mnt/9_1T_HDD_OLDER/DATASETS/Laion_Synthetic/laion_synth_5m_wds/clip_cache"  # Use the local cache on faster drive
+#CHECKPOINT_BASE="/mnt/9_1T_HDD_OLDER/Checkpoints/glide-finetune-clip-synthetic"
+EVAL_PROMPTS="/home/sam/GitHub/glide-finetune/examples/trippy_prompts_16.txt"
 
 # CLIP Configuration (must match the cached model)
-CLIP_MODEL="ViT-B/32"
+#CLIP_MODEL="ViT-B/32"
+CLIP_MODEL="ViT-L/14"
 
 # Parse command line arguments
 PHASE=${1:-1}  # Default to phase 1
 # RESUME_FROM=${2:-""}  # Optional resume checkpoint
-RESUME_FROM="/mnt/9_1T_HDD_OLDER/Checkpoints/glide-finetune/0050/interrupted_checkpoint_epoch0_step7393.pt"
+
+# Checkpoint from finetuning further on synthetic outputs
+#RESUME_FROM="/mnt/9_1T_HDD_OLDER/Checkpoints/glide-finetune/0050/interrupted_checkpoint_epoch0_step7393.pt"
+
+#"normal" Laion finetune (not synthetic captions)
+RESUME_FROM="/mnt/9_1T_HDD_OLDER/Checkpoints/glide-finetune/0043/interrupted_checkpoint_epoch0_step3858.pt"
 TEST_MODE=${3:-0}  # Optional test mode (0=off, N=stop after N steps)
 
 echo "================================================"
@@ -64,7 +70,7 @@ case $PHASE in
         else
             BATCH_SIZE=4  # Reduced from 12 to avoid OOM
         fi
-        EPOCHS=10  # Roughly 10k iterations
+        EPOCHS=1  # Roughly 10k iterations
         CHECKPOINT_DIR="$CHECKPOINT_BASE/phase1"
         WARMUP_STEPS=5000
         ;;
@@ -74,7 +80,7 @@ case $PHASE in
         ADAPTER_LR=5e-6
         MAIN_LR=0  # Not used in phase 2
         BATCH_SIZE=10
-        EPOCHS=5  # Roughly 5k iterations
+        EPOCHS=1  # Roughly 5k iterations
         CHECKPOINT_DIR="$CHECKPOINT_BASE/phase2"
         WARMUP_STEPS=1000
         # Default to resuming from phase 1 if no checkpoint specified
@@ -88,7 +94,7 @@ case $PHASE in
         ADAPTER_LR=1e-6
         MAIN_LR=1e-7
         BATCH_SIZE=6
-        EPOCHS=10  # Roughly 10k iterations
+        EPOCHS=1  # Roughly 10k iterations
         CHECKPOINT_DIR="$CHECKPOINT_BASE/phase3"
         WARMUP_STEPS=2000
         # Default to resuming from phase 2 if no checkpoint specified

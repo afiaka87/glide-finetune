@@ -1,7 +1,12 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
+
 # Script to precompute CLIP embeddings for LAION dataset
 # This speeds up training by 5-10x by avoiding on-the-fly CLIP encoding
 # Note: For faster processing, use precompute-clip-laion-fast.sh instead
+
+# Get script directory for relative path resolution
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
 # Configuration
 LAION_DATA_DIR="/mnt/usb_nvme_2tb/Data/laion400m-dat-release/"
@@ -23,13 +28,24 @@ echo "================================================"
 # Create output directory if it doesn't exist
 mkdir -p "$OUTPUT_DIR"
 
+# Build tar list with proper expansion
+TAR_LIST=$(printf "%s," "$LAION_DATA_DIR"/*.tar | sed 's/,$//')
+
+if [ -z "$TAR_LIST" ] || [ "$TAR_LIST" = "$LAION_DATA_DIR/*.tar" ]; then
+    echo "ERROR: No .tar files found in $LAION_DATA_DIR"
+    exit 1
+fi
+
+echo "Found tar files: $(echo "$TAR_LIST" | tr ',' '\n' | wc -l)"
+
 # Run the precompute script
-uv run python scripts/precompute_clip_webdataset_embeddings.py \
-    --tar_urls "$LAION_DATA_DIR/*.tar" \
+uv run python "$SCRIPT_DIR/precompute_clip_webdataset_embeddings.py" \
+    --tar_urls "$TAR_LIST" \
     --cache_dir "$OUTPUT_DIR" \
     --clip_model_name "$CLIP_MODEL" \
     --caption_key "txt" \
-    --batch_size $BATCH_SIZE
+    --batch_size $BATCH_SIZE \
+    --num_workers $NUM_WORKERS
 
 echo "================================================"
 echo "Precomputation complete!"

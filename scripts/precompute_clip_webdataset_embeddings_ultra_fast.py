@@ -123,14 +123,15 @@ def create_optimized_webdataset_loader(
     dataset = dataset.map(extract_caption_fast).select(lambda x: x is not None)
 
     # Create dataloader with maximum efficiency settings
+    # Note: persistent_workers=False to avoid file handle accumulation
     if num_workers > 0:
         dataloader = DataLoader(
             dataset,
             batch_size=batch_size,
             num_workers=num_workers,
             pin_memory=True,
-            prefetch_factor=4,  # More aggressive prefetching
-            persistent_workers=True,
+            prefetch_factor=2,  # Reduced to avoid file handle issues
+            persistent_workers=False,  # Critical: avoid file handle leaks
             drop_last=False,
         )
     else:
@@ -277,6 +278,16 @@ async def process_tar_file_async(
     # Wait for all saves to complete
     for future in save_futures:
         future.result()
+
+    # Clean up dataloader to release file handles
+    if hasattr(dataloader, '_iterator') and dataloader._iterator is not None:
+        if hasattr(dataloader._iterator, '_shutdown_workers'):
+            dataloader._iterator._shutdown_workers()
+    del dataloader
+    
+    # Force garbage collection to clean up any remaining resources
+    import gc
+    gc.collect()
 
     elapsed = time.time() - start_time
     throughput = total_samples / elapsed if elapsed > 0 else 0
