@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Unified CLIP Embeddings Precomputation Script
-# Consolidates all precompute scripts into a single configurable interface
+# Uses ultra-fast implementation for maximum performance
 #
 # Usage:
 #   ./scripts/precompute-clip-embeddings.sh [OPTIONS]
@@ -12,9 +12,8 @@ set -euo pipefail
 #   --data-dir PATH      Path to WebDataset tar files [required for custom]
 #   --output-dir PATH    Output directory for CLIP cache [default: ./clip_cache]
 #   --clip-model MODEL   CLIP model name [default: ViT-B/32]
-#   --speed MODE         Speed mode: standard, fast, prefetch, ultra-fast [default: ultra-fast]
-#   --batch-size SIZE    Batch size for processing [default: auto based on speed]
-#   --num-workers N      Number of workers [default: auto based on speed]
+#   --batch-size SIZE    Batch size for processing [default: 2048]
+#   --num-workers N      Number of workers [default: 12]
 #   --help               Show this help message
 
 # Get script directory for relative path resolution
@@ -25,11 +24,11 @@ DATASET="custom"
 DATA_DIR=""
 OUTPUT_DIR="./clip_cache"
 CLIP_MODEL="ViT-B/32"
-SPEED_MODE="ultra-fast"
-BATCH_SIZE=""
-NUM_WORKERS=""
+BATCH_SIZE="2048"
+NUM_WORKERS="12"
 CAPTION_KEY="txt"
 IMAGE_KEY="jpg"
+MAX_CONCURRENT_TARS="1"
 
 # Dataset presets
 declare -A DATASET_PATHS=(
@@ -55,10 +54,6 @@ while [[ $# -gt 0 ]]; do
             ;;
         --clip-model)
             CLIP_MODEL="$2"
-            shift 2
-            ;;
-        --speed)
-            SPEED_MODE="$2"
             shift 2
             ;;
         --batch-size)
@@ -91,36 +86,8 @@ if [ -z "$DATA_DIR" ]; then
     fi
 fi
 
-# Auto-configure based on speed mode
-case $SPEED_MODE in
-    standard)
-        PYTHON_SCRIPT="precompute_clip_webdataset_embeddings.py"
-        : ${BATCH_SIZE:=32}
-        : ${NUM_WORKERS:=8}
-        ;;
-    fast)
-        PYTHON_SCRIPT="precompute_clip_webdataset_embeddings_fast.py"
-        : ${BATCH_SIZE:=1024}
-        : ${NUM_WORKERS:=8}
-        ;;
-    prefetch)
-        PYTHON_SCRIPT="precompute_clip_webdataset_embeddings_prefetch.py"
-        : ${BATCH_SIZE:=8192}
-        : ${NUM_WORKERS:=8}
-        EXTRA_ARGS="--prefetch_size 8 --normalize --verbose"
-        ;;
-    ultra-fast)
-        PYTHON_SCRIPT="precompute_clip_webdataset_embeddings_ultra_fast.py"
-        : ${BATCH_SIZE:=2048}
-        : ${NUM_WORKERS:=12}
-        EXTRA_ARGS="--max_concurrent_tars 1"
-        ;;
-    *)
-        echo "ERROR: Invalid speed mode: $SPEED_MODE"
-        echo "Valid modes: standard, fast, prefetch, ultra-fast"
-        exit 1
-        ;;
-esac
+# Always use ultra-fast implementation
+PYTHON_SCRIPT="precompute_clip_webdataset_embeddings_ultra_fast.py"
 
 # Set output directory to include dataset name if using default
 if [ "$OUTPUT_DIR" = "./clip_cache" ] && [ "$DATASET" != "custom" ]; then
@@ -129,13 +96,12 @@ fi
 
 # Display configuration
 echo "================================================"
-echo "CLIP Embeddings Precomputation"
+echo "CLIP Embeddings Precomputation (Ultra-Fast)"
 echo "================================================"
 echo "Dataset: $DATASET"
 echo "Data directory: $DATA_DIR"
 echo "Output directory: $OUTPUT_DIR"
 echo "CLIP model: $CLIP_MODEL"
-echo "Speed mode: $SPEED_MODE"
 echo "Batch size: $BATCH_SIZE"
 echo "Workers: $NUM_WORKERS"
 echo "================================================"
@@ -173,12 +139,8 @@ CMD="uv run python \"$SCRIPT_DIR/$PYTHON_SCRIPT\" \
     --caption_key \"$CAPTION_KEY\" \
     --batch_size $BATCH_SIZE \
     --num_workers $NUM_WORKERS \
+    --max_concurrent_tars $MAX_CONCURRENT_TARS \
     --device cuda"
-
-# Add extra arguments if defined
-if [ -n "${EXTRA_ARGS:-}" ]; then
-    CMD="$CMD $EXTRA_ARGS"
-fi
 
 # Execute the command
 echo "Starting precomputation..."

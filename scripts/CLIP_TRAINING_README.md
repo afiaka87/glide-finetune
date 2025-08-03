@@ -12,7 +12,7 @@ The scripts have been consolidated into three main tools:
 ## Script Details
 
 ### 1. `precompute-clip-embeddings.sh`
-Unified script for precomputing CLIP embeddings with multiple speed modes.
+High-performance script for precomputing CLIP embeddings using the ultra-fast implementation.
 
 **Usage:**
 ```bash
@@ -24,7 +24,7 @@ Unified script for precomputing CLIP embeddings with multiple speed modes.
     --data-dir /path/to/webdataset \
     --output-dir /path/to/clip_cache \
     --clip-model ViT-L/14 \
-    --speed ultra-fast
+    --batch-size 4096
 ```
 
 **Options:**
@@ -32,15 +32,13 @@ Unified script for precomputing CLIP embeddings with multiple speed modes.
 - `--data-dir` - Path to WebDataset tar files (required for custom)
 - `--output-dir` - Output directory for CLIP cache (default: ./clip_cache)
 - `--clip-model` - CLIP model: ViT-B/32, ViT-L/14, etc. (default: ViT-B/32)
-- `--speed` - Speed mode: standard, fast, prefetch, ultra-fast (default: ultra-fast)
-- `--batch-size` - Batch size (default: auto based on speed)
-- `--num-workers` - Number of workers (default: auto based on speed)
+- `--batch-size` - Batch size (default: 2048)
+- `--num-workers` - Number of workers (default: 12)
 
-**Speed modes:**
-- **standard** - Basic implementation, reliable but slower
-- **fast** - 5-10x faster with optimizations
-- **prefetch** - Producer-consumer pattern for maximum GPU utilization
-- **ultra-fast** - Maximum speed with torch.compile and BF16
+**Features:**
+- Uses torch.compile and BF16 for maximum speed
+- Concurrent tar processing for better throughput
+- Optimized for large-scale datasets
 
 ### 2. `finetune-glide.sh`
 Regular GLIDE fine-tuning without CLIP adapters.
@@ -122,7 +120,7 @@ GLIDE fine-tuning with CLIP adapters, supporting three-phase training.
 ### CLIP-Enhanced Fine-tuning
 ```bash
 # Step 1: Precompute CLIP embeddings (one-time, ~1-2 hours for 5M images)
-./scripts/precompute-clip-embeddings.sh --dataset laion --speed ultra-fast
+./scripts/precompute-clip-embeddings.sh --dataset laion
 
 # Step 2: Run three-phase training
 ./scripts/finetune-glide-clip.sh --dataset laion --phase 1
@@ -132,11 +130,11 @@ GLIDE fine-tuning with CLIP adapters, supporting three-phase training.
 
 ### Testing and Development
 ```bash
-# Test precomputation with small batch
+# Test precomputation with smaller batch size
 ./scripts/precompute-clip-embeddings.sh \
     --dataset laion \
-    --speed standard \
-    --batch-size 32
+    --batch-size 512 \
+    --num-workers 4
 
 # Test training with limited steps
 ./scripts/finetune-glide-clip.sh \
