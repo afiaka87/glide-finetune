@@ -26,6 +26,52 @@ from glide_finetune.image_processing import (
 )
 from glide_finetune.train_util import pil_image_to_norm_tensor
 
+
+def webdataset_probe(loader, n=2):
+    """Probe a WebDataset loader to debug its output format.
+    
+    Args:
+        loader: The WebDataset loader to probe
+        n: Number of samples to print (default: 2)
+    """
+    print("=== WebDataset Probe ===")
+    for i, sample in enumerate(loader):
+        if i >= n:
+            break
+        
+        print(f"\n--- Sample {i} ---")
+        print(f"Type: {type(sample)}")
+        
+        if isinstance(sample, dict):
+            # Dictionary format (raw WebDataset)
+            print(f"Keys: {list(sample.keys())}")
+            for key, value in sample.items():
+                if isinstance(value, th.Tensor):
+                    print(f"  {key}: Tensor {value.shape}")
+                elif isinstance(value, (list, tuple)):
+                    print(f"  {key}: {type(value).__name__} len={len(value)}")
+                else:
+                    print(f"  {key}: {type(value).__name__}")
+        elif isinstance(sample, (list, tuple)):
+            # Tuple format (after to_tuple)
+            print(f"Length: {len(sample)}")
+            for j, elem in enumerate(sample):
+                if elem is None:
+                    print(f"  [{j}]: None")
+                elif isinstance(elem, th.Tensor):
+                    print(f"  [{j}]: Tensor {elem.shape} dtype={elem.dtype}")
+                elif isinstance(elem, str):
+                    preview = elem[:60] + "..." if len(elem) > 60 else elem
+                    print(f"  [{j}]: str '{preview}'")
+                elif isinstance(elem, PIL.Image.Image):
+                    print(f"  [{j}]: PIL.Image {elem.size} mode={elem.mode}")
+                else:
+                    print(f"  [{j}]: {type(elem).__name__}")
+        else:
+            print(f"Unexpected format: {sample}")
+    
+    print("\n=== End Probe ===")
+
 # -----------------------------------------------------------------------------#
 # ----------------------  WebDataset Statistics Tracking  ---------------------#
 # -----------------------------------------------------------------------------#
@@ -299,21 +345,56 @@ def load_clip_embedding_from_cache(
         # Load cache file (PyTorch 2.6+ requires weights_only=False for numpy arrays)
         cache_data = th.load(cache_file, map_location="cpu", weights_only=False)
 
+        # Verify cache data is a dictionary
+        if not isinstance(cache_data, dict):
+            stats.clip_cache_errors += 1
+            print(
+                f"Error: CLIP cache file {cache_file} has invalid format. "
+                f"Expected dictionary, got {type(cache_data).__name__}. "
+                f"Please regenerate the cache using the precompute scripts."
+            )
+            return None
+
         # Verify metadata matches
         metadata = cache_data.get("metadata", {})
         if metadata.get("clip_model") != clip_model_name:
             stats.clip_cache_misses += 1
+            print(
+                f"Warning: CLIP cache model mismatch. Cache has '{metadata.get('clip_model')}', "
+                f"but requested '{clip_model_name}'. Please regenerate cache for this model."
+            )
             return None
 
         # Get embeddings dictionary
         embeddings = cache_data.get("embeddings", {})
+        if not isinstance(embeddings, dict):
+            stats.clip_cache_errors += 1
+            print(
+                f"Error: CLIP cache embeddings have invalid format in {cache_file}. "
+                f"Expected dictionary, got {type(embeddings).__name__}. "
+                f"Please regenerate the cache."
+            )
+            return None
+            
         if sample_key not in embeddings:
             stats.clip_cache_misses += 1
             return None
 
         # Extract embedding
         embedding_data = embeddings[sample_key]
-        embedding = embedding_data.get("embedding")
+        
+        # Handle both dict format (new) and direct tensor format (legacy)
+        if isinstance(embedding_data, dict):
+            embedding = embedding_data.get("embedding")
+        elif isinstance(embedding_data, th.Tensor):
+            embedding = embedding_data
+        else:
+            stats.clip_cache_errors += 1
+            print(
+                f"Error: Invalid embedding format for key '{sample_key}' in {cache_file}. "
+                f"Expected dict or tensor, got {type(embedding_data).__name__}."
+            )
+            return None
 
         if embedding is None:
             stats.clip_cache_misses += 1
@@ -322,10 +403,18 @@ def load_clip_embedding_from_cache(
         stats.clip_cache_hits += 1
         return embedding
 
+    except IndexError as e:
+        stats.clip_cache_errors += 1
+        print(
+            f"IndexError loading CLIP embedding from {cache_file} for key '{sample_key}': {e}\n"
+            f"This usually means the cache file is corrupted or incomplete. "
+            f"Please regenerate the cache using the precompute scripts."
+        )
+        return None
     except Exception as e:
         stats.clip_cache_errors += 1
         print(
-            f"Error loading CLIP embedding from {cache_file} for key {sample_key}: {e}"
+            f"Error loading CLIP embedding from {cache_file} for key '{sample_key}': {e}"
         )
         return None
 
@@ -373,16 +462,58 @@ def glide_wds_loader(
     # Load all CLIP cache metadata if using cache
     if use_clip_cache and clip_cache_dir:
         cache_path_obj = Path(clip_cache_dir)
-        model_dir = cache_path_obj / sanitize_model_name(clip_model_name)
-        metadata_file = model_dir / "tar_metadata.json"
+        
+        # Check if cache directory exists
+        if not cache_path_obj.exists():
+            print(
+                f"Warning: CLIP cache directory '{clip_cache_dir}' does not exist. "
+                f"Please run the precompute scripts to generate the cache first.\n"
+                f"Example: uv run python scripts/precompute_clip_webdataset_embeddings.py "
+                f"--tar_urls '/path/to/data/*.tar' --cache_dir '{clip_cache_dir}'"
+            )
+            use_clip_cache = False
+        else:
+            model_dir = cache_path_obj / sanitize_model_name(clip_model_name)
+            embeddings_dir = model_dir / "embeddings"
+            metadata_file = model_dir / "tar_metadata.json"
 
-        if metadata_file.exists():
-            try:
-                with open(metadata_file, "r") as f:
-                    _ = json.load(f)  # Cache metadata loaded but not used
-                    # in this function
-            except Exception as e:
-                print(f"Warning: Could not load CLIP cache metadata: {e}")
+            # Check if model-specific directory exists
+            if not model_dir.exists():
+                print(
+                    f"Warning: CLIP cache for model '{clip_model_name}' not found at '{model_dir}'. "
+                    f"Available models in cache: "
+                    f"{[d.name for d in cache_path_obj.iterdir() if d.is_dir()]}\n"
+                    f"Please run precompute scripts with --clip_model_name '{clip_model_name}'"
+                )
+                use_clip_cache = False
+            elif not embeddings_dir.exists():
+                print(
+                    f"Warning: CLIP embeddings directory not found at '{embeddings_dir}'. "
+                    f"Cache structure may be incomplete. Please regenerate the cache."
+                )
+                use_clip_cache = False
+            elif metadata_file.exists():
+                try:
+                    with open(metadata_file, "r") as f:
+                        tar_metadata = json.load(f)
+                        
+                        # Check if any tar files are cached
+                        if not tar_metadata:
+                            print(
+                                f"Warning: CLIP cache metadata is empty. No tar files have been processed. "
+                                f"Please run the precompute scripts."
+                            )
+                        else:
+                            print(
+                                f"CLIP cache loaded: {len(tar_metadata)} tar files cached for {clip_model_name}"
+                            )
+                except Exception as e:
+                    print(f"Warning: Could not load CLIP cache metadata: {e}")
+            else:
+                print(
+                    f"Warning: CLIP cache metadata file not found at '{metadata_file}'. "
+                    f"Cache may be incomplete."
+                )
 
     # ------------------------------------------------------------------#
     #  dataset creation + optional filtering
