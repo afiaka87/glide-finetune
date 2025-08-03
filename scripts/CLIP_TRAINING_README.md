@@ -1,103 +1,165 @@
-# CLIP Adapter Training Scripts for LAION
+# GLIDE Training Scripts
 
-This directory contains scripts for training GLIDE with CLIP adapters on the LAION dataset.
+This directory contains unified scripts for training GLIDE models with optional CLIP adapter support.
 
-## Scripts Overview
+## Overview
 
-### 1. `precompute-clip-laion.sh`
-Basic CLIP text embedding precomputation. This is a one-time operation that speeds up training by 5-10x.
+The scripts have been consolidated into three main tools:
+- `precompute-clip-embeddings.sh` - Unified CLIP embedding precomputation
+- `finetune-glide.sh` - Regular GLIDE fine-tuning (no CLIP)
+- `finetune-glide-clip.sh` - GLIDE fine-tuning with CLIP adapters
 
-**Usage:**
-```bash
-./scripts/precompute-clip-laion.sh
-```
+## Script Details
 
-### 2. `precompute-clip-laion-prefetch.sh` (Recommended)
-High-performance version with tar prefetching for maximum GPU utilization. Uses producer-consumer pattern to load tar files in background while GPU processes embeddings.
-
-**Usage:**
-```bash
-./scripts/precompute-clip-laion-prefetch.sh
-```
-
-**Benefits over basic version:**
-- 🚀 Keeps GPU at 100% utilization by prefetching tar files
-- 🔄 Producer-consumer pattern eliminates I/O bottlenecks
-- 📊 Better progress tracking with per-tar statistics
-- 🎯 Typically 2-3x faster than basic version
-
-**What they do:**
-- Process all WebDataset tar files in the LAION directory
-- Compute CLIP embeddings for each text caption
-- Save embeddings in an organized cache directory
-- Show progress with detailed statistics
-
-**Configuration:**
-- Edit the scripts to change `LAION_DATA_DIR`, `OUTPUT_DIR`, or `CLIP_MODEL`
-- Default CLIP model is ViT-B/32 (you can use ViT-L/14 for better quality)
-- Prefetch version allows adjusting `PREFETCH_SIZE` (default: 3 tar files)
-
-### 3. `run-finetune-laion-clip.sh`
-Basic training script for GLIDE with CLIP adapters on LAION dataset.
+### 1. `precompute-clip-embeddings.sh`
+Unified script for precomputing CLIP embeddings with multiple speed modes.
 
 **Usage:**
 ```bash
-./scripts/run-finetune-laion-clip.sh
+# Basic usage with dataset preset
+./scripts/precompute-clip-embeddings.sh --dataset laion
+
+# Custom dataset with options
+./scripts/precompute-clip-embeddings.sh \
+    --data-dir /path/to/webdataset \
+    --output-dir /path/to/clip_cache \
+    --clip-model ViT-L/14 \
+    --speed ultra-fast
 ```
 
-**Features:**
-- Uses pre-computed CLIP embeddings for fast training
-- Includes all stability features (gradient clipping, KL regularization, early stopping)
-- Logs to Weights & Biases
-- Saves checkpoints every 2500 steps
-- Generates sample images every 1000 steps
+**Options:**
+- `--dataset` - Preset datasets: laion, cc12m, birds, custom (default: custom)
+- `--data-dir` - Path to WebDataset tar files (required for custom)
+- `--output-dir` - Output directory for CLIP cache (default: ./clip_cache)
+- `--clip-model` - CLIP model: ViT-B/32, ViT-L/14, etc. (default: ViT-B/32)
+- `--speed` - Speed mode: standard, fast, prefetch, ultra-fast (default: ultra-fast)
+- `--batch-size` - Batch size (default: auto based on speed)
+- `--num-workers` - Number of workers (default: auto based on speed)
 
-### 4. `run-finetune-laion-clip-3phase.sh`
-Advanced three-phase training script for optimal results.
+**Speed modes:**
+- **standard** - Basic implementation, reliable but slower
+- **fast** - 5-10x faster with optimizations
+- **prefetch** - Producer-consumer pattern for maximum GPU utilization
+- **ultra-fast** - Maximum speed with torch.compile and BF16
+
+### 2. `finetune-glide.sh`
+Regular GLIDE fine-tuning without CLIP adapters.
 
 **Usage:**
 ```bash
-# Phase 1: Train adapter only (10k steps)
-./scripts/run-finetune-laion-clip-3phase.sh 1
+# Basic usage with dataset preset
+./scripts/finetune-glide.sh --dataset laion --config-preset laion
 
-# Phase 2: Train adapter + gates (5k steps)
-./scripts/run-finetune-laion-clip-3phase.sh 2
-
-# Phase 3: Full fine-tuning (10k steps)
-./scripts/run-finetune-laion-clip-3phase.sh 3
-
-# Resume from specific checkpoint
-./scripts/run-finetune-laion-clip-3phase.sh 2 /path/to/checkpoint.pt
+# Custom dataset
+./scripts/finetune-glide.sh \
+    --data-dir /path/to/dataset \
+    --checkpoint-dir ./checkpoints \
+    --batch-size 8 \
+    --epochs 20 \
+    --learning-rate 1e-4
 ```
+
+**Options:**
+- `--dataset` - Preset datasets: laion, cc12m, custom (default: custom)
+- `--data-dir` - Path to dataset (required for custom)
+- `--checkpoint-dir` - Directory for checkpoints (default: ./checkpoints)
+- `--config-preset` - Configuration preset: default, laion, cc12m
+- `--batch-size` - Batch size (default: 8)
+- `--epochs` - Number of epochs (default: 20)
+- `--learning-rate` - Learning rate (default: 1e-4)
+- `--resume` - Resume from checkpoint path
+- `--eval-prompts` - Evaluation prompts file
+- `--project-name` - W&B project name
+
+### 3. `finetune-glide-clip.sh`
+GLIDE fine-tuning with CLIP adapters, supporting three-phase training.
+
+**Usage:**
+```bash
+# Phase 1: Train adapter only
+./scripts/finetune-glide-clip.sh --dataset laion --phase 1
+
+# Phase 2: Train adapter + gates (auto-resumes from phase 1)
+./scripts/finetune-glide-clip.sh --dataset laion --phase 2
+
+# Phase 3: Full fine-tuning (auto-resumes from phase 2)
+./scripts/finetune-glide-clip.sh --dataset laion --phase 3
+
+# Custom dataset with specific options
+./scripts/finetune-glide-clip.sh \
+    --data-dir /path/to/webdataset \
+    --clip-cache-dir /path/to/clip_cache \
+    --phase 1 \
+    --batch-size 4 \
+    --test-mode 100  # Run 100 steps only for testing
+```
+
+**Options:**
+- `--dataset` - Presets: laion, laion-synthetic, birds, custom (default: custom)
+- `--phase` - Training phase: 1, 2, or 3 (default: 1)
+- `--data-dir` - Path to WebDataset tar files (required for custom)
+- `--clip-cache-dir` - Path to CLIP cache (default: auto-detect)
+- `--checkpoint-dir` - Base checkpoint directory (default: ./checkpoints-clip)
+- `--clip-model` - CLIP model name (default: ViT-B/32)
+- `--batch-size` - Batch size (default: auto based on phase)
+- `--epochs` - Number of epochs (default: auto based on phase)
+- `--resume` - Resume from specific checkpoint
+- `--test-mode` - Run N steps in test mode (disables W&B)
 
 **Phase Details:**
-- **Phase 1**: Trains only CLIP adapter components with higher LR (1e-5)
-- **Phase 2**: Adds attention gates to training with reduced LR (5e-6)
-- **Phase 3**: Full model fine-tuning with very low LR (1e-7 for main, 1e-6 for adapter)
+- **Phase 1**: Adapter only training (higher LR: 1e-5)
+- **Phase 2**: Adapter + gates training (reduced LR: 5e-6)
+- **Phase 3**: Full model fine-tuning (very low LR: 1e-7 main, 1e-6 adapter)
 
-## Workflow Example
+## Complete Workflow Example
 
-1. **First, precompute CLIP embeddings** (one-time, ~1-2 hours for 5M images):
-   ```bash
-   # Basic version
-   ./scripts/precompute-clip-laion.sh
-   
-   # OR use the faster prefetch version (recommended)
-   ./scripts/precompute-clip-laion-prefetch.sh
-   ```
+### Standard Fine-tuning (No CLIP)
+```bash
+# Simple LAION fine-tuning
+./scripts/finetune-glide.sh --dataset laion --config-preset laion
+```
 
-2. **Option A: Simple training**
-   ```bash
-   ./scripts/run-finetune-laion-clip.sh
-   ```
+### CLIP-Enhanced Fine-tuning
+```bash
+# Step 1: Precompute CLIP embeddings (one-time, ~1-2 hours for 5M images)
+./scripts/precompute-clip-embeddings.sh --dataset laion --speed ultra-fast
 
-3. **Option B: Three-phase training** (recommended):
-   ```bash
-   # Run each phase sequentially
-   ./scripts/run-finetune-laion-clip-3phase.sh 1
-   ./scripts/run-finetune-laion-clip-3phase.sh 2
-   ./scripts/run-finetune-laion-clip-3phase.sh 3
-   ```
+# Step 2: Run three-phase training
+./scripts/finetune-glide-clip.sh --dataset laion --phase 1
+./scripts/finetune-glide-clip.sh --dataset laion --phase 2
+./scripts/finetune-glide-clip.sh --dataset laion --phase 3
+```
+
+### Testing and Development
+```bash
+# Test precomputation with small batch
+./scripts/precompute-clip-embeddings.sh \
+    --dataset laion \
+    --speed standard \
+    --batch-size 32
+
+# Test training with limited steps
+./scripts/finetune-glide-clip.sh \
+    --dataset laion \
+    --phase 1 \
+    --test-mode 100  # Stop after 100 steps
+```
+
+## Migration from Old Scripts
+
+The old scripts have been moved to `.scratch/scripts/` for reference. To migrate:
+
+1. **Precomputation**: Replace dataset-specific scripts with unified script
+   - Old: `precompute-clip-laion.sh`
+   - New: `precompute-clip-embeddings.sh --dataset laion`
+
+2. **Regular training**: Use `finetune-glide.sh` with presets
+   - Old: `run-finetune-laion.sh`
+   - New: `finetune-glide.sh --dataset laion --config-preset laion`
+
+3. **CLIP training**: Use `finetune-glide-clip.sh` with phases
+   - Old: `run-finetune-laion-clip-3phase.sh 1`
+   - New: `finetune-glide-clip.sh --dataset laion --phase 1`
 
 ## Customization
 
