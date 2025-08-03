@@ -252,8 +252,8 @@ def run_glide_finetune(
         def collate_webdataset_batch(batch):
             # WebDataset with batched() can return data in different formats
             # Check if batch is a list containing the actual batch data
-            if isinstance(batch, list) and len(batch) == 1:
-                batch = batch[0]
+            if len(batch) == 1 and isinstance(batch[0], (list, tuple)):
+                batch = batch[0]  # only unwrap true nested batches
 
             # Now check the format of the batch
             if isinstance(batch, (list, tuple)):
@@ -318,6 +318,11 @@ def run_glide_finetune(
                         )
 
             # If we get here, something unexpected happened
+            # Shape sanity check
+            for idx, t in enumerate(batch):
+                if t is not None and isinstance(t, th.Tensor) and t.dim() == 0:
+                    raise ValueError(f"Scalar tensor at slot {idx}; collate failed")
+            
             print("ERROR: Unexpected batch format")
             print(f"  batch type: {type(batch)}")
             print(
@@ -930,6 +935,34 @@ if __name__ == "__main__":
 
     for arg in vars(args):
         print(f"--{arg} {getattr(args, arg)}")
+
+    # Validate CLIP cache settings if specified
+    if args.use_clip_cache and args.clip_cache_dir:
+        clip_cache_path = Path(args.clip_cache_dir)
+        if not clip_cache_path.exists():
+            print(
+                f"\nError: CLIP cache directory '{args.clip_cache_dir}' does not exist.\n"
+                f"Please either:\n"
+                f"1. Run the precompute scripts first to generate the cache:\n"
+                f"   uv run python scripts/precompute_clip_webdataset_embeddings.py \\\n"
+                f"     --tar_urls '{args.data_dir}/*.tar' \\\n"
+                f"     --cache_dir '{args.clip_cache_dir}' \\\n"
+                f"     --clip_model_name '{args.clip_model_name}'\n"
+                f"2. Disable CLIP cache by removing --use_clip_cache flag\n"
+                f"3. Use a different cache directory with --clip_cache_dir\n"
+            )
+            sys.exit(1)
+        
+        # Check for model-specific directory
+        model_dir = clip_cache_path / args.clip_model_name.replace("/", "-")
+        if not model_dir.exists():
+            available_models = [d.name for d in clip_cache_path.iterdir() if d.is_dir()]
+            print(
+                f"\nError: No cache found for CLIP model '{args.clip_model_name}' in '{args.clip_cache_dir}'.\n"
+                f"Available models: {available_models}\n"
+                f"Please run precompute scripts with --clip_model_name '{args.clip_model_name}'\n"
+            )
+            sys.exit(1)
 
     if args.use_webdataset:
         # webdataset uses tars
