@@ -11,6 +11,7 @@ Tests the full pipeline:
 
 import shutil
 import tempfile
+from glob import glob
 from pathlib import Path
 
 import numpy as np

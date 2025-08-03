@@ -1,6 +1,7 @@
 """Integration test for ESRGAN upsampling during training."""
 
 import tempfile
+from glob import glob
 from pathlib import Path
 
 import pytest
