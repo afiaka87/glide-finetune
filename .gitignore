@@ -31,3 +31,9 @@ RUFF_FORMATTING_SUMMARY.md
 
 # Ignore specific "vendor" directories
 vendor/clip-retrieval
+
+# Ignore .claude
+.claude/
+
+# Ignore Logging
+logs/
