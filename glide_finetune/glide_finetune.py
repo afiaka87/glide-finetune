@@ -274,7 +274,7 @@ def base_train_step(
         )
 
     epsilon, _ = th.split(model_output, model_output.shape[1] // 2, dim=1)
-    loss = th.nn.functional.mse_loss(epsilon, noise.detach())
+    loss = th.nn.functional.mse_loss(epsilon, noise)
 
     # Calculate quartile losses for monitoring
     quartile_bounds = [0, 250, 500, 750, 1000]
@@ -284,7 +284,7 @@ def base_train_step(
         mask = (timesteps >= quartile_bounds[i]) & (timesteps < quartile_bounds[i + 1])
         if mask.any():
             quartile_loss = th.nn.functional.mse_loss(
-                epsilon[mask], noise[mask].detach()
+                epsilon[mask], noise[mask]
             )
             quartile_losses[f"loss_q{i}"] = quartile_loss.item()
         else:
@@ -391,7 +391,7 @@ def upsample_train_step(
         )
 
     epsilon, _ = th.split(model_output, model_output.shape[1] // 2, dim=1)
-    loss = th.nn.functional.mse_loss(epsilon, noise.detach())
+    loss = th.nn.functional.mse_loss(epsilon, noise)
 
     # Calculate quartile losses
     quartile_bounds = [0, 250, 500, 750, 1000]
@@ -401,7 +401,7 @@ def upsample_train_step(
         mask = (timesteps >= quartile_bounds[i]) & (timesteps < quartile_bounds[i + 1])
         if mask.any():
             quartile_loss = th.nn.functional.mse_loss(
-                epsilon[mask], noise[mask].detach()
+                epsilon[mask], noise[mask]
             )
             quartile_losses[f"loss_q{i}"] = quartile_loss.item()
         else:
@@ -644,6 +644,13 @@ def training_loop(
                 compute_kl_loss=compute_kl,
                 kl_loss_weight=kl_weight,
             )
+            
+            # Ensure loss requires grad before backward
+            assert accumulated_loss.requires_grad, (
+                "Loss tensor does not require grad! "
+                "Check that at least some model parameters have requires_grad=True"
+            )
+            
             accumulated_loss.backward()
 
             # Clip gradients if using CLIP adapter
