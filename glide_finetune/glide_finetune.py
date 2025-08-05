@@ -449,7 +449,7 @@ def update_metrics(
         **log,
         "step": global_step,
         "iter": train_idx,
-        "loss": accumulated_loss.item() / gradient_accumualation_steps,
+        "loss": accumulated_loss.item() if hasattr(accumulated_loss, 'item') else accumulated_loss,
         "lr": current_lr,
         **step_metrics,  # Add all quartile metrics
     }
@@ -562,6 +562,10 @@ def training_loop(
 
     # Setup SIGINT handler
     checkpoint_manager.setup_sigint_handler(get_current_state)
+    
+    # Clear GPU cache before starting training (especially useful when resuming)
+    th.cuda.empty_cache()
+    print_vram_usage("Before training starts")
 
     # Generate initial samples before training starts (skip in test mode)
     if config.get("early_stop", 0) == 0:  # Only generate if not in test mode
@@ -586,6 +590,10 @@ def training_loop(
                 )
 
     try:
+        # Initialize gradient accumulation
+        grad_accum_steps = config["gradient_accumualation_steps"]
+        accumulated_loss = 0.0
+        
         for train_idx, batch in enumerate(dataloader):
             # Start timing the step
             step_start_time = time.time()
@@ -598,8 +606,8 @@ def training_loop(
                 )
                 break
 
-            # Calculate global step for warmup
-            global_step = config["epoch_offset"] + train_idx
+            # Calculate global step for warmup (only increment on optimizer steps)
+            global_step = config["epoch_offset"] + (train_idx // grad_accum_steps)
 
             # Apply learning rate warmup
             current_lr = get_warmup_lr(
@@ -636,7 +644,7 @@ def training_loop(
                     compute_kl = True
                     kl_weight = config.get("kl_loss_weight", 0.0)
 
-            accumulated_loss, step_metrics = train_step_fn(
+            loss, step_metrics = train_step_fn(
                 glide_model=glide_model,
                 glide_diffusion=glide_diffusion,
                 batch=batch,
@@ -645,127 +653,156 @@ def training_loop(
                 kl_loss_weight=kl_weight,
             )
             
+            # Scale loss by gradient accumulation steps
+            loss = loss / grad_accum_steps
+            
             # Ensure loss requires grad before backward
-            assert accumulated_loss.requires_grad, (
+            assert loss.requires_grad, (
                 "Loss tensor does not require grad! "
                 "Check that at least some model parameters have requires_grad=True"
             )
             
-            accumulated_loss.backward()
+            loss.backward()
+            
+            # Accumulate the loss for logging
+            if isinstance(accumulated_loss, float):
+                accumulated_loss = loss.detach()
+            else:
+                accumulated_loss += loss.detach()
 
-            # Clip gradients if using CLIP adapter
-            if config.get("clip_trainer") is not None:
-                clip_trainer = config["clip_trainer"]
-                grad_norms = clip_trainer.clip_gradients()
-                # Add gradient norm metrics
-                step_metrics.update({f"clip/{k}": v for k, v in grad_norms.items()})
+            # Only update weights every grad_accum_steps
+            if (train_idx + 1) % grad_accum_steps == 0:
+                # Clip gradients if using CLIP adapter
+                if config.get("clip_trainer") is not None:
+                    clip_trainer = config["clip_trainer"]
+                    grad_norms = clip_trainer.clip_gradients()
+                    # Add gradient norm metrics
+                    step_metrics.update({f"clip/{k}": v for k, v in grad_norms.items()})
 
-            optimizer.step()
-            glide_model.zero_grad()
+                optimizer.step()
+                glide_model.zero_grad()
+                
+                # Save the accumulated loss for logging before resetting
+                accumulated_loss_for_logging = accumulated_loss
+                
+                # Reset accumulated loss for next accumulation cycle
+                accumulated_loss = 0.0
 
-            # Update CLIP adapter gates if using CLIP
-            if config.get("clip_trainer") is not None:
-                clip_trainer.step = global_step
-                clip_trainer.update_gates()
+            # Only perform these operations after optimizer step
+            if (train_idx + 1) % grad_accum_steps == 0:
+                # Update CLIP adapter gates if using CLIP
+                if config.get("clip_trainer") is not None:
+                    clip_trainer.step = global_step
+                    clip_trainer.update_gates()
 
-                # Check stability and potentially rollback
-                is_stable = clip_trainer.check_stability(accumulated_loss.item())
-                if not is_stable:
-                    print(
-                        f"Loss spike detected at step {global_step}! "
-                        f"Considering rollback..."
+                    # Check stability and potentially rollback
+                    # Note: accumulated_loss_for_logging is already scaled by grad_accum_steps
+                    is_stable = clip_trainer.check_stability(
+                        accumulated_loss_for_logging.item() * grad_accum_steps
                     )
-                    # TODO: Implement checkpoint rollback logic
+                    if not is_stable:
+                        print(
+                            f"Loss spike detected at step {global_step}! "
+                            f"Considering rollback..."
+                        )
+                        # TODO: Implement checkpoint rollback logic
 
-                # Add CLIP metrics to step_metrics
-                clip_metrics = clip_trainer.get_metrics()
-                step_metrics.update({f"clip/{k}": v for k, v in clip_metrics.items()})
+                    # Add CLIP metrics to step_metrics
+                    clip_metrics = clip_trainer.get_metrics()
+                    step_metrics.update({f"clip/{k}": v for k, v in clip_metrics.items()})
 
-            # Calculate step time
-            step_time = time.time() - step_start_time
+                # Calculate step time
+                step_time = time.time() - step_start_time
 
-            # Update metrics
-            config["log"] = update_metrics(
-                config["log"],
-                accumulated_loss,
-                step_metrics,
-                global_step,
-                train_idx,
-                current_lr,
-                config["batch_size"],
-                config["gradient_accumualation_steps"],
-                glide_model,
-                config.get("wds_stats"),
-                step_time,
-            )
-
-            # Log metrics to wandb
-            if config["wandb_run"] is not None and hasattr(config["wandb_run"], "log"):
-                config["wandb_run"].log(config["log"])
-
-            # Console output at log_frequency intervals
-            if train_idx > 0 and train_idx % config["log_frequency"] == 0:
-                print_metrics(
+                # Update metrics (accumulated_loss_for_logging is already scaled)
+                config["log"] = update_metrics(
                     config["log"],
+                    accumulated_loss_for_logging * grad_accum_steps,  # Unscale for logging
                     step_metrics,
                     global_step,
-                    accumulated_loss,
-                    current_lr,
-                    config["warmup_steps"],
-                    config["first_log"],
-                    config.get("wds_stats"),
-                )
-                config["first_log"] = False
-
-            # Dry-run testing if using CLIP adapter
-            if (
-                config.get("clip_trainer") is not None
-                and hasattr(config["clip_trainer"], "dry_run_interval")
-                and config["clip_trainer"].dry_run_interval > 0
-                and global_step > 0
-                and global_step % config["clip_trainer"].dry_run_interval == 0
-            ):
-                dry_run_samples = getattr(config["clip_trainer"], "dry_run_samples", 5)
-                test_results = config["clip_trainer"].run_dry_run_test(
-                    batch, num_samples=dry_run_samples
-                )
-                config["clip_trainer"].log_dry_run_metrics(
-                    test_results, config.get("wandb_run")
-                )
-
-            # Sample generation
-            if global_step > 0 and global_step % config["sample_interval"] == 0:
-                if config.get("eval_prompts"):
-                    generate_eval_grid(
-                        glide_model,
-                        glide_options,
-                        config,
-                        config["eval_prompts"],
-                        train_idx,
-                        global_step,
-                    )
-                else:
-                    generate_sample(
-                        glide_model,
-                        glide_options,
-                        config,
-                        train_idx,
-                        global_step,
-                    )
-
-            # Checkpoint saving
-            if train_idx % 5000 == 0 and train_idx > 0:
-                save_checkpoint_with_manager(
-                    checkpoint_manager,
-                    glide_model,
-                    optimizer,
-                    config["epoch"],
                     train_idx,
-                    global_step,
-                    config["warmup_steps"],
-                    config["warmup_type"],
-                    config["base_lr"],
+                    current_lr,
+                    config["batch_size"] * grad_accum_steps,  # Effective batch size
+                    config["gradient_accumualation_steps"],
+                    glide_model,
+                    config.get("wds_stats"),
+                    step_time,
                 )
+
+                # Log metrics to wandb
+                if config["wandb_run"] is not None and hasattr(config["wandb_run"], "log"):
+                    config["wandb_run"].log(config["log"])
+
+                # Console output at log_frequency intervals (based on global steps)
+                if global_step > 0 and global_step % config["log_frequency"] == 0:
+                    print_metrics(
+                        config["log"],
+                        step_metrics,
+                        global_step,
+                        accumulated_loss_for_logging * grad_accum_steps,  # Unscale for display
+                        current_lr,
+                        config["warmup_steps"],
+                        config["first_log"],
+                        config.get("wds_stats"),
+                    )
+                    config["first_log"] = False
+
+                # Dry-run testing if using CLIP adapter
+                if (
+                    config.get("clip_trainer") is not None
+                    and hasattr(config["clip_trainer"], "dry_run_interval")
+                    and config["clip_trainer"].dry_run_interval > 0
+                    and global_step > 0
+                    and global_step % config["clip_trainer"].dry_run_interval == 0
+                ):
+                    dry_run_samples = getattr(config["clip_trainer"], "dry_run_samples", 5)
+                    test_results = config["clip_trainer"].run_dry_run_test(
+                        batch, num_samples=dry_run_samples
+                    )
+                    config["clip_trainer"].log_dry_run_metrics(
+                        test_results, config.get("wandb_run")
+                    )
+
+                # Sample generation
+                if global_step > 0 and global_step % config["sample_interval"] == 0:
+                    if config.get("eval_prompts"):
+                        generate_eval_grid(
+                            glide_model,
+                            glide_options,
+                            config,
+                            config["eval_prompts"],
+                            train_idx,
+                            global_step,
+                        )
+                    else:
+                        generate_sample(
+                            glide_model,
+                            glide_options,
+                            config,
+                            train_idx,
+                            global_step,
+                        )
+                    
+                    # Clear GPU cache after sampling to free memory
+                    th.cuda.empty_cache()
+                    print_vram_usage("After sample generation and cache clear")
+
+                # Checkpoint saving (based on actual training steps)
+                if global_step % 5000 == 0 and global_step > 0:
+                    save_checkpoint_with_manager(
+                        checkpoint_manager,
+                        glide_model,
+                        optimizer,
+                        config["epoch"],
+                        train_idx,
+                        global_step,
+                        config["warmup_steps"],
+                        config["warmup_type"],
+                        config["base_lr"],
+                    )
+                    # Clear cache after checkpoint saving
+                    th.cuda.empty_cache()
+                    print_vram_usage("After checkpoint save and cache clear")
 
         # Save final checkpoint
         print("Finished training, saving final checkpoint")
@@ -986,6 +1023,12 @@ def generate_eval_grid(
         f"Generating evaluation grid with {num_prompts} prompts at step "
         f"{global_step}..."
     )
+    
+    # Set fixed seed for reproducible sampling
+    eval_seed = 42  # Fixed seed for evaluation
+    th.manual_seed(eval_seed)
+    if th.cuda.is_available():
+        th.cuda.manual_seed(eval_seed)
 
     # Calculate grid size
     num_prompts = len(prompts)
@@ -1037,6 +1080,9 @@ def generate_eval_grid(
     grid_save_path = os.path.join(config["outputs_dir"], f"eval_grid_{train_idx}.png")
     grid_save_path = train_util.save_image_compressed(grid_img, grid_save_path)
     print(f"Saved evaluation grid to {grid_save_path}")
+    
+    # Clear GPU cache after each batch of generation
+    th.cuda.empty_cache()
 
     # Generate ESRGAN upsampled grid if enabled
     esrgan_grid_path = None
@@ -1057,6 +1103,8 @@ def generate_eval_grid(
         )
         print_vram_usage("After ESRGAN grid upsampling")
         print(f"Saved ESRGAN evaluation grid to {esrgan_grid_path}")
+        # Clear cache after ESRGAN operations
+        th.cuda.empty_cache()
 
     # Log to wandb
     if config["wandb_run"] is not None and hasattr(config["wandb_run"], "log"):
@@ -1106,6 +1154,12 @@ def generate_sample(
 ) -> None:
     """Generate and save sample images during training."""
     print(f"Generating sample at step {global_step}...")
+    
+    # Set fixed seed for reproducible sampling
+    eval_seed = 42  # Fixed seed for evaluation
+    th.manual_seed(eval_seed)
+    if th.cuda.is_available():
+        th.cuda.manual_seed(eval_seed)
     samples = glide_util.sample(
         glide_model=glide_model,
         glide_options=glide_options,
@@ -1136,6 +1190,8 @@ def generate_sample(
         )
         print_vram_usage("After ESRGAN upsampling")
         print(f"Saved ESRGAN upsampled image {esrgan_save_path}")
+        # Clear cache after ESRGAN
+        th.cuda.empty_cache()
 
     # Log sample images to wandb (may be mocked for early_stop runs)
     if config["wandb_run"] is not None and hasattr(config["wandb_run"], "log"):
@@ -1156,6 +1212,9 @@ def generate_sample(
             config["wandb_run"].log(log_dict)
 
     print(f"Saved sample {sample_save_path}")
+    
+    # Clear GPU cache after sampling
+    th.cuda.empty_cache()
 
 
 def run_glide_finetune_epoch(

@@ -96,7 +96,7 @@ def run_glide_finetune(
     # CLIP adapter parameters
     use_clip=False,
     clip_model_name="ViT-L/14",
-    clip_gate_init=0.0,
+    clip_gate_init=1e-4,  # Small non-zero to ensure gradient flow
     adapter_warmup_steps=10000,
     adapter_lr=1e-5,
     adapter_wd=1e-2,
@@ -195,9 +195,8 @@ def run_glide_finetune(
 
     # Data setup
     print("Loading data...")
-    wds_stats = None
     if use_webdataset:
-        dataset, wds_stats = glide_wds_loader(
+        dataset = glide_wds_loader(
             urls=data_dir,
             caption_key=caption_key,
             image_key=image_key,
@@ -247,113 +246,116 @@ def run_glide_finetune(
     if use_webdataset:
         # WebDataset needs to be batched before DataLoader
         print(f"[Main] Batching WebDataset with batch_size={batch_size}")
-        dataset = dataset.batched(batch_size)
+        
+        # Custom collation function for WebDataset batching
+        def custom_webdataset_collate(samples):
+            """Custom collation that properly handles CLIP embeddings."""
+            if not samples:
+                return []
+            
+            # Debug logging disabled for performance
+            
+            # Transpose list of tuples to tuple of lists
+            transposed = list(zip(*samples))
+            
+            # Stack tensors for tokens, masks, and images
+            tokens = th.stack(transposed[0])
+            masks = th.stack(transposed[1])
+            images = th.stack(transposed[2])
+            
+            # Handle CLIP embeddings (4th element if present)
+            if len(transposed) > 3:
+                clip_embeddings = transposed[3]
+                # Check if all are None
+                if all(x is None for x in clip_embeddings):
+                    return (tokens, masks, images, None)
+                # Stack non-None embeddings (all tensors)
+                elif all(x is not None and isinstance(x, th.Tensor) for x in clip_embeddings):
+                    clip_tensor = th.stack(clip_embeddings)
+                    return (tokens, masks, images, clip_tensor)
+                # Stack non-None embeddings (all numpy arrays)
+                elif all(x is not None and isinstance(x, np.ndarray) for x in clip_embeddings):
+                    # Convert all numpy arrays to tensors
+                    device = tokens.device
+                    clip_tensors = [th.from_numpy(x).to(device=device, dtype=th.float32) for x in clip_embeddings]
+                    clip_tensor = th.stack(clip_tensors)
+                    return (tokens, masks, images, clip_tensor)
+                else:
+                    # Mixed None and tensor - this is actually common with cache misses
+                    # Create a zero tensor for missing embeddings
+                    print(f"WARNING: Mixed None and tensor CLIP embeddings in batch (cache misses)")
+                    # Find the first non-None tensor to get the shape
+                    clip_dim = None
+                    for clip in clip_embeddings:
+                        if clip is not None:
+                            if isinstance(clip, th.Tensor):
+                                clip_dim = clip.shape[-1]
+                                device = clip.device
+                                dtype = clip.dtype
+                                break
+                            elif isinstance(clip, np.ndarray):
+                                clip_dim = clip.shape[-1]
+                                device = tokens.device  # Use same device as tokens
+                                dtype = th.float32
+                                break
+                    
+                    if clip_dim is not None:
+                        # Replace None with zero tensors
+                        fixed_embeddings = []
+                        for clip in clip_embeddings:
+                            if clip is None:
+                                # Create zero tensor with same shape as others
+                                fixed_embeddings.append(th.zeros(clip_dim, device=device, dtype=dtype))
+                            elif isinstance(clip, np.ndarray):
+                                # Convert numpy array to tensor
+                                fixed_embeddings.append(th.from_numpy(clip).to(device=device, dtype=dtype))
+                            else:
+                                fixed_embeddings.append(clip)
+                        clip_tensor = th.stack(fixed_embeddings)
+                        return (tokens, masks, images, clip_tensor)
+                    else:
+                        # All must be None (shouldn't happen based on our check)
+                        return (tokens, masks, images, None)
+            
+            return (tokens, masks, images)
+        
+        dataset = dataset.batched(batch_size, collation_fn=custom_webdataset_collate)
 
         # Define collate function to properly stack batched samples
         def collate_webdataset_batch(batch):
-            # WebDataset with batched() can return data in different formats
-            # Check if batch is a list containing the actual batch data
-            if len(batch) == 1 and isinstance(batch[0], (list, tuple)):
-                batch = batch[0]  # only unwrap true nested batches
-
-            # Now check the format of the batch
-            if isinstance(batch, (list, tuple)):
-                # Special case: 4-element tuple with last element None or list of Nones (missing CLIP embeddings)
-                if (
-                    len(batch) == 4
-                    and isinstance(batch[0], th.Tensor)
-                    and isinstance(batch[1], th.Tensor)
-                    and isinstance(batch[2], th.Tensor)
-                ):
-                    # Check if element 3 is None or a list of Nones
-                    if batch[3] is None:
-                        # This is valid - CLIP embeddings are missing from cache
-                        return batch
-                    elif isinstance(batch[3], list) and all(
-                        x is None for x in batch[3]
-                    ):
-                        # This is also valid - list of None CLIP embeddings
-                        # Convert to None for consistency
-                        return (batch[0], batch[1], batch[2], None)
-                    elif isinstance(batch[3], th.Tensor):
-                        # This is valid - CLIP embeddings present
-                        return batch
-
-                # Check if it's already batched tensors (tokens, masks, images, [clip])
-                if len(batch) in [3, 4] and all(
-                    isinstance(x, (th.Tensor, type(None))) for x in batch
-                ):
-                    # At least the first 3 elements must be tensors
-                    if all(
-                        isinstance(batch[i], th.Tensor)
-                        for i in range(min(3, len(batch)))
-                    ):
-                        # Verify all non-None tensors have the same batch size
-                        batch_sizes = [
-                            x.shape[0]
-                            for x in batch
-                            if x is not None and isinstance(x, th.Tensor)
-                        ]
-                        if len(set(batch_sizes)) == 1:
-                            # All have the same batch size - this is pre-batched data
-                            return batch
-                # Otherwise it's a list of samples that need to be collated
-                elif len(batch) > 0 and isinstance(batch[0], (list, tuple)):
-                    # This is a list of samples - collate them
-                    if len(batch[0]) == 4:  # With CLIP embeddings
-                        tokens_list, masks_list, images_list, clip_list = zip(*batch)
-                        return (
-                            th.stack(list(tokens_list)),
-                            th.stack(list(masks_list)),
-                            th.stack(list(images_list)),
-                            th.stack(list(clip_list))
-                            if clip_list[0] is not None
-                            else None,
-                        )
-                    elif len(batch[0]) == 3:  # Without CLIP embeddings
-                        tokens_list, masks_list, images_list = zip(*batch)
-                        return (
-                            th.stack(list(tokens_list)),
-                            th.stack(list(masks_list)),
-                            th.stack(list(images_list)),
-                        )
-
-            # If we get here, something unexpected happened
-            # Shape sanity check
-            for idx, t in enumerate(batch):
-                if t is not None and isinstance(t, th.Tensor) and t.dim() == 0:
-                    raise ValueError(f"Scalar tensor at slot {idx}; collate failed")
+            # Since we're using WebDataset's batched() with custom collation,
+            # the data should already be properly batched.
+            # DataLoader with batch_size=None should just pass through the batch.
             
-            print("ERROR: Unexpected batch format")
+            # Debug logging disabled for performance
+            
+            # Check if it's a single-element list containing our batch
+            if isinstance(batch, list) and len(batch) == 1:
+                inner = batch[0]
+                # Debug logging disabled
+                if isinstance(inner, (list, tuple)) and len(inner) in [3, 4]:
+                    # Check if this looks like our expected batch format
+                    if all(isinstance(x, (th.Tensor, type(None))) for x in inner[:3]):
+                        # Verify first 3 are tensors
+                        if all(isinstance(inner[i], th.Tensor) for i in range(3)):
+                            return inner
+            
+            # If the batch itself is a tuple of the right length, return it directly
+            if isinstance(batch, tuple) and len(batch) in [3, 4]:
+                if all(isinstance(x, (th.Tensor, type(None))) for x in batch[:3]):
+                    if all(isinstance(batch[i], th.Tensor) for i in range(3)):
+                        # Batch is already in correct format
+                        return batch
+            
+            # Otherwise, something unexpected happened
+            print("ERROR: Unexpected batch format in DataLoader")
             print(f"  batch type: {type(batch)}")
-            print(
-                f"  batch length: {len(batch) if hasattr(batch, '__len__') else 'N/A'}"
-            )
+            print(f"  batch length: {len(batch) if hasattr(batch, '__len__') else 'N/A'}")
             if isinstance(batch, (list, tuple)) and len(batch) > 0:
                 print(f"  first element type: {type(batch[0])}")
-                if hasattr(batch[0], "shape"):
+                if hasattr(batch[0], 'shape'):
                     print(f"  first element shape: {batch[0].shape}")
-                # Debug: print all shapes
-                for i, elem in enumerate(batch):
-                    if elem is None:
-                        print(f"  element {i}: None")
-                    elif hasattr(elem, "shape"):
-                        print(f"  element {i} shape: {elem.shape}")
-                # Check if this might be valid but wasn't caught
-                if len(batch) == 4 and all(
-                    isinstance(x, (th.Tensor, type(None))) for x in batch
-                ):
-                    print("  This looks like a valid batch with CLIP embeddings!")
-                    non_none_tensors = [x for x in batch if x is not None]
-                    if len(non_none_tensors) >= 3:
-                        batch_sizes = [x.shape[0] for x in non_none_tensors]
-                        print(f"  Batch sizes: {batch_sizes}")
-                        print(f"  Unique batch sizes: {set(batch_sizes)}")
-                        if len(set(batch_sizes)) == 1:
-                            print(
-                                "  ERROR: This should have been accepted! The check is failing."
-                            )
-            raise ValueError("Unexpected batch format")
+            raise ValueError("Unexpected batch format - WebDataset batching may have failed")
 
         dataloader = th.utils.data.DataLoader(
             dataset,
@@ -484,6 +486,21 @@ def run_glide_finetune(
                 f"(continuing after completed epoch {resume_state['epoch']})"
             )
             print(resume_msg)
+            
+            # Check if training will actually happen
+            if start_epoch >= num_epochs:
+                print("=" * 50)
+                print(f"WARNING: No training will occur!")
+                print(f"Checkpoint epoch: {resume_state['epoch']} (completed)")
+                print(f"Resume epoch: {start_epoch}")
+                print(f"Total epochs requested: {num_epochs}")
+                print(f"Training would run from epoch {start_epoch} to {num_epochs-1}")
+                print(f"Solution: Increase --epochs to at least {start_epoch + 1}")
+                print("=" * 50)
+                sys.exit(1)
+            else:
+                print(f"Training will run for epochs {start_epoch} to {num_epochs-1}")
+                print(f"Total epochs to train: {num_epochs - start_epoch}")
         else:
             # Model-only checkpoint - start fresh training
             print("Model weights loaded, starting fresh training")
@@ -507,6 +524,15 @@ def run_glide_finetune(
     if not use_webdataset:
         steps_per_epoch = len(dataloader)
 
+    # Pre-training summary
+    print("=" * 50)
+    print("Training Configuration Summary:")
+    print(f"Start epoch: {start_epoch}")
+    print(f"End epoch: {num_epochs - 1}")
+    print(f"Total epochs to train: {num_epochs - start_epoch}")
+    print(f"Global step counter: {global_step_counter}")
+    print("=" * 50)
+    
     for epoch in trange(start_epoch, num_epochs):
         print(f"Starting epoch {epoch}")
 
@@ -528,7 +554,7 @@ def run_glide_finetune(
             log_frequency=log_frequency,
             sample_interval=sample_interval,
             epoch=epoch,
-            gradient_accumualation_steps=1,
+            gradient_accumualation_steps=args.gradient_accumulation_steps,
             train_upsample=enable_upsample,
             early_stop=test_run,
             clip_trainer=clip_trainer,
@@ -545,7 +571,6 @@ def run_glide_finetune(
             eval_prompts=eval_prompts,
             use_esrgan=use_esrgan,
             esrgan_cache_dir=esrgan_cache_dir,
-            wds_stats=wds_stats if use_webdataset else None,
             kl_loss_interval=kl_loss_interval,
             kl_loss_weight=kl_loss_weight,
         )
@@ -784,8 +809,8 @@ def parse_args():
     parser.add_argument(
         "--clip_gate_init",
         type=float,
-        default=0.0,
-        help="Initial value for CLIP adapter gates (0.0 = no CLIP influence initially)",
+        default=1e-4,
+        help="Initial value for CLIP adapter gates (1e-4 = tiny CLIP influence for gradient flow)",
     )
     parser.add_argument(
         "--adapter_warmup_steps",
@@ -904,6 +929,12 @@ def parse_args():
         type=int,
         default=1000,
         help="Steps to wait before early stopping after degradation detected",
+    )
+    parser.add_argument(
+        "--gradient_accumulation_steps",
+        type=int,
+        default=1,
+        help="Number of gradient accumulation steps to simulate larger batch sizes (default: 1)",
     )
     parser.add_argument(
         "--baseline_eval_interval",
