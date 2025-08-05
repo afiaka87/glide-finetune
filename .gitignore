@@ -12,7 +12,11 @@ TODOS.md
 current_prediction.png
 glide_checkpoints/
 .scratch/
+
+# Ignore all model checkpoints
+esrgan_models/
 *.pt
+
 
 # Dataset-specific training scripts
 scripts/run-finetune-laion.sh
