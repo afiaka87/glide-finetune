@@ -431,9 +431,22 @@ def create_clip_adapter_optimizer(
 
         # Get main model parameters (excluding CLIP components)
         main_params = []
-        for param in model.parameters():
-            if param.requires_grad and id(param) not in all_adapter_param_ids:
-                main_params.append(param)
+        # First, identify which parameters to train based on model configuration
+        for name, param in model.named_parameters():
+            if id(param) not in all_adapter_param_ids:
+                # Check if this is a transformer parameter that should stay frozen
+                is_transformer_param = any(
+                    key in name for key in ["token_embedding", "positional_embedding", 
+                                           "padding_embedding", "transformer.", "transformer_proj", 
+                                           "final_ln"]
+                )
+                # If freeze_glide_encoder is True, keep transformer params frozen
+                if hasattr(model, 'freeze_glide_encoder') and model.freeze_glide_encoder and is_transformer_param:
+                    param.requires_grad = False
+                else:
+                    # Otherwise, ensure it's trainable (UNet params)
+                    param.requires_grad = True
+                    main_params.append(param)
 
         param_groups.extend(
             [
@@ -484,6 +497,17 @@ def create_clip_adapter_optimizer(
         "train_phases": train_phases,
         "total_params": sum(param_counts.values()),
     }
+    
+    # Print debug info about what's being trained
+    print(f"\n=== Optimizer Configuration (phase: {train_phases}) ===")
+    for name, count in param_counts.items():
+        print(f"  {name}: {count} parameters")
+    print(f"  Total trainable: {optimizer_info['total_params']} parameters")
+    
+    # Double-check that we have trainable parameters
+    total_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"  Model total trainable: {total_trainable} parameters")
+    print("=" * 50 + "\n")
 
     return optimizer, optimizer_info
 

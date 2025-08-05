@@ -108,7 +108,7 @@ class ClipText2ImUNet(Text2ImUNet):
         # Create conditioning adapter
         self.conditioning_adapter = DualConditioningAdapter(
             text_dim=self.xf_width,
-            clip_dim=clip_config["input_dim"],
+            clip_dim=clip_config["output_dim"],  # Use output_dim since this receives adapted features
             output_dim=self.xf_width,
             sequence_length=self.text_ctx,
             dropout=adapter_dropout,
