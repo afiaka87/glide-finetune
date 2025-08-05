@@ -128,7 +128,7 @@ fi
 
 # Set data directory based on dataset if not explicitly provided
 if [ -z "$DATA_DIR" ]; then
-    if [ "$DATASET" != "custom" ] && [ -n "${DATASET_PATHS[$DATASET]}" ]; then
+    if [ "$DATASET" != "custom" ] && [ -n "${DATASET_PATHS[$DATASET]+x}" ]; then
         DATA_DIR="${DATASET_PATHS[$DATASET]}"
     else
         echo "ERROR: --data-dir is required for custom datasets"
@@ -138,7 +138,7 @@ fi
 
 # Set CLIP cache directory if not explicitly provided
 if [ -z "$CLIP_CACHE_DIR" ]; then
-    if [ "$DATASET" != "custom" ] && [ -n "${DATASET_CLIP_CACHE[$DATASET]}" ]; then
+    if [ "$DATASET" != "custom" ] && [ -n "${DATASET_CLIP_CACHE[$DATASET]+x}" ]; then
         CLIP_CACHE_DIR="${DATASET_CLIP_CACHE[$DATASET]}"
     else
         # Try to auto-detect
@@ -147,7 +147,7 @@ if [ -z "$CLIP_CACHE_DIR" ]; then
 fi
 
 # Set evaluation prompts based on dataset if available
-if [ -n "${DATASET_PROMPTS[$DATASET]}" ]; then
+if [ "$DATASET" != "custom" ] && [ -n "${DATASET_PROMPTS[$DATASET]+x}" ]; then
     EVAL_PROMPTS="${DATASET_PROMPTS[$DATASET]}"
 fi
 

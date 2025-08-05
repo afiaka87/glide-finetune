@@ -20,9 +20,9 @@ set -euo pipefail
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
 # Default values
-DATASET="custom"
-DATA_DIR=""
-OUTPUT_DIR="./clip_cache"
+DATASET="laion"
+DATA_DIR="/mnt/usb_nvme_2tb/Data/laion400m-dat-release/"
+OUTPUT_DIR="/mnt/usb_nvme_2tb/Data/laion400m-dat-release/clip_cache"
 CLIP_MODEL="ViT-B/32"
 BATCH_SIZE="2048"
 NUM_WORKERS="12"
@@ -119,33 +119,59 @@ mkdir -p "$OUTPUT_DIR"
 if [[ "$DATA_DIR" == *".tar" ]]; then
     # If DATA_DIR already contains .tar pattern, use it directly
     TAR_LIST="$DATA_DIR"
+    echo "Found tar files: 1"
 else
-    # Otherwise, look for tar files in the directory
-    TAR_LIST=$(printf "%s," "$DATA_DIR"/*.tar 2>/dev/null | sed 's/,$//')
+    # Create a temporary file to store tar file list
+    TAR_LIST_FILE=$(mktemp /tmp/tar_list.XXXXXX)
     
-    if [ -z "$TAR_LIST" ] || [ "$TAR_LIST" = "$DATA_DIR/*.tar" ]; then
+    # Find all tar files and write to temporary file
+    find "$DATA_DIR" -name "*.tar" -type f > "$TAR_LIST_FILE"
+    
+    NUM_TARS=$(wc -l < "$TAR_LIST_FILE")
+    if [ "$NUM_TARS" -eq 0 ]; then
         echo "ERROR: No .tar files found in $DATA_DIR"
+        rm -f "$TAR_LIST_FILE"
         exit 1
     fi
+    
+    echo "Found tar files: $NUM_TARS"
+    
+    # Convert file list to comma-separated string for the script
+    TAR_LIST=$(tr '\n' ',' < "$TAR_LIST_FILE" | sed 's/,$//')
 fi
 
-echo "Found tar files: $(echo "$TAR_LIST" | tr ',' '\n' | wc -l)"
-
-# Build the command
-CMD="uv run python \"$SCRIPT_DIR/$PYTHON_SCRIPT\" \
-    --tar_urls \"$TAR_LIST\" \
-    --cache_dir \"$OUTPUT_DIR\" \
-    --clip_model_name \"$CLIP_MODEL\" \
-    --caption_key \"$CAPTION_KEY\" \
-    --batch_size $BATCH_SIZE \
-    --num_workers $NUM_WORKERS \
-    --max_concurrent_tars $MAX_CONCURRENT_TARS \
-    --device cuda"
+# Build the command - use tar list file if available
+if [ -n "${TAR_LIST_FILE:-}" ] && [ -f "$TAR_LIST_FILE" ]; then
+    CMD="uv run python \"$SCRIPT_DIR/$PYTHON_SCRIPT\" \
+        --tar_urls_file \"$TAR_LIST_FILE\" \
+        --cache_dir \"$OUTPUT_DIR\" \
+        --clip_model_name \"$CLIP_MODEL\" \
+        --caption_key \"$CAPTION_KEY\" \
+        --batch_size $BATCH_SIZE \
+        --num_workers $NUM_WORKERS \
+        --max_concurrent_tars $MAX_CONCURRENT_TARS \
+        --device cuda"
+else
+    CMD="uv run python \"$SCRIPT_DIR/$PYTHON_SCRIPT\" \
+        --tar_urls \"$TAR_LIST\" \
+        --cache_dir \"$OUTPUT_DIR\" \
+        --clip_model_name \"$CLIP_MODEL\" \
+        --caption_key \"$CAPTION_KEY\" \
+        --batch_size $BATCH_SIZE \
+        --num_workers $NUM_WORKERS \
+        --max_concurrent_tars $MAX_CONCURRENT_TARS \
+        --device cuda"
+fi
 
 # Execute the command
 echo "Starting precomputation..."
 echo "================================================"
 eval "$CMD"
+
+# Clean up temporary file if it exists
+if [ -n "${TAR_LIST_FILE:-}" ] && [ -f "$TAR_LIST_FILE" ]; then
+    rm -f "$TAR_LIST_FILE"
+fi
 
 echo "================================================"
 echo "Precomputation complete!"
