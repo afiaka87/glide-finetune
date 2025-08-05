@@ -41,3 +41,7 @@ vendor/clip-retrieval
 
 # Ignore Logging
 logs/
+
+# Ignore CLIP model cache
+clip_model/
+
