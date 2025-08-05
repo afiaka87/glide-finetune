@@ -95,3 +95,33 @@ uv run mypy .                   # Type check
 - Granular commits with logical groupings
 - Update CLAUDE.md after major milestones
 - Use TodoWrite tool for complex multi-step tasks
+
+## Inference Script (2025-08-05)
+
+### Key Implementation Details
+- **torch.compile caching**: Set TORCHINDUCTOR_CACHE_DIR env var, use dynamic=False
+- **Import scoping**: `import torch._dynamo as dynamo` to avoid UnboundLocalError
+- **AMP deprecation**: Use `torch.amp.autocast('cuda')` not `torch.cuda.amp.autocast()`
+- **ESRGAN before ranking**: Images upsampled to 256x256 before CLIP scoring
+- **Batch processing**: Process samples in batches for better GPU utilization
+
+### Performance Optimizations
+- TF32, cudnn.benchmark, gradient disabled by default
+- torch.compile for both GLIDE and CLIP models
+- Compile cache persists across runs (~6x speedup)
+- AMP for mixed precision inference
+- Batch size 8 optimal for most GPUs
+
+### Default Configuration
+- Checkpoint: synthetic-1m-dalle-high-quality.pt
+- Sampler: euler (30 steps) - good balance of speed/quality
+- Prompt file: examples/trippy_prompts_32.txt if no prompt specified
+- CLIP models can be compiled separately with --compile_clip
+
+### Wandb Integration (2025-08-05)
+- **Inference logging**: Use `--wandb` flag to enable comprehensive logging
+- **Data structure**: wandb.Table for sortable metrics, wandb.Image for galleries
+- **Organization**: Each prompt gets its own namespace (prompt_0000/*)
+- **Key metrics**: best/mean/std scores, generation time, all logged per prompt
+- **Image handling**: Both 64x64 and 256x256 galleries, plus grids for square counts
+- **Best practice**: Log after each prompt completion, not in batches

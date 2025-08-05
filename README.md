@@ -1004,7 +1004,117 @@ uv run python train_glide.py \
   --test_steps 20
 ```
 
-## Sampling and Inference
+## Inference with CLIP Re-ranking
+
+The project includes a production-ready inference script that generates multiple images and uses CLIP models to select the best one.
+
+### Quick Start
+
+```sh
+# Generate from default trippy prompts with CLIP ranking
+uv run python inference_clip_rerank.py
+
+# Single prompt with optimizations
+uv run python inference_clip_rerank.py --prompt "a beautiful sunset" --num_samples 16 --compile --amp
+
+# Fast inference with all optimizations
+bash scripts/generate-clip-ensemble-turbo.sh
+
+# Custom prompt file
+uv run python inference_clip_rerank.py --prompt_file my_prompts.txt
+```
+
+### Key Features
+
+- **CLIP Re-ranking**: Selects best image based on text-image similarity
+- **ESRGAN Upscaling**: 64x64 → 256x256 before ranking
+- **Performance**: torch.compile, AMP, TF32, batch processing
+- **Caching**: ~6x faster after first run
+- **Wandb Integration**: Comprehensive logging with galleries and metrics
+
+### Performance Optimizations
+
+**Automatic optimizations** (always enabled):
+- TensorFloat-32 (TF32) on Ampere GPUs
+- CuDNN autotuner
+- Optimized memory allocation
+
+**Optional optimizations**:
+- `--amp`: Automatic Mixed Precision (~1.5-2x faster)
+- `--compile`: Compile models (~10-30% faster after caching)
+- `--batch_size 8`: Larger batches for better GPU utilization
+
+**torch.compile caching**:
+```sh
+# First run: ~60s compilation, then fast
+uv run python inference_clip_rerank.py --compile --compile_clip
+
+# Subsequent runs use cache (near-instant)
+# Cache location: ./torch_compile_cache/
+```
+
+### Benchmarking
+
+Test performance across 40+ configurations:
+
+```sh
+# Quick benchmark (5 min)
+bash scripts/run-benchmark-quick.sh
+
+# Full benchmark suite
+uv run python benchmark_inference.py
+```
+
+Results saved to `./benchmark_results/` with timing breakdowns:
+- Model loading, generation, upscaling, ranking times
+- Memory usage and throughput metrics
+- Comparison across samplers, batch sizes, optimizations
+
+**Expected speedups** (vs baseline):
+- AMP only: ~1.5-2x
+- Compile only: ~1.1-1.3x 
+- All optimizations: ~2-3x
+
+### Wandb Logging for Inference
+
+Track and visualize your inference runs with comprehensive wandb integration:
+
+```sh
+# Basic wandb logging
+uv run python inference_clip_rerank.py --wandb --prompt "a beautiful sunset"
+
+# With custom project and run name
+uv run python inference_clip_rerank.py \
+  --wandb \
+  --wandb_project my-glide-experiments \
+  --wandb_name sunset-test-run \
+  --prompt "a vibrant sunset over mountains"
+
+# Full production run with wandb
+bash scripts/generate-with-wandb.sh "your prompt here"
+```
+
+**What gets logged:**
+- **Metrics Table**: Sortable/filterable table with all images, scores, and rankings
+- **Image Galleries**: 
+  - 64x64 original images with CLIP scores
+  - 256x256 ESRGAN upscaled images (if enabled)
+  - Organized by rank with clear best image indication
+- **Image Grids**: Combined view of all generated images (4x4, 8x8, etc.)
+- **Statistics**: 
+  - Best/mean/std CLIP scores per prompt
+  - Generation time breakdowns
+  - Model configuration and hyperparameters
+- **Prompt-specific organization**: Each prompt gets its own section for easy navigation
+
+**Benefits:**
+- Compare runs across different models/settings
+- Share results with collaborators via wandb links
+- Track which prompts work best with your model
+- Visualize CLIP score distributions
+- Export data for further analysis
+
+## Sampling and Inference (Legacy)
 
 Generate images using trained models with `scripts/sample.py`:
 
