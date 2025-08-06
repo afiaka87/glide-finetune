@@ -43,5 +43,7 @@ vendor/clip-retrieval
 logs/
 
 # Ignore CLIP model cache
-clip_model/
+clip_models/
 
+# Ignore torch.compile() cache
+torch_compile_cache/
