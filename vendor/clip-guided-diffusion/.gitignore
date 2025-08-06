@@ -1,0 +1,16 @@
+CLIP/
+outputs/
+guided_diffusion/
+*.txt
+checkpoints/
+.vscode/
+.ipynb_checkpoints
+cgd_venv/
+__pycache__/
+dist/
+output/
+*.png
+guided-diffusion/
+build/
+cgd_pytorch.egg-info/
+.venv/
