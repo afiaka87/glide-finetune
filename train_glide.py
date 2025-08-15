@@ -1,10 +1,8 @@
 import argparse
-from glob import glob
 import os
 
 import numpy as np
 import torch as th
-import torchvision.transforms as T
 from tqdm import trange
 
 # Enable TF32 for faster training on Ampere GPUs (A100, etc.)
@@ -16,6 +14,7 @@ from glide_finetune.glide_util import load_model
 from glide_finetune.loader import TextImageDataset
 from glide_finetune.train_util import wandb_setup
 from glide_finetune.wds_loader import glide_wds_loader
+from glide_finetune.checkpoint_manager import CheckpointManager
 
 
 def run_glide_finetune(
@@ -39,6 +38,7 @@ def run_glide_finetune(
     num_epochs=100,
     log_frequency=100,  # console logging frequency
     sample_frequency=500,  # image generation frequency
+    save_frequency=1000,  # checkpoint save frequency
     test_prompt="a group of skiers are preparing to ski down a mountain.",
     sample_bs=1,
     sample_gs=8.0,
@@ -60,6 +60,22 @@ def run_glide_finetune(
 
     # Create the checkpoint/output directories
     os.makedirs(checkpoints_dir, exist_ok=True)
+    
+    # Determine the run directory
+    existing_runs = [sub_dir for sub_dir in os.listdir(checkpoints_dir) if os.path.isdir(os.path.join(checkpoints_dir, sub_dir))]
+    existing_runs_int = []
+    for x in existing_runs:
+        try:
+            existing_runs_int.append(int(x))
+        except:
+            pass
+    existing_runs_int = sorted(existing_runs_int)
+    next_run = 0 if len(existing_runs) == 0 else existing_runs_int[-1] + 1
+    current_run_ckpt_dir = os.path.join(checkpoints_dir, str(next_run).zfill(4))
+    os.makedirs(current_run_ckpt_dir, exist_ok=True)
+    
+    # Initialize checkpoint manager
+    checkpoint_manager = CheckpointManager(current_run_ckpt_dir, save_frequency=save_frequency)
 
     # Start wandb logging
     wandb_run = wandb_setup(
@@ -75,15 +91,39 @@ def run_glide_finetune(
     )
     print("Wandb setup.")
 
+    # Determine if resume_ckpt is a pretrained model or training checkpoint
+    is_pretrained_checkpoint = False
+    if resume_ckpt:
+        from pathlib import Path
+        resume_path = Path(resume_ckpt)
+        # Check if it's a single .pt file that's not in our checkpoint directory structure
+        if resume_path.suffix == '.pt' and not resume_path.parent.name.isdigit():
+            # Likely a pretrained model (not from our training runs)
+            is_pretrained_checkpoint = True
+    
     # Model setup
-    glide_model, glide_diffusion, glide_options = load_model(
-        glide_path=resume_ckpt,
-        use_fp16=use_fp16,
-        freeze_transformer=freeze_transformer,
-        freeze_diffusion=freeze_diffusion,
-        activation_checkpointing=activation_checkpointing,
-        model_type="base" if not enable_upsample else "upsample",
-    )
+    if is_pretrained_checkpoint:
+        # Load pretrained model directly
+        print(f"Loading pretrained model from {resume_ckpt}")
+        glide_model, glide_diffusion, glide_options = load_model(
+            glide_path=resume_ckpt,
+            use_fp16=use_fp16,
+            freeze_transformer=freeze_transformer,
+            freeze_diffusion=freeze_diffusion,
+            activation_checkpointing=activation_checkpointing,
+            model_type="base" if not enable_upsample else "upsample",
+        )
+    else:
+        # Load base model, we'll restore training checkpoint separately
+        glide_model, glide_diffusion, glide_options = load_model(
+            glide_path="",  # Start with OpenAI's base model
+            use_fp16=use_fp16,
+            freeze_transformer=freeze_transformer,
+            freeze_diffusion=freeze_diffusion,
+            activation_checkpointing=activation_checkpointing,
+            model_type="base" if not enable_upsample else "upsample",
+        )
+    
     glide_model.train()
     number_of_params = sum(x.numel() for x in glide_model.parameters())
     print(f"Number of parameters: {number_of_params}")
@@ -144,6 +184,19 @@ def run_glide_finetune(
         lr=learning_rate,
         weight_decay=adam_weight_decay,
     )
+    
+    # Load checkpoint if resuming from training checkpoint
+    start_epoch = 0
+    global_step = 0
+    if resume_ckpt and not is_pretrained_checkpoint:
+        start_epoch, global_step = checkpoint_manager.load_checkpoint(
+            resume_ckpt,
+            glide_model,
+            optimizer
+        )
+        if global_step > 0:
+            # Clean up interrupted files if we successfully resumed
+            checkpoint_manager.cleanup_interrupted_files()
 
     if not freeze_transformer: # if we want to train the transformer, we need to backpropagate through the diffusion model.
         glide_model.out.requires_grad_(True)
@@ -156,23 +209,9 @@ def run_glide_finetune(
     outputs_dir = "./outputs"
     os.makedirs(outputs_dir, exist_ok=True)
 
-    existing_runs = [ sub_dir for sub_dir in os.listdir(checkpoints_dir) if os.path.isdir(os.path.join(checkpoints_dir, sub_dir))]
-    existing_runs_int = []
-    for x in existing_runs:
-        try:
-            existing_runs_int.append(int(x))
-        except:
-            print("unexpected directory naming scheme")
-            #ignore
-    existing_runs_int = sorted(existing_runs_int)
-    next_run = 0 if len(existing_runs) == 0 else existing_runs_int[-1] + 1
-    current_run_ckpt_dir = os.path.join(checkpoints_dir, str(next_run).zfill(4))
-
-    os.makedirs(current_run_ckpt_dir, exist_ok=True)
-
-    for epoch in trange(num_epochs):
+    for epoch in trange(start_epoch, num_epochs):
         print(f"Starting epoch {epoch}")
-        run_glide_finetune_epoch(
+        global_step = run_glide_finetune_epoch(
             glide_model=glide_model,
             glide_diffusion=glide_diffusion,
             glide_options=glide_options,
@@ -190,13 +229,27 @@ def run_glide_finetune(
             wandb_run=wandb_run,
             log_frequency=log_frequency,
             sample_frequency=sample_frequency,
+            checkpoint_manager=checkpoint_manager,
             epoch=epoch,
+            global_step=global_step,
             gradient_accumualation_steps=1,
             train_upsample=enable_upsample,
             sampler=sampler,
             num_steps=num_steps,
             eta=eta,
         )
+        
+        # Check if training was interrupted
+        if checkpoint_manager.interrupted:
+            checkpoint_manager.save_checkpoint(
+                glide_model,
+                optimizer,
+                epoch,
+                global_step,
+                is_interrupted=True
+            )
+            print("\n✅ Interrupted checkpoint saved. Exiting...")
+            break
 
 
 def parse_args():
@@ -237,6 +290,7 @@ def parse_args():
     parser.add_argument("--device", "-dev", type=str, default="")
     parser.add_argument("--log_frequency", "-freq", type=int, default=100, help="Console logging frequency (loss, metrics)")
     parser.add_argument("--sample_frequency", "-sample_freq", type=int, default=500, help="Image generation frequency")
+    parser.add_argument("--save_frequency", "-save_freq", type=int, default=1000, help="Checkpoint save frequency in steps")
     parser.add_argument("--freeze_transformer", "-fz_xt", action="store_true")
     parser.add_argument("--freeze_diffusion", "-fz_unet", action="store_true")
     parser.add_argument("--project_name", "-name", type=str, default="glide-finetune")
@@ -364,6 +418,7 @@ if __name__ == "__main__":
         device=device,
         log_frequency=args.log_frequency,
         sample_frequency=args.sample_frequency,
+        save_frequency=args.save_frequency,
         freeze_transformer=args.freeze_transformer,
         freeze_diffusion=args.freeze_diffusion,
         project_name=args.project_name,
