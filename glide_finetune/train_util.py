@@ -75,6 +75,7 @@ def wandb_setup(
     data_dir: str,
     base_dir: str,
     project_name: str = "glide-text2im-finetune",
+    seed: int = None,
 ):
     return wandb.init(
         project=project_name,
@@ -87,5 +88,6 @@ def wandb_setup(
             "device": device,
             "data_dir": data_dir,
             "base_dir": base_dir,
+            "seed": seed,
         },
     )

@@ -1,5 +1,6 @@
 import argparse
 import os
+import random
 
 import numpy as np
 import torch as th
@@ -17,9 +18,41 @@ from glide_finetune.wds_loader import glide_wds_loader
 from glide_finetune.checkpoint_manager import CheckpointManager
 
 
+def setup_seed(seed: int = None):
+    """Setup seeds for reproducible training."""
+    if seed is None:
+        seed = random.randint(0, 2**32 - 1)
+        print(f"No seed specified, using random seed: {seed}")
+    else:
+        print(f"Using seed: {seed}")
+    
+    # Set seeds for all random number generators
+    random.seed(seed)
+    np.random.seed(seed)
+    th.manual_seed(seed)
+    th.cuda.manual_seed(seed)
+    th.cuda.manual_seed_all(seed)  # for multi-GPU setups
+    
+    # Set environment variables for additional determinism
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    
+    # Make PyTorch operations more deterministic (but don't override user's benchmark choice)
+    # Note: cudnn.deterministic=True can significantly slow down training
+    # Only enable if user specifically wants reproducibility over performance
+    if seed != 0:  # 0 is the default, so user likely wants performance
+        print("⚠️  Enabling deterministic mode. This may reduce training speed.")
+        th.backends.cudnn.deterministic = True
+        # Don't override benchmark setting - let user control it via --cudnn_benchmark
+    else:
+        print("Using default seed (0) - keeping performance optimizations enabled.")
+    
+    return seed
+
+
 def run_glide_finetune(
     data_dir="./data",
     batch_size=1,
+    gradient_accumulation_steps=1,
     learning_rate=1e-5,
     adam_weight_decay=0.0,
     side_x=64,
@@ -41,6 +74,7 @@ def run_glide_finetune(
     save_frequency=1000,  # checkpoint save frequency
     save_directory=None,  # override checkpoint save directory
     test_prompt="a group of skiers are preparing to ski down a mountain.",
+    eval_prompt_file=None,  # Path to file containing evaluation prompts
     sample_bs=1,
     sample_gs=8.0,
     use_webdataset=False,
@@ -53,7 +87,14 @@ def run_glide_finetune(
     sampler="plms",
     num_steps=None,
     eta=0.0,
+    seed=None,
+    # SwinIR parameters
+    use_swinir=False,
+    swinir_model_type="classical_sr_x4",
 ):
+    # Setup seed for reproducibility
+    actual_seed = setup_seed(seed)
+    
     if "~" in data_dir:
         data_dir = os.path.expanduser(data_dir)
     if "~" in checkpoints_dir:
@@ -97,6 +138,7 @@ def run_glide_finetune(
         data_dir=data_dir,
         base_dir=checkpoints_dir,
         project_name=project_name,
+        seed=actual_seed,
     )
     print("Wandb setup.")
 
@@ -178,13 +220,18 @@ def run_glide_finetune(
             upscale_factor=upsample_factor,  # TODO: make this a parameter
         )
 
-    # Data loader setup
+    # Data loader setup  
+    # Create a generator for reproducible shuffling
+    dataloader_generator = th.Generator()
+    dataloader_generator.manual_seed(actual_seed)
+    
     dataloader = th.utils.data.DataLoader(
         dataset,
         batch_size=batch_size,
         shuffle=not use_webdataset,
         num_workers=0,
         pin_memory=(device == "cuda"),
+        generator=dataloader_generator if not use_webdataset else None,
     )
 
     # Optimizer setup
@@ -214,6 +261,44 @@ def run_glide_finetune(
         glide_model.output_blocks.requires_grad_(True)
 
 
+    # Load evaluation prompts from file if provided
+    test_prompts = None
+    grid_size = None  # Will be determined based on number of prompts
+    if eval_prompt_file:
+        if os.path.exists(eval_prompt_file):
+            with open(eval_prompt_file, 'r') as f:
+                lines = [line.strip() for line in f.readlines() if line.strip()]
+            
+            # Support power-of-2 grid sizes: 1, 2, 4, 8, 16, 32, 64, 128, 256
+            valid_sizes = [1, 2, 4, 8, 16, 32, 64, 128, 256]
+            num_prompts = len(lines)
+            
+            # Find the appropriate grid size
+            target_size = 8  # Default
+            for size in valid_sizes:
+                if num_prompts <= size:
+                    target_size = size
+                    break
+            else:
+                # More than 256 prompts, truncate to 256
+                target_size = 256
+                print(f"Warning: {num_prompts} prompts found in {eval_prompt_file}, truncating to {target_size} for visualization.")
+                lines = lines[:target_size]
+                num_prompts = target_size
+            
+            # Pad if necessary to reach target size
+            if num_prompts < target_size:
+                print(f"Info: {num_prompts} prompts found in {eval_prompt_file}, padding to {target_size} for grid visualization.")
+                while len(lines) < target_size:
+                    lines.append(lines[-1] if lines else "a beautiful landscape")
+            else:
+                print(f"Loaded {num_prompts} evaluation prompts from {eval_prompt_file}")
+            
+            test_prompts = lines[:target_size]
+            grid_size = target_size
+        else:
+            print(f"Warning: Evaluation prompt file {eval_prompt_file} not found. Using default prompts.")
+
     # Training setup
     outputs_dir = "./outputs"
     os.makedirs(outputs_dir, exist_ok=True)
@@ -227,7 +312,8 @@ def run_glide_finetune(
             optimizer=optimizer,
             dataloader=dataloader,
             prompt=test_prompt,  # Keep for backwards compatibility
-            test_prompts=None,  # Will use default prompts
+            test_prompts=test_prompts,  # Use loaded prompts or None for defaults
+            grid_size=grid_size,  # Pass grid size for visualization
             sample_bs=sample_bs,
             sample_gs=sample_gs,
             checkpoints_dir=current_run_ckpt_dir,
@@ -241,11 +327,13 @@ def run_glide_finetune(
             checkpoint_manager=checkpoint_manager,
             epoch=epoch,
             global_step=global_step,
-            gradient_accumualation_steps=1,
+            gradient_accumualation_steps=gradient_accumulation_steps,
             train_upsample=enable_upsample,
             sampler=sampler,
             num_steps=num_steps,
             eta=eta,
+            use_swinir=use_swinir,
+            swinir_model_type=swinir_model_type,
         )
         
         # Check if training was interrupted
@@ -265,6 +353,8 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data_dir", "-data", type=str, default="./data")
     parser.add_argument("--batch_size", "-bs", type=int, default=1)
+    parser.add_argument("--gradient_accumulation_steps", "-gas", type=int, default=1, 
+                        help="Number of gradient accumulation steps. Effective batch size = batch_size * gradient_accumulation_steps")
     parser.add_argument("--learning_rate", "-lr", type=float, default=2e-5)
     parser.add_argument("--adam_weight_decay", "-adam_wd", type=float, default=0.0)
     parser.add_argument("--side_x", "-x", type=int, default=64)
@@ -314,6 +404,13 @@ def parse_args():
         default="a group of skiers are preparing to ski down a mountain.",
     )
     parser.add_argument(
+        "--eval_prompt_file",
+        "-eval_prompts",
+        type=str,
+        default=None,
+        help="Path to file containing evaluation prompts (one per line) to use during training visualization instead of default prompts"
+    )
+    parser.add_argument(
         "--test_batch_size",
         "-tbs",
         type=int,
@@ -354,7 +451,7 @@ def parse_args():
         default="laion",
         help="Name of the webdataset to use (laion or alamy)",
     )
-    parser.add_argument("--seed", "-seed", type=int, default=0)
+    parser.add_argument("--seed", "-seed", type=int, default=0, help="Random seed for reproducible training (0=default performance mode)")
     parser.add_argument(
         "--cudnn_benchmark",
         "-cudnn",
@@ -387,6 +484,22 @@ def parse_args():
         default=0.0,
         help="Eta parameter for DDIM and Euler Ancestral sampling"
     )
+    
+    # SwinIR upscaling arguments
+    parser.add_argument(
+        "--use_swinir",
+        "-swinir",
+        action="store_true",
+        help="Enable SwinIR upscaling for generated samples (64x64 -> 256x256)"
+    )
+    parser.add_argument(
+        "--swinir_model_type",
+        "-swinir_model",
+        type=str,
+        default="classical_sr_x4",
+        help="SwinIR model type (classical_sr_x4, compressed_sr_x4, real_sr_x4, lightweight_sr_x2)"
+    )
+    
     args = parser.parse_args()
 
     return args
@@ -400,6 +513,7 @@ if __name__ == "__main__":
     else:
         device = th.device("cpu") if not th.cuda.is_available() else th.device("cuda")
 
+    # Basic seed setup in main - full deterministic setup happens in run_glide_finetune
     th.manual_seed(args.seed)
     np.random.seed(args.seed)
     th.backends.cudnn.benchmark = args.cudnn_benchmark
@@ -416,6 +530,7 @@ if __name__ == "__main__":
     run_glide_finetune(
         data_dir=data_dir,
         batch_size=args.batch_size,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
         learning_rate=args.learning_rate,
         adam_weight_decay=args.adam_weight_decay,
         side_x=args.side_x,
@@ -437,6 +552,7 @@ if __name__ == "__main__":
         use_captions=args.use_captions,
         num_epochs=args.epochs,
         test_prompt=args.test_prompt,
+        eval_prompt_file=args.eval_prompt_file,
         sample_bs=args.test_batch_size,
         sample_gs=args.test_guidance_scale,
         use_webdataset=args.use_webdataset,
@@ -449,4 +565,8 @@ if __name__ == "__main__":
         sampler=args.sampler,
         num_steps=args.num_steps,
         eta=args.eta,
+        seed=args.seed,
+        # SwinIR parameters
+        use_swinir=args.use_swinir,
+        swinir_model_type=args.swinir_model_type,
     )

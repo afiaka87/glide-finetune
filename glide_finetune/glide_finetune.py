@@ -127,6 +127,7 @@ def run_glide_finetune_epoch(
     sample_respacing: str = '100', # respacing for inference
     prompt: str = "",  # prompt for inference, not training (deprecated, use test_prompts)
     test_prompts: List[str] = None,  # list of prompts for evaluation
+    grid_size: int = None,  # grid size for visualization
     side_x: int = 64,
     side_y: int = 64,
     outputs_dir: str = "./outputs",
@@ -145,6 +146,8 @@ def run_glide_finetune_epoch(
     num_steps: int = None,
     eta: float = 0.0,
     checkpoint_manager=None,
+    use_swinir: bool = False,
+    swinir_model_type: str = "classical_sr_x4",
 ):
     if train_upsample: train_step = upsample_train_step
     else: train_step = base_train_step
@@ -152,20 +155,45 @@ def run_glide_finetune_epoch(
     # Use default prompts if none provided
     if test_prompts is None:
         test_prompts = DEFAULT_TEST_PROMPTS
+        grid_size = 8
     elif isinstance(test_prompts, str):
         # Handle backward compatibility with single prompt
         test_prompts = [test_prompts] * 8
+        grid_size = 8
     
-    # Ensure we have exactly 8 prompts for 2x4 grid
-    while len(test_prompts) < 8:
+    # Determine grid dimensions based on size
+    if grid_size is None:
+        grid_size = len(test_prompts) if test_prompts else 8
+    
+    # Calculate grid dimensions for power-of-2 sizes
+    grid_configs = {
+        1: (1, 1),
+        2: (1, 2),
+        4: (2, 2),
+        8: (2, 4),
+        16: (4, 4),
+        32: (4, 8),
+        64: (8, 8),
+        128: (8, 16),
+        256: (16, 16),
+    }
+    
+    grid_rows, grid_cols = grid_configs.get(grid_size, (2, 4))
+    
+    # Ensure we have the right number of prompts for the grid
+    target_size = grid_rows * grid_cols
+    while len(test_prompts) < target_size:
         test_prompts.append(test_prompts[-1] if test_prompts else DEFAULT_TEST_PROMPTS[0])
-    test_prompts = test_prompts[:8]
+    test_prompts = test_prompts[:target_size]
 
     glide_model.to(device)
     glide_model.train()
     
     # Initialize metrics tracker
-    metrics_tracker = MetricsTracker(window_size=log_frequency)
+    metrics_tracker = MetricsTracker(
+        window_size=log_frequency,
+        gradient_accumulation_steps=gradient_accumualation_steps
+    )
     
     # Print model info once
     print_model_info(glide_model, "GLIDE Model")
@@ -178,39 +206,53 @@ def run_glide_finetune_epoch(
             break
         
         current_step = global_step + train_idx
-        accumulated_loss = train_step(
+        loss = train_step(
             glide_model=glide_model,
             glide_diffusion=glide_diffusion,
             batch=batch,
             device=device,
         )
-        accumulated_loss.backward()
         
-        # Update gradient norm before optimizer step
-        metrics_tracker.update_grad_norm(glide_model)
+        # Scale loss by gradient accumulation steps to maintain effective learning rate
+        scaled_loss = loss / gradient_accumualation_steps
+        scaled_loss.backward()
         
-        optimizer.step()
-        glide_model.zero_grad()
+        # Check if this is an optimizer step
+        is_optimizer_step = (train_idx + 1) % gradient_accumualation_steps == 0
         
-        # Update metrics
-        metrics_tracker.update_loss(accumulated_loss.item())
-        metrics_tracker.update_timing()
-        metrics_tracker.update_batch_size(len(batch[0]) if isinstance(batch, tuple) else 1)
+        # Only update weights every gradient_accumualation_steps iterations
+        if is_optimizer_step:
+            # Update comprehensive gradient statistics before optimizer step
+            metrics_tracker.update_gradient_stats(glide_model)
+            
+            optimizer.step()
+            glide_model.zero_grad()
+            
+            # Update learning rate after optimizer step
+            current_lr = optimizer.param_groups[0]['lr']
+            metrics_tracker.update_lr(current_lr)
         
-        # Get current learning rate (if using a scheduler)
-        current_lr = optimizer.param_groups[0]['lr']
-        metrics_tracker.update_lr(current_lr)
+        # Update metrics (track unscaled loss for accurate reporting)
+        metrics_tracker.update_loss(loss.item())
+        metrics_tracker.update_timing(is_optimizer_step=is_optimizer_step)
+        batch_size = len(batch[0]) if isinstance(batch, tuple) else 1
+        metrics_tracker.update_batch_size(batch_size, is_optimizer_step=is_optimizer_step)
         
-        log = {**log, "iter": train_idx, "loss": accumulated_loss.item() / gradient_accumualation_steps, "global_step": current_step}
+        log = {**log, "iter": train_idx, "loss": loss.item(), "global_step": current_step, "optimizer_steps": metrics_tracker.total_optimizer_steps}
         
         # Console logging (loss, metrics, etc.)
         if train_idx > 0 and train_idx % log_frequency == 0:
             console_summary = metrics_tracker.get_console_summary()
-            print(f"[Epoch {epoch} | Iter {train_idx}] {console_summary}")
+            opt_steps = metrics_tracker.total_optimizer_steps
+            print(f"[Epoch {epoch} | Iter {train_idx} | OptStep {opt_steps}] {console_summary}")
             
             # Get all metrics for wandb
             all_metrics = metrics_tracker.get_metrics()
-            all_metrics.update({"iter": train_idx, "epoch": epoch})
+            all_metrics.update({
+                "iter": train_idx, 
+                "epoch": epoch,
+                "optimizer_steps": opt_steps
+            })
             
             # Log metrics to wandb (no images)
             wandb_run.log(all_metrics)
@@ -245,6 +287,8 @@ def run_glide_finetune_epoch(
                     sampler=sampler,
                     num_steps=num_steps,
                     eta=eta,
+                    use_swinir=use_swinir,
+                    swinir_model_type=swinir_model_type,
                 )
                 sample_img = train_util.pred_to_pil(samples)
                 sample_images.append(sample_img)
@@ -256,8 +300,11 @@ def run_glide_finetune_epoch(
                 # Add to gallery with caption (W&B feature)
                 wandb_gallery_images.append(wandb.Image(sample_img, caption=test_prompt))
             
+            # Calculate aesthetic scores for generated images
+            metrics_tracker.update_aesthetic_score(sample_images)
+            
             # Create and save grid (no visible captions)
-            grid_img = create_image_grid(sample_images, rows=2, cols=4)
+            grid_img = create_image_grid(sample_images, rows=grid_rows, cols=grid_cols)
             grid_save_path = os.path.join(outputs_dir, f"iter{train_idx:06d}_grid.png")
             grid_img.save(grid_save_path)
             
@@ -265,7 +312,7 @@ def run_glide_finetune_epoch(
             wandb_log_dict = {
                 **log,
                 "iter": train_idx,
-                "samples_grid": wandb.Image(grid_img, caption="2x4 Grid of Test Samples"),
+                "samples_grid": wandb.Image(grid_img, caption=f"{grid_rows}x{grid_cols} Grid of Test Samples"),
                 "samples_gallery": wandb_gallery_images,  # This creates a gallery with individual captions
             }
             
@@ -282,20 +329,41 @@ def run_glide_finetune_epoch(
                 print(f"✓ Generated {len(sample_images)} samples, saved grid to {grid_save_path}")
             print()
         
-        # Save checkpoint at regular intervals
-        if checkpoint_manager and checkpoint_manager.should_save(current_step):
+        # Save checkpoint at regular intervals based on optimizer steps
+        optimizer_step_count = metrics_tracker.total_optimizer_steps
+        if checkpoint_manager and checkpoint_manager.should_save(optimizer_step_count):
             checkpoint_manager.save_checkpoint(
                 glide_model,
                 optimizer,
                 epoch,
-                current_step,
+                optimizer_step_count,  # Use optimizer steps for checkpoint naming
                 is_interrupted=False
             )
         
         wandb_run.log(log)
     
-    # Update and return global step
-    final_step = global_step + train_idx + 1
+    # Perform final optimizer step if we have accumulated gradients that haven't been applied
+    if (train_idx + 1) % gradient_accumualation_steps != 0:
+        # We have leftover gradients that weren't applied
+        remaining_steps = (train_idx + 1) % gradient_accumualation_steps
+        
+        metrics_tracker.update_gradient_stats(glide_model)
+        optimizer.step()
+        glide_model.zero_grad()
+        
+        # Update metrics for this final optimizer step
+        metrics_tracker.update_timing(is_optimizer_step=True)
+        # Note: batch_size from last iteration may not be available here
+        # We'll use remaining_steps to indicate partial accumulation
+        
+        # Update learning rate after this final optimizer step
+        current_lr = optimizer.param_groups[0]['lr']
+        metrics_tracker.update_lr(current_lr)
+        
+        print(f"Applied final gradient update for {remaining_steps} accumulated steps")
+    
+    # Update and return global step (now tracking optimizer steps)
+    final_step = global_step + metrics_tracker.total_optimizer_steps
     
     # Save end-of-epoch checkpoint
     if checkpoint_manager and not checkpoint_manager.interrupted:

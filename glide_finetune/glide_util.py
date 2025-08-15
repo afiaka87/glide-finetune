@@ -114,8 +114,15 @@ def sample(
     sampler="plms",
     num_steps=None,
     eta=0.0,
+    use_swinir=False,
+    swinir_model_type="classical_sr_x4",
 ):
     glide_model.del_cache()
+    
+    # If num_steps is provided, override prediction_respacing
+    if num_steps is not None:
+        prediction_respacing = str(num_steps)
+    
     eval_diffusion = create_gaussian_diffusion(
         steps=glide_options["diffusion_steps"],
         noise_schedule=glide_options["noise_schedule"],
@@ -173,12 +180,11 @@ def sample(
         model_kwargs['noise'] = noise
         model_fn = glide_model # just use the base model, no need for CFG.
 
-    # Determine number of steps from prediction_respacing if not specified
-    if num_steps is None:
-        try:
-            num_steps = int(prediction_respacing)
-        except ValueError:
-            num_steps = 50  # Default fallback
+    # Determine number of steps from prediction_respacing
+    try:
+        actual_num_steps = int(prediction_respacing)
+    except ValueError:
+        actual_num_steps = num_steps if num_steps is not None else 50  # Default fallback
     
     # Choose sampling method
     if sampler.lower() in ["euler", "euler_discrete"]:
@@ -192,7 +198,7 @@ def sample(
             progress=True,
             model_kwargs=model_kwargs,
             eta=eta,
-            num_steps=num_steps,
+            num_steps=actual_num_steps,
         )[:batch_size]
     
     elif sampler.lower() in ["euler_a", "euler_ancestral"]:
@@ -206,7 +212,7 @@ def sample(
             progress=True,
             model_kwargs=model_kwargs,
             eta=eta,
-            num_steps=num_steps,
+            num_steps=actual_num_steps,
         )[:batch_size]
     
     elif sampler.lower() in ["dpm++", "dpm_solver", "dpmpp"]:
@@ -220,7 +226,7 @@ def sample(
             progress=True,
             model_kwargs=model_kwargs,
             eta=eta,
-            num_steps=num_steps,
+            num_steps=actual_num_steps,
             order=2,
         )[:batch_size]
     
@@ -259,4 +265,21 @@ def sample(
             cond_fn=None,
         )[:batch_size]
     glide_model.del_cache()
+    
+    # Apply SwinIR upscaling if requested
+    if use_swinir:
+        from glide_finetune.swinir_upscaler import create_swinir_upscaler
+        try:
+            upscaler = create_swinir_upscaler(
+                model_type=swinir_model_type,
+                device=device,
+                use_fp16=glide_model.dtype == th.float16,
+            )
+            # Upscale from 64x64 to 256x256 (4x)
+            samples = upscaler(samples)
+            print(f"SwinIR upscaling applied: {side_x}x{side_y} -> {samples.shape[-1]}x{samples.shape[-2]}")
+        except Exception as e:
+            print(f"Warning: SwinIR upscaling failed: {e}")
+            print("Returning original resolution samples")
+    
     return samples
