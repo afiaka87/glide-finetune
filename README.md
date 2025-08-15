@@ -82,6 +82,17 @@ uv run python train_glide.py \
 
 Train on high-quality synthetic datasets with DALL-E 3 generated images and detailed captions. The framework now supports the [synthetic-dataset-1m-dalle3-high-quality-captions](https://huggingface.co/datasets/bghira/synthetic-dataset-1m-dalle3-high-quality-captions) dataset with optimized WebDataset loading.
 
+**Dataset Structure:**
+- 1M+ AI-generated images (primarily DALL-E 3, some Midjourney v5/v6)
+- 69 tar archives in WebDataset format (`data-0000{00..68}.tar`)
+- Multiple caption types per image:
+  - `short_caption`: Brief description (Llama3/Dolphin-generated)
+  - `long_caption`: Detailed description (CogVLM-generated)
+  - `short_caption2` and `long_caption2`: Optional additional captions
+  - `original_prompt`: The prompt used to generate the image
+- Most images are 1024x1024 or 1792x1024 resolution
+- Human-curated for quality, deduplicated, and filtered for inappropriate content
+
 ```sh
 uv run python train_glide.py \
   --data_dir '/path/to/synthetic-dataset/' \
