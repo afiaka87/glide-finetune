@@ -15,10 +15,14 @@ Finetune GLIDE-text2im on your own image-text dataset.
 ```sh
 git clone https://github.com/afiaka87/glide-finetune.git
 cd glide-finetune/
-python3 -m venv .venv # create a virtual environment to keep global install clean.
-source .venv/bin/activate
-(.venv) # optionally install pytorch manually for your own specific env first...
-(.venv) python -m pip install -r requirements.txt
+# Install uv if you haven't already
+curl -LsSf https://astral.sh/uv/install.sh | sh
+# Or on macOS/Linux with homebrew: brew install uv
+
+# Create virtual environment and install dependencies
+uv venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+uv sync  # Installs all dependencies from pyproject.toml
 ```
 
 ## Example usage
@@ -29,7 +33,7 @@ source .venv/bin/activate
 The base model should be tuned for "classifier free guidance". This means you want to randomly replace captions with an unconditional (empty) token about 20% of the time. This is controlled by the argument `--uncond_p`, which is set to 0.2 by default and should only be disabled for the upsampler.
 
 ```sh
-python train_glide.py \
+uv run python train_glide.py \
   --data_dir '/userdir/data/mscoco' \
   --train_upsample False \
   --project_name 'base_tuning_wandb' \
@@ -48,7 +52,7 @@ python train_glide.py \
 Note that the `--side_x` and `--side_y` args here should still be 64. They are scaled to 256 after mutliplying by the upscaling factor (4, by default.)
 
 ```sh
-python train_glide.py \
+uv run python train_glide.py \
   --data_dir '/userdir/data/mscoco' \
   --train_upsample True \
   --image_to_upsample 'low_res_face.png'
@@ -65,11 +69,85 @@ python train_glide.py \
 I have written data loaders for both LAION2B and Alamy. Other webdatasets may require custom caption/image keys.
 
 ```sh
-python train_glide.py \
+uv run python train_glide.py \
   --data_dir '/folder/with/tars/in/it/' \
   --wds_caption_key 'txt' \
   --wds_image_key 'jpg' \
   --wds_dataset_name 'laion' \
+```
+
+## New Features
+
+### Synthetic Dataset Support
+
+Train on high-quality synthetic datasets with DALL-E 3 generated images and detailed captions. The framework now supports the [synthetic-dataset-1m-dalle3-high-quality-captions](https://huggingface.co/datasets/bghira/synthetic-dataset-1m-dalle3-high-quality-captions) dataset with optimized WebDataset loading.
+
+```sh
+uv run python train_glide.py \
+  --data_dir '/path/to/synthetic-dataset/' \
+  --use_webdataset \
+  --wds_dataset_name 'synthetic' \
+  --batch_size 8 \
+  --learning_rate 5e-05
+```
+
+### Enhanced Metrics Tracking
+
+Comprehensive training metrics with rolling averages, gradient statistics, and aesthetic scoring. Monitor training progress with detailed loss breakdowns, gradient norms, and automatic aesthetic quality assessment of generated samples.
+
+```sh
+uv run python train_glide.py \
+  --data_dir '/your/dataset' \
+  --project_name 'metrics_experiment' \
+  --log_frequency 100 \
+  --sample_frequency 500
+```
+
+### Robust Checkpoint Management
+
+Automatic checkpoint saving with graceful recovery from interruptions. The CheckpointManager handles model state, optimizer state, and training progress, ensuring you never lose training time.
+
+```sh
+uv run python train_glide.py \
+  --data_dir '/your/dataset' \
+  --checkpoints_dir './checkpoints' \
+  --save_frequency 1000 \
+  --resume_ckpt 'latest.pt'
+```
+
+### Advanced Sampling Methods
+
+Multiple sampling algorithms including Euler, Euler Ancestral, and DPM++ for improved generation quality during inference. Generate diverse, high-quality samples with different sampling strategies.
+
+```sh
+uv run python sample.py \
+  --model_path 'finetuned_model.pt' \
+  --sampler 'euler_ancestral' \
+  --num_samples 16 \
+  --guidance_scale 3.0
+```
+
+### Deterministic Training
+
+Full reproducibility support with comprehensive seed management. Set a seed to ensure identical training runs across different sessions, perfect for ablation studies and debugging.
+
+```sh
+uv run python train_glide.py \
+  --data_dir '/your/dataset' \
+  --seed 42 \
+  --batch_size 4 \
+  --learning_rate 1e-04
+```
+
+### CLIP Evaluation
+
+Automated CLIP score evaluation for measuring text-image alignment quality. Track how well your generated images match their text descriptions using the same metrics as DALL-E and Stable Diffusion.
+
+```sh
+uv run python evaluate_clip.py \
+  --model_path 'finetuned_model.pt' \
+  --eval_prompts 'evaluation1.txt' \
+  --num_samples 100
 ```
 
 
