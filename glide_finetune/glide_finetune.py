@@ -137,12 +137,14 @@ def run_glide_finetune_epoch(
     wandb_run=None,
     gradient_accumualation_steps=1,
     epoch: int = 0,
+    global_step: int = 0,
     train_upsample: bool = False,
     upsample_factor=4,
     image_to_upsample='low_res_face.png',
     sampler: str = "plms",
     num_steps: int = None,
     eta: float = 0.0,
+    checkpoint_manager=None,
 ):
     if train_upsample: train_step = upsample_train_step
     else: train_step = base_train_step
@@ -170,6 +172,12 @@ def run_glide_finetune_epoch(
     
     log = {}
     for train_idx, batch in enumerate(dataloader):
+        # Check for interrupt signal
+        if checkpoint_manager and checkpoint_manager.interrupted:
+            print("\n⚠️  Interrupt detected in training loop, stopping...")
+            break
+        
+        current_step = global_step + train_idx
         accumulated_loss = train_step(
             glide_model=glide_model,
             glide_diffusion=glide_diffusion,
@@ -193,7 +201,7 @@ def run_glide_finetune_epoch(
         current_lr = optimizer.param_groups[0]['lr']
         metrics_tracker.update_lr(current_lr)
         
-        log = {**log, "iter": train_idx, "loss": accumulated_loss.item() / gradient_accumualation_steps}
+        log = {**log, "iter": train_idx, "loss": accumulated_loss.item() / gradient_accumualation_steps, "global_step": current_step}
         
         # Console logging (loss, metrics, etc.)
         if train_idx > 0 and train_idx % log_frequency == 0:
@@ -273,11 +281,31 @@ def run_glide_finetune_epoch(
             else:
                 print(f"✓ Generated {len(sample_images)} samples, saved grid to {grid_save_path}")
             print()
-        if train_idx % 5000 == 0 and train_idx > 0:
-            train_util.save_model(glide_model, checkpoints_dir, train_idx, epoch)
-            print(
-                f"Saved checkpoint {train_idx} to {checkpoints_dir}/glide-ft-{train_idx}.pt"
+        
+        # Save checkpoint at regular intervals
+        if checkpoint_manager and checkpoint_manager.should_save(current_step):
+            checkpoint_manager.save_checkpoint(
+                glide_model,
+                optimizer,
+                epoch,
+                current_step,
+                is_interrupted=False
             )
+        
         wandb_run.log(log)
-    print(f"Finished training, saving final checkpoint")
-    train_util.save_model(glide_model, checkpoints_dir, train_idx, epoch)
+    
+    # Update and return global step
+    final_step = global_step + train_idx + 1
+    
+    # Save end-of-epoch checkpoint
+    if checkpoint_manager and not checkpoint_manager.interrupted:
+        print(f"Finished epoch {epoch}, saving checkpoint")
+        checkpoint_manager.save_checkpoint(
+            glide_model,
+            optimizer,
+            epoch,
+            final_step,
+            is_interrupted=False
+        )
+    
+    return final_step
