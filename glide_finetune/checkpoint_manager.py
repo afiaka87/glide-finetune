@@ -3,6 +3,7 @@
 import os
 import json
 import signal
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple
 import torch as th
@@ -56,10 +57,11 @@ class CheckpointManager:
             Path to saved checkpoint
         """
         if is_interrupted:
-            # Save interrupted checkpoint with special naming
-            checkpoint_path = self.checkpoints_dir / "interrupted_checkpoint.pt"
-            optimizer_path = self.checkpoints_dir / "interrupted_optimizer.pt"
-            state_path = self.checkpoints_dir / "interrupted_state.json"
+            # Save interrupted checkpoint with timestamp in the name
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            checkpoint_path = self.checkpoints_dir / f"interrupted_checkpoint_{timestamp}.pt"
+            optimizer_path = self.checkpoints_dir / f"interrupted_optimizer_{timestamp}.pt"
+            state_path = self.checkpoints_dir / f"interrupted_state_{timestamp}.json"
             
             # Save model
             th.save(model.state_dict(), checkpoint_path)
@@ -77,9 +79,9 @@ class CheckpointManager:
                 json.dump(state, f, indent=2)
             
             print(f"\n💾 Saved interrupted checkpoint to {self.checkpoints_dir}")
-            print(f"   - Model: interrupted_checkpoint.pt")
-            print(f"   - Optimizer: interrupted_optimizer.pt")
-            print(f"   - State: interrupted_state.json")
+            print(f"   - Model: {checkpoint_path.name}")
+            print(f"   - Optimizer: {optimizer_path.name}")
+            print(f"   - State: {state_path.name}")
             
             return str(checkpoint_path)
         else:
@@ -131,14 +133,33 @@ class CheckpointManager:
         
         # Handle directory vs file
         if resume_path.is_dir():
-            # Check for interrupted checkpoint first
-            interrupted_ckpt = resume_path / "interrupted_checkpoint.pt"
-            if interrupted_ckpt.exists():
-                print(f"📂 Found interrupted checkpoint in {resume_path}")
-                checkpoint_file = interrupted_ckpt
+            # Check for interrupted checkpoints (both old and new format)
+            # First try new timestamped format
+            interrupted_ckpts = sorted(resume_path.glob("interrupted_checkpoint_*.pt"))
+            
+            # Fall back to old format if no timestamped ones found
+            if not interrupted_ckpts:
+                old_interrupted = resume_path / "interrupted_checkpoint.pt"
+                if old_interrupted.exists():
+                    interrupted_ckpts = [old_interrupted]
+            
+            if interrupted_ckpts:
+                # Use the most recent interrupted checkpoint
+                checkpoint_file = interrupted_ckpts[-1]
+                print(f"📂 Found interrupted checkpoint: {checkpoint_file.name}")
+                
+                # Determine the corresponding state and optimizer files
+                if checkpoint_file.name == "interrupted_checkpoint.pt":
+                    # Old format
+                    state_file = resume_path / "interrupted_state.json"
+                    optimizer_file = resume_path / "interrupted_optimizer.pt"
+                else:
+                    # New timestamped format - extract timestamp
+                    timestamp = checkpoint_file.stem.replace("interrupted_checkpoint_", "")
+                    state_file = resume_path / f"interrupted_state_{timestamp}.json"
+                    optimizer_file = resume_path / f"interrupted_optimizer_{timestamp}.pt"
                 
                 # Load state
-                state_file = resume_path / "interrupted_state.json"
                 if state_file.exists():
                     with open(state_file, 'r') as f:
                         state = json.load(f)
@@ -147,11 +168,9 @@ class CheckpointManager:
                         print(f"   Resuming from epoch {start_epoch}, step {global_step}")
                 
                 # Load optimizer if available
-                if optimizer:
-                    optimizer_file = resume_path / "interrupted_optimizer.pt"
-                    if optimizer_file.exists():
-                        optimizer.load_state_dict(th.load(optimizer_file, map_location="cpu"))
-                        print("   ✓ Restored optimizer state")
+                if optimizer and optimizer_file.exists():
+                    optimizer.load_state_dict(th.load(optimizer_file, map_location="cpu"))
+                    print("   ✓ Restored optimizer state")
             else:
                 # Look for latest regular checkpoint
                 checkpoints = sorted(resume_path.glob("glide-ft-*.pt"))
@@ -194,13 +213,20 @@ class CheckpointManager:
     
     def cleanup_interrupted_files(self):
         """Remove interrupted checkpoint files after successful resume."""
-        files_to_remove = [
+        # Clean up old format files
+        old_format_files = [
             self.checkpoints_dir / "interrupted_checkpoint.pt",
             self.checkpoints_dir / "interrupted_optimizer.pt",
             self.checkpoints_dir / "interrupted_state.json"
         ]
         
-        for file_path in files_to_remove:
+        for file_path in old_format_files:
             if file_path.exists():
+                file_path.unlink()
+                print(f"🧹 Cleaned up {file_path.name}")
+        
+        # Clean up new timestamped format files
+        for pattern in ["interrupted_checkpoint_*.pt", "interrupted_optimizer_*.pt", "interrupted_state_*.json"]:
+            for file_path in self.checkpoints_dir.glob(pattern):
                 file_path.unlink()
                 print(f"🧹 Cleaned up {file_path.name}")
