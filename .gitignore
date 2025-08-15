@@ -11,3 +11,5 @@ docker_child/
 current_prediction.png
 *.sh
 CLAUDE.md
+.trash/
+CKPT/
