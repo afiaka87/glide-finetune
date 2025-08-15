@@ -10,3 +10,4 @@ finetune_checkpoints/
 docker_child/
 current_prediction.png
 *.sh
+CLAUDE.md
