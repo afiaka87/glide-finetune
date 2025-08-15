@@ -39,6 +39,7 @@ def run_glide_finetune(
     log_frequency=100,  # console logging frequency
     sample_frequency=500,  # image generation frequency
     save_frequency=1000,  # checkpoint save frequency
+    save_directory=None,  # override checkpoint save directory
     test_prompt="a group of skiers are preparing to ski down a mountain.",
     sample_bs=1,
     sample_gs=8.0,
@@ -61,18 +62,26 @@ def run_glide_finetune(
     # Create the checkpoint/output directories
     os.makedirs(checkpoints_dir, exist_ok=True)
     
-    # Determine the run directory
-    existing_runs = [sub_dir for sub_dir in os.listdir(checkpoints_dir) if os.path.isdir(os.path.join(checkpoints_dir, sub_dir))]
-    existing_runs_int = []
-    for x in existing_runs:
-        try:
-            existing_runs_int.append(int(x))
-        except:
-            pass
-    existing_runs_int = sorted(existing_runs_int)
-    next_run = 0 if len(existing_runs) == 0 else existing_runs_int[-1] + 1
-    current_run_ckpt_dir = os.path.join(checkpoints_dir, str(next_run).zfill(4))
-    os.makedirs(current_run_ckpt_dir, exist_ok=True)
+    # Determine the save directory
+    if save_directory:
+        # Use user-specified directory
+        current_run_ckpt_dir = os.path.expanduser(save_directory)
+        os.makedirs(current_run_ckpt_dir, exist_ok=True)
+        print(f"Using specified save directory: {current_run_ckpt_dir}")
+    else:
+        # Auto-generate run directory
+        existing_runs = [sub_dir for sub_dir in os.listdir(checkpoints_dir) if os.path.isdir(os.path.join(checkpoints_dir, sub_dir))]
+        existing_runs_int = []
+        for x in existing_runs:
+            try:
+                existing_runs_int.append(int(x))
+            except:
+                pass
+        existing_runs_int = sorted(existing_runs_int)
+        next_run = 0 if len(existing_runs) == 0 else existing_runs_int[-1] + 1
+        current_run_ckpt_dir = os.path.join(checkpoints_dir, str(next_run).zfill(4))
+        os.makedirs(current_run_ckpt_dir, exist_ok=True)
+        print(f"Auto-generated save directory: {current_run_ckpt_dir}")
     
     # Initialize checkpoint manager
     checkpoint_manager = CheckpointManager(current_run_ckpt_dir, save_frequency=save_frequency)
@@ -291,6 +300,7 @@ def parse_args():
     parser.add_argument("--log_frequency", "-freq", type=int, default=100, help="Console logging frequency (loss, metrics)")
     parser.add_argument("--sample_frequency", "-sample_freq", type=int, default=500, help="Image generation frequency")
     parser.add_argument("--save_frequency", "-save_freq", type=int, default=1000, help="Checkpoint save frequency in steps")
+    parser.add_argument("--save_directory", "-save_dir", type=str, default=None, help="Directory to save checkpoints (overrides auto-generated path)")
     parser.add_argument("--freeze_transformer", "-fz_xt", action="store_true")
     parser.add_argument("--freeze_diffusion", "-fz_unet", action="store_true")
     parser.add_argument("--project_name", "-name", type=str, default="glide-finetune")
@@ -419,6 +429,7 @@ if __name__ == "__main__":
         log_frequency=args.log_frequency,
         sample_frequency=args.sample_frequency,
         save_frequency=args.save_frequency,
+        save_directory=args.save_directory,
         freeze_transformer=args.freeze_transformer,
         freeze_diffusion=args.freeze_diffusion,
         project_name=args.project_name,
