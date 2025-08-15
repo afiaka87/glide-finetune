@@ -420,6 +420,7 @@ dependencies = [
     { name = "aiohttp" },
     { name = "einops" },
     { name = "ftfy" },
+    { name = "glide-text2im" },
     { name = "matplotlib" },
     { name = "mpi4py" },
     { name = "numpy" },
@@ -447,6 +448,7 @@ requires-dist = [
     { name = "aiohttp", specifier = ">=3.12.15" },
     { name = "einops", specifier = ">=0.8.1" },
     { name = "ftfy", specifier = ">=6.3.1" },
+    { name = "glide-text2im", git = "https://github.com/openai/glide-text2im.git" },
     { name = "matplotlib", specifier = ">=3.10.5" },
     { name = "mpi4py", specifier = ">=4.1.0" },
     { name = "numpy", specifier = ">=2.3.2" },
@@ -467,6 +469,22 @@ requires-dist = [
     { name = "urllib3", specifier = ">=2.5.0" },
     { name = "wandb", specifier = ">=0.21.1" },
     { name = "webdataset", specifier = ">=1.0.2" },
+]
+
+[[package]]
+name = "glide-text2im"
+version = "0.0.0"
+source = { git = "https://github.com/openai/glide-text2im.git#69b530740eb6cef69442d6180579ef5ba9ef063e" }
+dependencies = [
+    { name = "attrs" },
+    { name = "filelock" },
+    { name = "ftfy" },
+    { name = "numpy" },
+    { name = "pillow" },
+    { name = "regex" },
+    { name = "requests" },
+    { name = "torch" },
+    { name = "tqdm" },
 ]
 
 [[package]]

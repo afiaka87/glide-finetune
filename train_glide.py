@@ -7,6 +7,10 @@ import torch as th
 import torchvision.transforms as T
 from tqdm import trange
 
+# Enable TF32 for faster training on Ampere GPUs (A100, etc.)
+th.backends.cuda.matmul.allow_tf32 = True
+th.backends.cudnn.allow_tf32 = True
+
 from glide_finetune.glide_finetune import run_glide_finetune_epoch
 from glide_finetune.glide_util import load_model
 from glide_finetune.loader import TextImageDataset
@@ -33,7 +37,8 @@ def run_glide_finetune(
     activation_checkpointing=False,
     use_captions=True,
     num_epochs=100,
-    log_frequency=100,
+    log_frequency=100,  # console logging frequency
+    sample_frequency=500,  # image generation frequency
     test_prompt="a group of skiers are preparing to ski down a mountain.",
     sample_bs=1,
     sample_gs=8.0,
@@ -43,6 +48,10 @@ def run_glide_finetune(
     enable_upsample=False,
     upsample_factor=4,
     image_to_upsample='low_res_face.png',
+    wds_dataset_name="laion",
+    sampler="plms",
+    num_steps=None,
+    eta=0.0,
 ):
     if "~" in data_dir:
         data_dir = os.path.expanduser(data_dir)
@@ -103,7 +112,7 @@ def run_glide_finetune(
             similarity_threshold_upper=0.0,
             similarity_threshold_lower=0.5,
             words_to_skip=[],
-            dataset_name="laion",  # can be laion, alamy.
+            dataset_name=wds_dataset_name,  # can be laion, alamy, synthetic.
         )
     else:
         dataset = TextImageDataset(
@@ -169,7 +178,8 @@ def run_glide_finetune(
             glide_options=glide_options,
             optimizer=optimizer,
             dataloader=dataloader,
-            prompt=test_prompt,
+            prompt=test_prompt,  # Keep for backwards compatibility
+            test_prompts=None,  # Will use default prompts
             sample_bs=sample_bs,
             sample_gs=sample_gs,
             checkpoints_dir=current_run_ckpt_dir,
@@ -179,9 +189,13 @@ def run_glide_finetune(
             device=device,
             wandb_run=wandb_run,
             log_frequency=log_frequency,
+            sample_frequency=sample_frequency,
             epoch=epoch,
             gradient_accumualation_steps=1,
             train_upsample=enable_upsample,
+            sampler=sampler,
+            num_steps=num_steps,
+            eta=eta,
         )
 
 
@@ -221,7 +235,8 @@ def parse_args():
     )
     parser.add_argument("--use_fp16", "-fp16", action="store_true")
     parser.add_argument("--device", "-dev", type=str, default="")
-    parser.add_argument("--log_frequency", "-freq", type=int, default=100)
+    parser.add_argument("--log_frequency", "-freq", type=int, default=100, help="Console logging frequency (loss, metrics)")
+    parser.add_argument("--sample_frequency", "-sample_freq", type=int, default=500, help="Image generation frequency")
     parser.add_argument("--freeze_transformer", "-fz_xt", action="store_true")
     parser.add_argument("--freeze_diffusion", "-fz_unet", action="store_true")
     parser.add_argument("--project_name", "-name", type=str, default="glide-finetune")
@@ -286,6 +301,28 @@ def parse_args():
         "--upscale_factor", "-upscale", type=int, default=4, help="Upscale factor for training the upsampling model only"
     )
     parser.add_argument("--image_to_upsample", "-lowres", type=str, default="low_res_face.png")
+    parser.add_argument(
+        "--sampler",
+        "-sampler",
+        type=str,
+        default="plms",
+        choices=["plms", "ddim", "euler", "euler_a", "dpm++"],
+        help="Sampling method to use"
+    )
+    parser.add_argument(
+        "--num_steps",
+        "-steps",
+        type=int,
+        default=None,
+        help="Number of sampling steps (overrides prediction_respacing)"
+    )
+    parser.add_argument(
+        "--eta",
+        "-eta",
+        type=float,
+        default=0.0,
+        help="Eta parameter for DDIM and Euler Ancestral sampling"
+    )
     args = parser.parse_args()
 
     return args
@@ -307,13 +344,13 @@ if __name__ == "__main__":
         print(f"--{arg} {getattr(args, arg)}")
 
     if args.use_webdataset:
-        # webdataset uses tars
-        data_dir = glob(os.path.join(args.data_dir, "*.tar"))
+        # webdataset uses tars - data_dir should be a braceexpand pattern or list of tar files
+        data_dir = args.data_dir
     else:
         data_dir = args.data_dir
     
     run_glide_finetune(
-        data_dir=args.data_dir,
+        data_dir=data_dir,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
         adam_weight_decay=args.adam_weight_decay,
@@ -326,6 +363,7 @@ if __name__ == "__main__":
         use_fp16=args.use_fp16,
         device=device,
         log_frequency=args.log_frequency,
+        sample_frequency=args.sample_frequency,
         freeze_transformer=args.freeze_transformer,
         freeze_diffusion=args.freeze_diffusion,
         project_name=args.project_name,
@@ -341,4 +379,8 @@ if __name__ == "__main__":
         enable_upsample=args.train_upsample,
         upsample_factor=args.upscale_factor,
         image_to_upsample=args.image_to_upsample,
+        wds_dataset_name=args.wds_dataset_name,
+        sampler=args.sampler,
+        num_steps=args.num_steps,
+        eta=args.eta,
     )

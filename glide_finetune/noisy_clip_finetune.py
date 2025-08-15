@@ -1,4 +1,9 @@
+import os
+import sys
 from typing import Tuple
+
+# Add glide-text2im to path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'glide-text2im'))
 
 import torch as th
 from glide_text2im.clip.model_creation import CLIPModel

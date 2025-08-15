@@ -33,7 +33,7 @@ def glide_wds_loader(
     similarity_threshold_upper=0.0,
     similarity_threshold_lower=0.5,
     words_to_skip=[],
-    dataset_name="laion",  # can be laion, alamy.
+    dataset_name="laion",  # can be laion, alamy, synthetic.
     upscale_factor=4,
 ):
 
@@ -90,14 +90,40 @@ def glide_wds_loader(
         if enable_text and "caption" not in metadata:
             return False
         return True  # all good
+    
+    def filter_dataset_synthetic(item):
+        if enable_image and "jpg" not in item:
+            return False
+        if enable_metadata and "json" not in item:
+            return False
+        metadata = json.loads(item["json"].decode("utf-8"))
+        
+        # Check if we have the required fields for synthetic dataset
+        if enable_text and "short_caption" not in metadata and "long_caption" not in metadata:
+            return False
+        
+        # Check image dimensions if available
+        if "width" in metadata and "height" in metadata:
+            width = float(metadata["width"])
+            height = float(metadata["height"])
+            aspect_ratio = width / height
+            
+            if width < min_original_width or height < min_original_height:
+                return False
+            if aspect_ratio < ar_lower or aspect_ratio > ar_upper:
+                return False
+        
+        return True
 
     if dataset_name == "laion":
         filtered_dataset = dataset.select(filter_dataset_laion)
     elif dataset_name == "alamy":
         filtered_dataset = dataset.select(filter_dataset_alamy)
+    elif dataset_name == "synthetic":
+        filtered_dataset = dataset.select(filter_dataset_synthetic)
     else:
         raise ValueError(
-            f"Unknown dataset: {dataset_name}. Must be one of 'laion' or 'alamy'."
+            f"Unknown dataset: {dataset_name}. Must be one of 'laion', 'alamy', or 'synthetic'."
         )
 
     def preprocess_dataset(item):
@@ -108,7 +134,20 @@ def glide_wds_loader(
         if not enable_text or random() < uncond_p:
             tokens, mask = get_uncond_tokens_mask(tokenizer)
         else:
-            caption = item[caption_key].decode("utf-8")
+            # Handle different dataset formats for captions
+            if dataset_name == "synthetic":
+                # For synthetic dataset, caption is in the JSON metadata
+                metadata = json.loads(item["json"].decode("utf-8"))
+                # Prefer short_caption, fallback to long_caption
+                caption = metadata.get("short_caption", metadata.get("long_caption", ""))
+            elif dataset_name == "alamy":
+                # For alamy dataset, caption is in the JSON metadata
+                metadata = json.loads(item["json"].decode("utf-8"))
+                caption = metadata.get("caption", "")
+            else:
+                # For laion dataset, caption is in separate txt file
+                caption = item[caption_key].decode("utf-8")
+            
             tokens, mask = get_tokens_and_mask(tokenizer, caption)
 
         image_data = item[image_key]
@@ -124,12 +163,12 @@ def glide_wds_loader(
             ).convert("RGB")
             upsample_tensor = pil_image_to_norm_tensor(upsample_pil_image)
             return (
-                th.tensor(tokens),
-                th.tensor(mask, dtype=th.bool),
+                tokens.clone(),
+                mask.clone(),
                 base_tensor,
                 upsample_tensor,
             )
-        return th.tensor(tokens), th.tensor(mask, dtype=th.bool), base_tensor
+        return tokens.clone(), mask.clone(), base_tensor
 
     transformed_dataset = filtered_dataset.map(
         preprocess_dataset, handler=wds.handlers.reraise_exception

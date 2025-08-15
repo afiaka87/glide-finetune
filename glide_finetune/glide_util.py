@@ -8,6 +8,10 @@ import PIL
 import numpy as np
 import torch as th
 from glide_finetune.train_util import pred_to_pil
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'glide-text2im'))
+
 from glide_text2im.download import load_checkpoint
 from glide_text2im.model_creation import (
     create_gaussian_diffusion,
@@ -16,6 +20,7 @@ from glide_text2im.model_creation import (
     model_and_diffusion_defaults_upsampler,
 )
 from glide_text2im.tokenizer.bpe import Encoder
+from glide_finetune.enhanced_samplers import enhance_glide_diffusion
 
 MODEL_TYPES = ["base", "upsample", "base-inpaint", "upsample-inpaint"]
 
@@ -106,6 +111,9 @@ def sample(
     upsample_enabled=False,
     image_to_upsample='',
     upsample_temp=0.997,
+    sampler="plms",
+    num_steps=None,
+    eta=0.0,
 ):
     glide_model.del_cache()
     eval_diffusion = create_gaussian_diffusion(
@@ -165,14 +173,90 @@ def sample(
         model_kwargs['noise'] = noise
         model_fn = glide_model # just use the base model, no need for CFG.
 
-    samples = eval_diffusion.plms_sample_loop(
-        model_fn,
-        (full_batch_size, 3, side_y, side_x),  # only thing that's changed
-        device=device,
-        clip_denoised=True,
-        progress=True,
-        model_kwargs=model_kwargs,
-        cond_fn=None,
-    )[:batch_size]
+    # Determine number of steps from prediction_respacing if not specified
+    if num_steps is None:
+        try:
+            num_steps = int(prediction_respacing)
+        except ValueError:
+            num_steps = 50  # Default fallback
+    
+    # Choose sampling method
+    if sampler.lower() in ["euler", "euler_discrete"]:
+        # Add enhanced samplers to diffusion instance
+        enhance_glide_diffusion(eval_diffusion)
+        samples = eval_diffusion.euler_sample_loop(
+            model_fn,
+            (full_batch_size, 3, side_y, side_x),
+            device=device,
+            clip_denoised=True,
+            progress=True,
+            model_kwargs=model_kwargs,
+            eta=eta,
+            num_steps=num_steps,
+        )[:batch_size]
+    
+    elif sampler.lower() in ["euler_a", "euler_ancestral"]:
+        # Add enhanced samplers to diffusion instance
+        enhance_glide_diffusion(eval_diffusion)
+        samples = eval_diffusion.euler_ancestral_sample_loop(
+            model_fn,
+            (full_batch_size, 3, side_y, side_x),
+            device=device,
+            clip_denoised=True,
+            progress=True,
+            model_kwargs=model_kwargs,
+            eta=eta,
+            num_steps=num_steps,
+        )[:batch_size]
+    
+    elif sampler.lower() in ["dpm++", "dpm_solver", "dpmpp"]:
+        # Add enhanced samplers to diffusion instance
+        enhance_glide_diffusion(eval_diffusion)
+        samples = eval_diffusion.dpm_solver_sample_loop(
+            model_fn,
+            (full_batch_size, 3, side_y, side_x),
+            device=device,
+            clip_denoised=True,
+            progress=True,
+            model_kwargs=model_kwargs,
+            eta=eta,
+            num_steps=num_steps,
+            order=2,
+        )[:batch_size]
+    
+    elif sampler.lower() == "ddim":
+        samples = eval_diffusion.ddim_sample_loop(
+            model_fn,
+            (full_batch_size, 3, side_y, side_x),
+            device=device,
+            clip_denoised=True,
+            progress=True,
+            model_kwargs=model_kwargs,
+            eta=eta,
+        )[:batch_size]
+    
+    elif sampler.lower() == "plms":
+        samples = eval_diffusion.plms_sample_loop(
+            model_fn,
+            (full_batch_size, 3, side_y, side_x),
+            device=device,
+            clip_denoised=True,
+            progress=True,
+            model_kwargs=model_kwargs,
+            cond_fn=None,
+        )[:batch_size]
+    
+    else:
+        # Default to PLMS if unknown sampler
+        print(f"Warning: Unknown sampler '{sampler}', falling back to PLMS")
+        samples = eval_diffusion.plms_sample_loop(
+            model_fn,
+            (full_batch_size, 3, side_y, side_x),
+            device=device,
+            clip_denoised=True,
+            progress=True,
+            model_kwargs=model_kwargs,
+            cond_fn=None,
+        )[:batch_size]
     glide_model.del_cache()
     return samples

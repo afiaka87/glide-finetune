@@ -8,6 +8,7 @@ dependencies = [
     "aiohttp>=3.12.15",
     "einops>=0.8.1",
     "ftfy>=6.3.1",
+    "glide-text2im",
     "matplotlib>=3.10.5",
     "mpi4py>=4.1.0",
     "numpy>=2.3.2",
@@ -29,3 +30,6 @@ dependencies = [
     "wandb>=0.21.1",
     "webdataset>=1.0.2",
 ]
+
+[tool.uv.sources]
+glide-text2im = { git = "https://github.com/openai/glide-text2im.git" }
