@@ -136,7 +136,7 @@ def run_glide_finetune_epoch(
     log_frequency: int = 100,  # console logging frequency (loss, metrics)
     sample_frequency: int = 500,  # image generation frequency
     wandb_run=None,
-    gradient_accumualation_steps=1,
+    gradient_accumulation_steps=1,
     epoch: int = 0,
     global_step: int = 0,
     train_upsample: bool = False,
@@ -160,6 +160,10 @@ def run_glide_finetune_epoch(
         # Handle backward compatibility with single prompt
         test_prompts = [test_prompts] * 8
         grid_size = 8
+    elif not isinstance(test_prompts, list):
+        # Convert to list if not already
+        test_prompts = [test_prompts]
+        grid_size = 1
     
     # Determine grid dimensions based on size
     if grid_size is None:
@@ -192,7 +196,7 @@ def run_glide_finetune_epoch(
     # Initialize metrics tracker
     metrics_tracker = MetricsTracker(
         window_size=log_frequency,
-        gradient_accumulation_steps=gradient_accumualation_steps
+        gradient_accumulation_steps=gradient_accumulation_steps
     )
     
     # Print model info once
@@ -214,13 +218,13 @@ def run_glide_finetune_epoch(
         )
         
         # Scale loss by gradient accumulation steps to maintain effective learning rate
-        scaled_loss = loss / gradient_accumualation_steps
+        scaled_loss = loss / gradient_accumulation_steps
         scaled_loss.backward()
         
         # Check if this is an optimizer step
-        is_optimizer_step = (train_idx + 1) % gradient_accumualation_steps == 0
+        is_optimizer_step = (train_idx + 1) % gradient_accumulation_steps == 0
         
-        # Only update weights every gradient_accumualation_steps iterations
+        # Only update weights every gradient_accumulation_steps iterations
         if is_optimizer_step:
             # Update comprehensive gradient statistics before optimizer step
             metrics_tracker.update_gradient_stats(glide_model)
@@ -343,9 +347,9 @@ def run_glide_finetune_epoch(
         wandb_run.log(log)
     
     # Perform final optimizer step if we have accumulated gradients that haven't been applied
-    if (train_idx + 1) % gradient_accumualation_steps != 0:
+    if (train_idx + 1) % gradient_accumulation_steps != 0:
         # We have leftover gradients that weren't applied
-        remaining_steps = (train_idx + 1) % gradient_accumualation_steps
+        remaining_steps = (train_idx + 1) % gradient_accumulation_steps
         
         metrics_tracker.update_gradient_stats(glide_model)
         optimizer.step()
