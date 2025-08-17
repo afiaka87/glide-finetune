@@ -6,9 +6,15 @@ import numpy as np
 import torch as th
 from tqdm import trange
 
-# Enable TF32 for faster training on Ampere GPUs (A100, etc.)
-th.backends.cuda.matmul.allow_tf32 = True
-th.backends.cudnn.allow_tf32 = True
+# TF32 disabled by default - can cause precision issues
+# Enable with GLIDE_ENABLE_TF32=1 environment variable
+if os.environ.get("GLIDE_ENABLE_TF32"):
+    th.backends.cuda.matmul.allow_tf32 = True
+    th.backends.cudnn.allow_tf32 = True
+    print("✓ TF32 enabled via GLIDE_ENABLE_TF32")
+else:
+    th.backends.cuda.matmul.allow_tf32 = False
+    th.backends.cudnn.allow_tf32 = False
 
 from glide_finetune.glide_finetune import run_glide_finetune_epoch
 from glide_finetune.glide_util import load_model
