@@ -277,7 +277,12 @@ def main():
             num_workers=4,
             pin_memory=True,
         )
-        data_len = 10000  # Estimate for webdataset
+        # Count number of tar files to estimate dataset size
+        import glob
+        tar_files = glob.glob(args.data_dir)
+        num_tars = len(tar_files)
+        data_len = num_tars * 10000  # 10k images per tar estimate
+        logger.info(f"Found {num_tars} tar files, estimated {data_len:,} total images")
     else:
         dataset = TextImageDataset(
             args.data_dir,
@@ -329,7 +334,7 @@ def main():
         epoch_losses = []
         
         progress_bar = trange(
-            min(data_len // args.batch_size, 1000),  # Limit progress bar for webdataset
+            data_len // args.batch_size,  # Full epoch
             desc=f"Epoch {epoch + 1}"
         )
         
