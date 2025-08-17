@@ -25,15 +25,27 @@ class CheckpointManager:
         self.checkpoints_dir.mkdir(parents=True, exist_ok=True)
         self.save_frequency = save_frequency
         self.interrupted = False
+        self.interrupt_count = 0
+        self.original_handlers = {}
         
-        # Setup interrupt handlers
-        signal.signal(signal.SIGINT, self._interrupt_handler)
-        signal.signal(signal.SIGTERM, self._interrupt_handler)
+        # Store original handlers and setup interrupt handlers
+        self.original_handlers[signal.SIGINT] = signal.signal(signal.SIGINT, self._interrupt_handler)
+        self.original_handlers[signal.SIGTERM] = signal.signal(signal.SIGTERM, self._interrupt_handler)
     
     def _interrupt_handler(self, signum, frame):
         """Handle interrupt signals gracefully."""
-        self.interrupted = True
-        print("\n⚠️  Interrupt received! Will save checkpoint at next opportunity...")
+        self.interrupt_count += 1
+        
+        if self.interrupt_count == 1:
+            self.interrupted = True
+            print("\n⚠️  Interrupt received! Will save checkpoint at next opportunity...")
+            print("    Press Ctrl+C again to force exit without saving.")
+        else:
+            print("\n❌ Force exit requested. Exiting immediately...")
+            # Restore original handler and re-raise
+            if signum in self.original_handlers:
+                signal.signal(signum, self.original_handlers[signum])
+            os._exit(1)
     
     def save_checkpoint(
         self,
