@@ -291,12 +291,13 @@ class FP16TrainingStep:
         if self.loss_scaler:
             state['loss_scaler'] = {
                 'scale': self.loss_scaler.scale,
-                'growth_tracker': self.loss_scaler.growth_tracker,
+                'unskipped': self.loss_scaler._unskipped,
+                'stats': self.loss_scaler.stats,
             }
         
         if self.nan_recovery:
             state['nan_recovery'] = {
-                'recovery_count': self.nan_recovery.recovery_count,
+                'recovery_attempts': self.nan_recovery.recovery_attempts,
             }
         
         return state
@@ -307,11 +308,13 @@ class FP16TrainingStep:
         self.accumulation_step = state_dict.get('accumulation_step', 0)
         
         if self.loss_scaler and 'loss_scaler' in state_dict:
-            self.loss_scaler.scale = state_dict['loss_scaler']['scale']
-            self.loss_scaler.growth_tracker = state_dict['loss_scaler']['growth_tracker']
+            self.loss_scaler._scale = state_dict['loss_scaler']['scale']
+            self.loss_scaler._unskipped = state_dict['loss_scaler'].get('unskipped', 0)
+            if 'stats' in state_dict['loss_scaler']:
+                self.loss_scaler.stats = state_dict['loss_scaler']['stats']
         
         if self.nan_recovery and 'nan_recovery' in state_dict:
-            self.nan_recovery.recovery_count = state_dict['nan_recovery']['recovery_count']
+            self.nan_recovery.recovery_attempts = state_dict['nan_recovery'].get('recovery_attempts', 0)
 
 
 class SelectiveFP16Converter:
