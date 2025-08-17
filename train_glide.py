@@ -4,6 +4,7 @@ import random
 
 import numpy as np
 import torch as th
+from torch.cuda.amp import GradScaler
 from tqdm import trange
 
 # TF32 disabled by default - can cause precision issues
@@ -22,6 +23,11 @@ from glide_finetune.loader import TextImageDataset
 from glide_finetune.train_util import wandb_setup
 from glide_finetune.wds_loader import glide_wds_loader
 from glide_finetune.checkpoint_manager import CheckpointManager
+from glide_finetune.fp16_training import (
+    FP16TrainingConfig,
+    FP16TrainingStep,
+    SelectiveFP16Converter,
+)
 
 
 def setup_seed(seed: int = None):
@@ -67,7 +73,10 @@ def run_glide_finetune(
     uncond_p=0.0,
     resume_ckpt="",
     checkpoints_dir="./finetune_checkpoints",
-    use_fp16=False,  # Tends to cause issues,not sure why as the paper states fp16 is stable.
+    use_fp16=False,  # Advanced FP16 support now available
+    fp16_mode="auto",  # 'auto', 'conservative', 'aggressive'
+    fp16_loss_scale=256.0,
+    fp16_grad_clip=1.0,
     device="cpu",
     freeze_transformer=False,
     freeze_diffusion=False,
@@ -164,7 +173,7 @@ def run_glide_finetune(
         print(f"Loading pretrained model from {resume_ckpt}")
         glide_model, glide_diffusion, glide_options = load_model(
             glide_path=resume_ckpt,
-            use_fp16=use_fp16,
+            use_fp16=False,  # We'll handle FP16 conversion separately
             freeze_transformer=freeze_transformer,
             freeze_diffusion=freeze_diffusion,
             activation_checkpointing=activation_checkpointing,
@@ -174,12 +183,21 @@ def run_glide_finetune(
         # Load base model, we'll restore training checkpoint separately
         glide_model, glide_diffusion, glide_options = load_model(
             glide_path="",  # Start with OpenAI's base model
-            use_fp16=use_fp16,
+            use_fp16=False,  # We'll handle FP16 conversion separately
             freeze_transformer=freeze_transformer,
             freeze_diffusion=freeze_diffusion,
             activation_checkpointing=activation_checkpointing,
             model_type="base" if not enable_upsample else "upsample",
         )
+    
+    # Apply FP16 conversion if requested
+    if use_fp16:
+        print(f"Converting model to FP16 (mode: {fp16_mode})")
+        converter = SelectiveFP16Converter(aggressive=(fp16_mode == "aggressive"))
+        glide_model, conv_stats = converter.convert_model_mixed_precision(glide_model)
+        print(f"  FP16 params: {conv_stats['fp16_params']:,}")
+        print(f"  FP32 params: {conv_stats['fp32_params']:,}")
+        print(f"  FP16 ratio: {conv_stats['fp16_params'] / (conv_stats['fp16_params'] + conv_stats['fp32_params']) * 100:.1f}%")
     
     glide_model.train()
     number_of_params = sum(x.numel() for x in glide_model.parameters())
@@ -246,6 +264,9 @@ def run_glide_finetune(
         lr=learning_rate,
         weight_decay=adam_weight_decay,
     )
+    
+    # Setup GradScaler for fp16 training
+    scaler = GradScaler() if use_fp16 and device == "cuda" else None
     
     # Load checkpoint if resuming from training checkpoint
     start_epoch = 0
@@ -316,6 +337,8 @@ def run_glide_finetune(
             glide_diffusion=glide_diffusion,
             glide_options=glide_options,
             optimizer=optimizer,
+            scaler=scaler,
+            use_fp16=use_fp16,
             dataloader=dataloader,
             prompt=test_prompt,  # Keep for backwards compatibility
             test_prompts=test_prompts,  # Use loaded prompts or None for defaults
@@ -333,7 +356,7 @@ def run_glide_finetune(
             checkpoint_manager=checkpoint_manager,
             epoch=epoch,
             global_step=global_step,
-            gradient_accumualation_steps=gradient_accumulation_steps,
+            gradient_accumulation_steps=gradient_accumulation_steps,
             train_upsample=enable_upsample,
             sampler=sampler,
             num_steps=num_steps,
