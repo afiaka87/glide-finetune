@@ -307,19 +307,48 @@ def main():
         save_frequency=args.save_frequency,
     )
     
-    # Setup wandb (optional)
+    # Setup wandb with comprehensive config tracking
     try:
-        wandb_run = wandb_setup(
-            batch_size=args.batch_size,
-            side_x=64,
-            side_y=64,
-            learning_rate=args.learning_rate,
-            use_fp16=args.use_fp16,
-            device=device,
-            data_dir=args.data_dir,
-            base_dir=args.checkpoints_dir,
-            project_name=args.project_name,
+        import wandb
+        
+        # Initialize WandB with full config
+        wandb_config = {
+            'batch_size': args.batch_size,
+            'effective_batch_size': args.batch_size * args.gradient_accumulation_steps,
+            'gradient_accumulation_steps': args.gradient_accumulation_steps,
+            'learning_rate': args.learning_rate,
+            'adam_weight_decay': args.adam_weight_decay,
+            'num_epochs': args.num_epochs,
+            'dataset_size': data_len,
+            'num_tar_files': num_tars if args.use_webdataset else 0,
+            'use_fp16': args.use_fp16,
+            'fp16_mode': args.fp16_mode if args.use_fp16 else 'none',
+            'fp16_loss_scale': args.fp16_loss_scale if args.use_fp16 else 1.0,
+            'fp16_grad_clip': args.fp16_grad_clip,
+            'use_master_weights': args.use_master_weights,
+            'uncond_p': args.uncond_p,
+            'model_type': args.model_type,
+            'device': str(device),
+            'seed': args.seed,
+            'checkpoint': args.resume_ckpt,
+        }
+        
+        wandb_run = wandb.init(
+            project=args.project_name,
+            config=wandb_config,
+            resume='allow',
+            save_code=True,
         )
+        
+        # Log model architecture summary
+        total_params = sum(p.numel() for p in glide_model.parameters())
+        trainable_params = sum(p.numel() for p in glide_model.parameters() if p.requires_grad)
+        wandb_run.summary['model/total_params'] = total_params
+        wandb_run.summary['model/trainable_params'] = trainable_params
+        wandb_run.summary['model/frozen_params'] = total_params - trainable_params
+        
+        logger.info(f"WandB initialized: {wandb_run.url}")
+        
     except Exception as e:
         logger.warning(f"WandB setup failed: {e}. Continuing without wandb logging.")
         wandb_run = None
@@ -379,16 +408,40 @@ def main():
             })
             progress_bar.update(1)
             
-            # Logging
-            if wandb_run and global_step % args.log_frequency == 0:
-                wandb_run.log({
-                    'loss': result['loss'],
-                    'grad_norm': result['grad_norm'],
-                    'loss_scale': result['loss_scale'],
-                    'learning_rate': args.learning_rate,
-                    'epoch': epoch,
-                    'step': global_step,
-                })
+            # Log to WandB every step for proper tracking
+            if wandb_run:
+                log_data = {
+                    'train/loss': result['loss'],
+                    'train/loss_scale': result.get('loss_scale', 1.0),
+                    'train/learning_rate': args.learning_rate,
+                    'train/epoch': epoch + (batch_idx / (data_len // args.batch_size)),  # Fractional epoch
+                    'train/global_step': global_step,
+                    'train/batch_idx': batch_idx,
+                }
+                
+                # Only log grad_norm when it's actually computed (not during accumulation)
+                if result.get('grad_norm', 0) > 0:
+                    log_data['train/grad_norm'] = result['grad_norm']
+                
+                # Add accumulation info
+                log_data['train/accumulation_step'] = acc_current
+                log_data['train/effective_batch_size'] = args.batch_size * args.gradient_accumulation_steps
+                
+                # Add FP16-specific metrics if available
+                if result.get('skipped', False):
+                    log_data['fp16/skipped_step'] = 1
+                elif result.get('accumulated', False):
+                    log_data['fp16/accumulated_step'] = 1
+                else:
+                    log_data['fp16/optimizer_step'] = 1
+                
+                # Log moving averages for smoother charts
+                if epoch_losses:
+                    recent_losses = epoch_losses[-100:]
+                    log_data['train/loss_avg_100'] = np.mean(recent_losses)
+                    log_data['train/loss_std_100'] = np.std(recent_losses)
+                
+                wandb_run.log(log_data, step=global_step)
             
             # Save checkpoint
             if global_step % args.save_frequency == 0 and global_step > 0:
@@ -435,6 +488,17 @@ def main():
             logger.info(f"  Total Steps: {global_step:,}")
             logger.info(f"  Loss Scale: {int(trainer.loss_scaler.scale) if trainer.loss_scaler else 1}")
             logger.info(f"{'='*60}\n")
+            
+            # Log epoch summary to WandB
+            if wandb_run:
+                wandb_run.log({
+                    'epoch/avg_loss': avg_loss,
+                    'epoch/std_loss': std_loss,
+                    'epoch/min_loss': min_loss,
+                    'epoch/max_loss': max_loss,
+                    'epoch/num': epoch + 1,
+                    'epoch/loss_scale': trainer.loss_scaler.scale if trainer.loss_scaler else 1,
+                }, step=global_step)
         else:
             logger.info(f"Epoch {epoch + 1} complete. No valid losses recorded.")
         
