@@ -354,12 +354,28 @@ def main():
             if not np.isnan(result['loss']):
                 epoch_losses.append(result['loss'])
             
-            # Update progress bar - show both actual and effective batch
+            # Format values for display
+            loss_val = f"{result['loss']:.4f}" if not np.isnan(result['loss']) else "NaN"
+            
+            # Only show grad_norm when it's actually computed (not 0)
+            grad_norm = result.get('grad_norm', 0)
+            if isinstance(grad_norm, torch.Tensor):
+                grad_norm = grad_norm.item()
+            grad_norm_str = f"{grad_norm:.3f}" if grad_norm > 0 else "-"
+            
+            # Format loss scale
+            loss_scale = result.get('loss_scale', 1.0)
+            loss_scale_str = f"{int(loss_scale)}" if loss_scale >= 1 else f"{loss_scale:.2e}"
+            
+            # Calculate accumulation step (1-indexed for display)
+            acc_current = (accumulation_step - 1) % args.gradient_accumulation_steps + 1
+            
+            # Update progress bar with cleaner display
             progress_bar.set_postfix({
-                'loss': result['loss'],
-                'grad_norm': result.get('grad_norm', 0),
-                'loss_scale': result.get('loss_scale', 1.0),
-                'acc_step': f"{accumulation_step % args.gradient_accumulation_steps}/{args.gradient_accumulation_steps}",
+                'loss': loss_val,
+                'grad': grad_norm_str,
+                'scale': loss_scale_str,
+                'accum': f"{acc_current}/{args.gradient_accumulation_steps}",
             })
             progress_bar.update(1)
             
@@ -394,15 +410,33 @@ def main():
             
             global_step += 1
             
-            # Break for webdataset after reasonable number of steps
-            if args.use_webdataset and batch_idx >= 1000:
-                break
+            # Check for interrupt
+            if checkpoint_manager.interrupted:
+                logger.info("Interrupt detected, saving checkpoint...")
+                checkpoint_manager.save_checkpoint(
+                    glide_model, trainer.optimizer, epoch, global_step, is_interrupted=True
+                )
+                logger.info("Checkpoint saved. Exiting...")
+                return
         
         progress_bar.close()
         
-        # Epoch summary
-        avg_epoch_loss = np.mean(epoch_losses) if epoch_losses else float('nan')
-        logger.info(f"Epoch {epoch + 1} complete. Average loss: {avg_epoch_loss:.4f}")
+        # Enhanced epoch summary
+        if epoch_losses:
+            avg_loss = np.mean(epoch_losses)
+            std_loss = np.std(epoch_losses)
+            min_loss = np.min(epoch_losses)
+            max_loss = np.max(epoch_losses)
+            
+            logger.info(f"\n{'='*60}")
+            logger.info(f"Epoch {epoch + 1}/{args.num_epochs} Summary:")
+            logger.info(f"  Average Loss: {avg_loss:.6f} (±{std_loss:.6f})")
+            logger.info(f"  Min/Max Loss: {min_loss:.6f} / {max_loss:.6f}")
+            logger.info(f"  Total Steps: {global_step:,}")
+            logger.info(f"  Loss Scale: {int(trainer.loss_scaler.scale) if trainer.loss_scaler else 1}")
+            logger.info(f"{'='*60}\n")
+        else:
+            logger.info(f"Epoch {epoch + 1} complete. No valid losses recorded.")
         
         # Log trainer statistics
         trainer._log_statistics()
