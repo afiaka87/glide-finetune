@@ -9,6 +9,10 @@ from torch.utils.data import Dataset
 from torchvision import transforms as T
 from glide_finetune.glide_util import get_tokens_and_mask, get_uncond_tokens_mask
 from glide_finetune.train_util import pil_image_to_norm_tensor
+from glide_finetune.image_processing import (
+    trim_white_padding_pil,
+    preprocess_image_with_padding_removal,
+)
 
 
 def random_resized_crop(image, shape, resize_ratio=1.0):
@@ -59,6 +63,8 @@ class TextImageDataset(Dataset):
         use_captions=False,
         enable_glide_upsample=False,
         upscale_factor=4,
+        trim_white_padding=False,
+        white_thresh=245,
     ):
         super().__init__()
         folder = Path(folder)
@@ -87,6 +93,8 @@ class TextImageDataset(Dataset):
         self.uncond_p = uncond_p
         self.enable_upsample = enable_glide_upsample
         self.upscale_factor = upscale_factor
+        self.trim_white_padding = trim_white_padding
+        self.white_thresh = white_thresh
 
     def __len__(self):
         return len(self.keys)
@@ -131,6 +139,14 @@ class TextImageDataset(Dataset):
             print(f"An exception occurred trying to load file {image_file}.")
             print(f"Skipping index {ind}")
             return self.skip_sample(ind)
+        
+        # Apply white-padding removal if enabled
+        if self.trim_white_padding:
+            original_pil_image = trim_white_padding_pil(
+                original_pil_image, 
+                white_thresh=self.white_thresh
+            )
+        
         if self.enable_upsample: # the base image used should be derived from the cropped high-resolution image.
             upsample_pil_image = random_resized_crop(original_pil_image, (self.side_x * self.upscale_factor, self.side_y * self.upscale_factor), resize_ratio=self.resize_ratio)
             upsample_tensor = pil_image_to_norm_tensor(upsample_pil_image)
