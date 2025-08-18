@@ -1,6 +1,7 @@
 import argparse
 import os
 import random
+from pathlib import Path
 
 import numpy as np
 import torch as th
@@ -22,6 +23,7 @@ from glide_finetune.glide_util import load_model
 from glide_finetune.loader import TextImageDataset
 from glide_finetune.train_util import wandb_setup
 from glide_finetune.wds_loader import glide_wds_loader
+from glide_finetune.wds_loader_optimized import glide_wds_loader_optimized
 from glide_finetune.checkpoint_manager import CheckpointManager
 from glide_finetune.fp16_training import (
     FP16TrainingConfig,
@@ -210,25 +212,53 @@ def run_glide_finetune(
     # Data setup
     print("Loading data...")
     if use_webdataset:
-        dataset = glide_wds_loader(
-            urls=data_dir,
-            caption_key=caption_key,
-            image_key=image_key,
-            enable_image=True,
-            enable_text=use_captions,
-            enable_upsample=enable_upsample,
-            tokenizer=glide_model.tokenizer,
-            ar_lower=0.5,
-            ar_upper=2.0,
-            min_original_height=side_x * upsample_factor,
-            min_original_width=side_y * upsample_factor,
-            upscale_factor=upsample_factor,
-            nsfw_filter=True,
-            similarity_threshold_upper=0.0,
-            similarity_threshold_lower=0.5,
-            words_to_skip=[],
-            dataset_name=wds_dataset_name,  # can be laion, alamy, synthetic.
-        )
+        # Use optimized loader if bloom filter is provided
+        if args.bloom_filter_path and Path(args.bloom_filter_path).exists():
+            print(f"Using optimized loader with bloom filter: {args.bloom_filter_path}")
+            dataset = glide_wds_loader_optimized(
+                urls=data_dir,
+                bloom_filter_path=args.bloom_filter_path,
+                tokenizer=glide_model.tokenizer,
+                base_x=side_x,
+                base_y=side_y,
+                enable_upsample=enable_upsample,
+                upscale_factor=upsample_factor,
+                trim_white_padding=args.trim_white_padding,
+                white_thresh=args.white_thresh,
+                enable_text=use_captions,
+                uncond_p=uncond_p,
+                caption_key=caption_key,
+                image_key=image_key,
+                dataset_name=wds_dataset_name,
+            )
+        else:
+            if args.bloom_filter_path:
+                print(f"Warning: Bloom filter not found at {args.bloom_filter_path}")
+            print("Using standard WebDataset loader with runtime filtering")
+            dataset = glide_wds_loader(
+                urls=data_dir,
+                caption_key=caption_key,
+                image_key=image_key,
+                enable_image=True,
+                enable_text=use_captions,
+                enable_upsample=enable_upsample,
+                tokenizer=glide_model.tokenizer,
+                ar_lower=0.5,
+                ar_upper=2.0,
+                min_original_height=side_x * upsample_factor,
+                min_original_width=side_y * upsample_factor,
+                base_x=side_x,
+                base_y=side_y,
+                uncond_p=uncond_p,
+                upscale_factor=upsample_factor,
+                nsfw_filter=True,
+                similarity_threshold_upper=0.0,
+                similarity_threshold_lower=0.5,
+                words_to_skip=[],
+                dataset_name=wds_dataset_name,  # can be laion, alamy, synthetic.
+                trim_white_padding=args.trim_white_padding,
+                white_thresh=args.white_thresh,
+            )
     else:
         dataset = TextImageDataset(
             folder=data_dir,
@@ -242,6 +272,8 @@ def run_glide_finetune(
             use_captions=use_captions,
             enable_glide_upsample=enable_upsample,
             upscale_factor=upsample_factor,  # TODO: make this a parameter
+            trim_white_padding=args.trim_white_padding,
+            white_thresh=args.white_thresh,
         )
 
     # Data loader setup  
@@ -280,13 +312,6 @@ def run_glide_finetune(
         if global_step > 0:
             # Clean up interrupted files if we successfully resumed
             checkpoint_manager.cleanup_interrupted_files()
-
-    if not freeze_transformer: # if we want to train the transformer, we need to backpropagate through the diffusion model.
-        glide_model.out.requires_grad_(True)
-        glide_model.input_blocks.requires_grad_(True)
-        glide_model.middle_block.requires_grad_(True)
-        glide_model.output_blocks.requires_grad_(True)
-
 
     # Load evaluation prompts from file if provided
     test_prompts = None
@@ -363,6 +388,8 @@ def run_glide_finetune(
             eta=eta,
             use_swinir=use_swinir,
             swinir_model_type=swinir_model_type,
+            freeze_transformer=freeze_transformer,
+            freeze_diffusion=freeze_diffusion,
         )
         
         # Check if training was interrupted
@@ -425,6 +452,10 @@ def parse_args():
     parser.add_argument("--project_name", "-name", type=str, default="glide-finetune")
     parser.add_argument("--activation_checkpointing", "-grad_ckpt", action="store_true")
     parser.add_argument("--use_captions", "-txt", action="store_true")
+    parser.add_argument("--trim_white_padding", "-trim", action="store_true", 
+                        help="Enable white padding removal from images before training")
+    parser.add_argument("--white_thresh", "-white", type=int, default=245,
+                        help="Threshold for white detection (0-255) when trimming white padding")
     parser.add_argument("--epochs", "-epochs", type=int, default=20)
     parser.add_argument(
         "--test_prompt",
@@ -479,6 +510,13 @@ def parse_args():
         type=str,
         default="laion",
         help="Name of the webdataset to use (laion or alamy)",
+    )
+    parser.add_argument(
+        "--bloom_filter_path",
+        "-bloom",
+        type=str,
+        default=None,
+        help="Path to pre-built bloom filter for optimized WebDataset loading",
     )
     parser.add_argument("--seed", "-seed", type=int, default=0, help="Random seed for reproducible training (0=default performance mode)")
     parser.add_argument(
