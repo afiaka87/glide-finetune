@@ -9,6 +9,7 @@ import webdataset as wds
 from glide_finetune.glide_util import (get_tokens_and_mask,
                                        get_uncond_tokens_mask)
 from glide_finetune.train_util import pil_image_to_norm_tensor
+from glide_finetune.image_processing import trim_white_padding_pil
 
 
 def glide_wds_loader(
@@ -35,15 +36,27 @@ def glide_wds_loader(
     words_to_skip=[],
     dataset_name="laion",  # can be laion, alamy, synthetic.
     upscale_factor=4,
+    trim_white_padding=False,
+    white_thresh=245,
 ):
 
     base_image_shape = (base_x, base_y)
     upsample_image_shape = (int(base_x * upscale_factor), int(base_y * upscale_factor))
+    # Custom handler that warns about duplicates but continues
+    def handle_duplicates(exn):
+        """Handle duplicate keys by logging and continuing."""
+        if "duplicate" in str(exn):
+            # Log the duplicate but continue processing
+            print(f"Warning: Skipping duplicate file in tar: {exn}")
+            return True  # Continue processing
+        # For other exceptions, reraise
+        return False
+    
     dataset = wds.WebDataset(
         urls,
         cache_dir=cache_path,
         cache_size=10**10,
-        handler=wds.handlers.reraise_exception,
+        handler=handle_duplicates,  # Use custom handler for duplicates
     )
 
     def filter_dataset_laion(item):
@@ -152,15 +165,24 @@ def glide_wds_loader(
 
         image_data = item[image_key]
         original_pil_image = PIL.Image.open(io.BytesIO(image_data))
+        
+        # Apply white-padding removal if enabled
+        if trim_white_padding:
+            original_pil_image = trim_white_padding_pil(
+                original_pil_image.convert("RGB"),
+                white_thresh=white_thresh
+            )
+        else:
+            original_pil_image = original_pil_image.convert("RGB")
 
-        base_pil_image = original_pil_image.resize(base_image_shape, resample=PIL.Image.BICUBIC).convert("RGB")
+        base_pil_image = original_pil_image.resize(base_image_shape, resample=PIL.Image.BICUBIC)
         base_tensor = pil_image_to_norm_tensor(base_pil_image)
 
         # The upsample model needs both the base and the upsample images e.g. 64x64 and 256x256.
         if enable_upsample:
             upsample_pil_image = original_pil_image.resize(
                 upsample_image_shape
-            ).convert("RGB")
+            )
             upsample_tensor = pil_image_to_norm_tensor(upsample_pil_image)
             return (
                 tokens.clone(),
