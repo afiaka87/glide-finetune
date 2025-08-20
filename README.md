@@ -150,6 +150,109 @@ uv run python train_glide.py \
   --learning_rate 1e-04
 ```
 
+### Selective Component Freezing
+
+Fine-tune specific parts of the model while keeping others frozen for efficient transfer learning and reduced memory usage. Two mutually exclusive modes are supported:
+
+**Freeze Transformer Mode (`--freeze_transformer`)**
+- **Freezes**: Text encoder components (transformer, embeddings, projections) - 76.7M params (19.9%)
+- **Trains**: All UNet components (input_blocks, middle_block, output_blocks, time_embed, out) - 308.3M params (80.1%)
+- **Use Case**: Maintain text understanding while adapting image generation style
+
+```sh
+# Train only the UNet while keeping text encoder frozen
+uv run python train_glide.py \
+  --data_dir '/path/to/data' \
+  --freeze_transformer \
+  --batch_size 8 \
+  --learning_rate 5e-5
+```
+
+**Freeze Diffusion Mode (`--freeze_diffusion`)**
+- **Freezes**: All UNet/diffusion components - 308.3M params (80.1%)
+- **Trains**: Text encoder components - 76.7M params (19.9%)
+- **Use Case**: Adapt text understanding for specific domains while keeping image generation quality
+
+```sh
+# Train only the text encoder while keeping UNet frozen
+uv run python train_glide.py \
+  --data_dir '/path/to/data' \
+  --freeze_diffusion \
+  --batch_size 16 \
+  --learning_rate 1e-4
+```
+
+**Important Notes:**
+- The two freeze modes are mutually exclusive - you cannot freeze both components
+- Frozen components are set to eval mode (disables dropout, batch norm updates)
+- The optimizer automatically excludes frozen parameters
+- Both modes work with FP16 training and gradient accumulation
+- Memory savings: ~15-20% with `--freeze_transformer`, ~30-40% with `--freeze_diffusion`
+
+**Combining with FP16:**
+```sh
+# Efficient training with frozen transformer and FP16
+uv run python train_glide_fp16.py \
+  --data_dir '/path/to/data' \
+  --freeze_transformer \
+  --use_fp16 \
+  --fp16_mode auto \
+  --batch_size 12 \
+  --gradient_accumulation_steps 2
+```
+
+### Efficient Training Resumption (WebDataset)
+
+Zero-overhead training resumption for WebDataset that directly jumps to the correct tar file without any iteration penalty. When training is interrupted, you can resume exactly where you left off without wasting compute on already-processed data.
+
+**Direct Tar File Selection (`--resume_from_tar`)**
+
+Manually specify which tar file to start from (0-based index):
+
+```sh
+# Start directly from tar file #50 (skips tar 0-49 completely)
+uv run python train_glide_fp16.py \
+  --data_dir "/path/to/data-*.tar" \
+  --resume_from_tar 50 \
+  --batch_size 4 \
+  --gradient_accumulation_steps 8
+```
+
+**Automatic Position Calculation (`--resume_from_step`)**
+
+Resume from a specific global training step - automatically calculates the correct tar file:
+
+```sh
+# Resume from step 5000 - calculates and jumps to the right tar
+uv run python train_glide_fp16.py \
+  --data_dir "/path/to/data-*.tar" \
+  --resume_from_step 5000 \
+  --wds_samples_per_tar 10000 \  # Specify samples per tar for calculation
+  --batch_size 4 \
+  --gradient_accumulation_steps 8
+```
+
+**How It Works:**
+- WebDataset processes tar files in the order they're provided
+- The script simply reorders the tar list to start from your desired position
+- Example: With 100 tar files, `--resume_from_tar 50` reorders to: `[tar_50, tar_51, ..., tar_99, tar_0, tar_1, ..., tar_49]`
+- **Result**: Zero iteration overhead - starts immediately from the correct position
+
+**Calculation Example:**
+- Global step: 5000
+- Batch size: 4
+- Gradient accumulation: 8
+- Samples per tar: 10,000
+- Total samples to skip: 5000 × 4 × 8 = 160,000
+- Tar to start from: 160,000 ÷ 10,000 = tar #16
+- The training starts directly from tar #16, no iteration through tars 0-15
+
+**Performance Impact:**
+- ✅ **Zero overhead** - no iteration through skipped tars
+- ✅ **Instant resumption** - starts immediately at the correct position
+- ✅ **No wasted I/O** - doesn't open or read skipped tar files
+- ✅ **Simple and robust** - just reorders the file list
+
 ### CLIP Evaluation
 
 Automated CLIP score evaluation for measuring text-image alignment quality. Track how well your generated images match their text descriptions using the same metrics as DALL-E and Stable Diffusion.
@@ -231,6 +334,7 @@ uv run python scripts/fp16/training_monitor_dashboard.py
 - **NaN in Training**: Enable NaN recovery, check learning rate
 - **Poor Convergence**: Use master weights, switch to conservative mode
 - **Out of Memory**: Use aggressive mode, enable activation checkpointing
+
 
 
 ## Full Usage
