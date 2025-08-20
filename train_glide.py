@@ -1,4 +1,5 @@
 import argparse
+import glob
 import os
 import random
 from pathlib import Path
@@ -212,11 +213,23 @@ def run_glide_finetune(
     # Data setup
     print("Loading data...")
     if use_webdataset:
+        # Expand glob patterns for WebDataset
+        if '*' in data_dir or '?' in data_dir or '[' in data_dir:
+            # data_dir contains glob patterns, expand them
+            tar_files = sorted(glob.glob(data_dir))
+            if not tar_files:
+                raise ValueError(f"No files found matching pattern: {data_dir}")
+            print(f"Found {len(tar_files)} tar files matching pattern: {data_dir}")
+            urls = tar_files
+        else:
+            # Single file or already a list
+            urls = data_dir
+        
         # Use optimized loader if bloom filter is provided
         if args.bloom_filter_path and Path(args.bloom_filter_path).exists():
             print(f"Using optimized loader with bloom filter: {args.bloom_filter_path}")
             dataset = glide_wds_loader_optimized(
-                urls=data_dir,
+                urls=urls,
                 bloom_filter_path=args.bloom_filter_path,
                 tokenizer=glide_model.tokenizer,
                 base_x=side_x,
@@ -236,7 +249,7 @@ def run_glide_finetune(
                 print(f"Warning: Bloom filter not found at {args.bloom_filter_path}")
             print("Using standard WebDataset loader with runtime filtering")
             dataset = glide_wds_loader(
-                urls=data_dir,
+                urls=urls,
                 caption_key=caption_key,
                 image_key=image_key,
                 enable_image=True,
@@ -290,11 +303,17 @@ def run_glide_finetune(
         generator=dataloader_generator if not use_webdataset else None,
     )
 
-    # Optimizer setup
+    # Optimizer setup with proper frozen parameter exclusion
+    from glide_finetune.freeze_utils import build_optimizer_params
+    
+    param_groups = build_optimizer_params(
+        glide_model,
+        weight_decay=adam_weight_decay
+    )
+    
     optimizer = th.optim.AdamW(
-        [x for x in glide_model.parameters() if x.requires_grad],
+        param_groups,
         lr=learning_rate,
-        weight_decay=adam_weight_decay,
     )
     
     # Setup GradScaler for fp16 training
@@ -584,6 +603,13 @@ if __name__ == "__main__":
     th.manual_seed(args.seed)
     np.random.seed(args.seed)
     th.backends.cudnn.benchmark = args.cudnn_benchmark
+    
+    # Validate freeze arguments - they are mutually exclusive
+    if args.freeze_transformer and args.freeze_diffusion:
+        raise ValueError(
+            "Error: --freeze_transformer and --freeze_diffusion are mutually exclusive. "
+            "Choose one: freeze transformer to train UNet, or freeze diffusion to train text encoder."
+        )
 
     for arg in vars(args):
         print(f"--{arg} {getattr(args, arg)}")

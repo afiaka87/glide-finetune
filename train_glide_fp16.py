@@ -5,6 +5,7 @@ Production-ready mixed precision training with comprehensive stability features.
 """
 
 import argparse
+import glob
 import os
 import sys
 import random
@@ -15,6 +16,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from tqdm import trange
+import PIL.Image
 
 # Setup paths
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'glide-text2im'))
@@ -22,8 +24,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'glide-text2im'))
 from glide_finetune.glide_util import load_model
 from glide_finetune.glide_util import sample
 from glide_finetune.loader import TextImageDataset
-from glide_finetune.train_util import wandb_setup
+from glide_finetune.train_util import wandb_setup, pred_to_pil
+from glide_finetune.glide_finetune import create_image_grid
 from glide_finetune.wds_loader import glide_wds_loader
+from glide_finetune.wds_resumable_loader import glide_wds_resumable_loader
 from glide_finetune.checkpoint_manager import CheckpointManager
 from glide_finetune.fp16_training import (
     FP16TrainingConfig,
@@ -78,6 +82,8 @@ def train_step_fp16(
     trainer: FP16TrainingStep,
     device: torch.device,
     uncond_p: float = 0.0,
+    freeze_transformer: bool = False,
+    freeze_diffusion: bool = False,
 ) -> dict:
     """
     Perform a single FP16 training step.
@@ -118,15 +124,41 @@ def train_step_fp16(
         # Add noise to images (in FP32)
         noise = torch.randn_like(images, device=device)
         x_t = diffusion.q_sample(images, timesteps, noise=noise).to(device)
-        
-        # Get model prediction
         _, C = x_t.shape[:2]
-        model_output = model(
-            x_t,
-            timesteps,
-            tokens=tokens if tokens is not None else None,
-            mask=masks if masks is not None else None,
-        )
+        
+        # Handle freeze-aware forward pass
+        if freeze_transformer and hasattr(model, 'xf_width') and model.xf_width:
+            # When transformer is frozen, run text encoding under no_grad
+            with torch.no_grad():
+                text_outputs = model.get_text_emb(tokens, masks)
+                xf_proj = text_outputs["xf_proj"].detach()
+                xf_out = text_outputs["xf_out"].detach() if text_outputs["xf_out"] is not None else None
+                
+                # Build time embeddings
+                from glide_text2im.nn import timestep_embedding
+                emb = model.time_embed(timestep_embedding(timesteps, model.model_channels))
+                emb = emb + xf_proj.to(emb)
+                
+                # Run UNet with detached text embeddings
+                h = x_t.type(model.dtype)
+                hs = []
+                for module in model.input_blocks:
+                    h = module(h, emb, xf_out)
+                    hs.append(h)
+                h = model.middle_block(h, emb, xf_out)
+                for module in model.output_blocks:
+                    h = torch.cat([h, hs.pop()], dim=1)
+                    h = module(h, emb, xf_out)
+                h = h.type(x_t.dtype)
+                model_output = model.out(h)
+        else:
+            # Normal forward pass (for freeze_diffusion or no freezing)
+            model_output = model(
+                x_t,
+                timesteps,
+                tokens=tokens if tokens is not None else None,
+                mask=masks if masks is not None else None,
+            )
         
         # Split output and compute loss
         epsilon, _ = torch.split(model_output, C, dim=1)
@@ -145,9 +177,17 @@ def main():
     # Data arguments
     parser.add_argument("--data_dir", type=str, default="./data")
     parser.add_argument("--batch_size", type=int, default=1)
+    parser.add_argument("--side_x", type=int, default=64, 
+                       help="Width of training images (before upsampling if applicable)")
+    parser.add_argument("--side_y", type=int, default=64,
+                       help="Height of training images (before upsampling if applicable)")
     
     # Model arguments
     parser.add_argument("--resume_ckpt", type=str, default="")
+    parser.add_argument("--resume_from_step", type=int, default=0, 
+                        help="Resume from a specific global step (skip dataset samples)")
+    parser.add_argument("--resume_from_tar", type=int, default=-1,
+                        help="Resume from a specific tar file index (0-based, -1 to disable)")
     parser.add_argument("--model_type", type=str, default="base", choices=["base", "upsample"])
     parser.add_argument("--uncond_p", type=float, default=0.2)
     parser.add_argument("--freeze_transformer", action="store_true")
@@ -183,14 +223,41 @@ def main():
     parser.add_argument("--wds_dataset_name", type=str, default="laion")
     parser.add_argument("--wds_image_key", type=str, default="jpg")
     parser.add_argument("--wds_caption_key", type=str, default="txt")
+    parser.add_argument("--wds_samples_per_tar", type=int, default=10000,
+                       help="Estimated samples per tar file for efficient resumption")
     
     # Other arguments
     parser.add_argument("--activation_checkpointing", action="store_true")
     parser.add_argument("--log_level", type=str, default="INFO")
     parser.add_argument("--test_prompt", type=str, 
                        default="a beautiful sunset over mountains")
+    parser.add_argument("--eval_prompt_file", type=str, default=None,
+                       help="Path to file containing evaluation prompts (one per line)")
+    parser.add_argument("--test_guidance_scale", type=float, default=3.0,
+                       help="Guidance scale for test image generation")
+    parser.add_argument("--timestep_respacing", type=int, default=100,
+                       help="Number of timesteps for test sampling")
+    parser.add_argument("--sampler", type=str, default="plms",
+                       choices=["plms", "ddim", "euler", "euler_a", "dpm++"],
+                       help="Sampling method to use for image generation")
+    parser.add_argument("--num_steps", type=int, default=None,
+                       help="Override number of sampling steps (if None, uses timestep_respacing)")
+    parser.add_argument("--eta", type=float, default=0.0,
+                       help="Eta parameter for DDIM sampler (0.0 for deterministic)")
+    parser.add_argument("--use_swinir", action="store_true",
+                       help="Use SwinIR for upsampling generated images")
+    parser.add_argument("--swinir_model_type", type=str, default="classical_sr_x4",
+                       choices=["classical_sr_x4", "compressed_sr_x4", "real_sr_x4", "lightweight_sr_x2"],
+                       help="SwinIR model type (x2 for 64->128, x4 for 64->256)")
     
     args = parser.parse_args()
+    
+    # Validate freeze arguments - they are mutually exclusive
+    if args.freeze_transformer and args.freeze_diffusion:
+        raise ValueError(
+            "Error: --freeze_transformer and --freeze_diffusion are mutually exclusive. "
+            "Choose one: freeze transformer to train UNet, or freeze diffusion to train text encoder."
+        )
     
     # Setup logging
     logger = setup_logging(args.log_level)
@@ -231,11 +298,26 @@ def main():
     logger.info(f"Total parameters: {total_params:,}")
     logger.info(f"Trainable parameters: {trainable_params:,}")
     
-    # Setup optimizer
+    # Setup optimizer with proper frozen parameter exclusion
+    from glide_finetune.freeze_utils import build_optimizer_params
+    
+    param_groups = build_optimizer_params(
+        glide_model,
+        weight_decay=args.adam_weight_decay
+    )
+    
+    # Check if we have any trainable parameters
+    if not param_groups:
+        raise ValueError(
+            f"No trainable parameters found! "
+            f"freeze_transformer={args.freeze_transformer}, "
+            f"freeze_diffusion={args.freeze_diffusion}. "
+            f"Total params: {total_params:,}, Trainable: {trainable_params:,}"
+        )
+    
     base_optimizer = torch.optim.AdamW(
-        glide_model.parameters(),
+        param_groups,
         lr=args.learning_rate,
-        weight_decay=args.adam_weight_decay,
         betas=(0.9, 0.999),
         eps=1e-8,
     )
@@ -259,8 +341,42 @@ def main():
     # Setup data loader
     logger.info("Setting up data loader...")
     if args.use_webdataset:
+        # Expand glob patterns for WebDataset
+        if '*' in args.data_dir or '?' in args.data_dir or '[' in args.data_dir:
+            # data_dir contains glob patterns, expand them
+            tar_files = sorted(glob.glob(args.data_dir))
+            if not tar_files:
+                raise ValueError(f"No files found matching pattern: {args.data_dir}")
+            logger.info(f"Found {len(tar_files)} tar files matching pattern: {args.data_dir}")
+            
+            # DIRECT TAR FILE SELECTION - NO ITERATION, NO OVERHEAD
+            if args.resume_from_tar >= 0:
+                # Manual tar file selection
+                tar_idx = args.resume_from_tar % len(tar_files)
+                # Reorder tar files to start from the selected one
+                urls = tar_files[tar_idx:] + tar_files[:tar_idx]
+                logger.info(f"✅ Starting directly from tar #{tar_idx}: {Path(urls[0]).name}")
+                logger.info(f"   NO iteration through previous tars - jumping straight there!")
+            elif args.resume_from_step > 0:
+                # Calculate tar index from global step
+                samples_per_tar = args.wds_samples_per_tar
+                total_samples = args.resume_from_step * args.batch_size * args.gradient_accumulation_steps
+                tar_idx = (total_samples // samples_per_tar) % len(tar_files)
+                
+                # Reorder tar files to start from the calculated one
+                urls = tar_files[tar_idx:] + tar_files[:tar_idx]
+                logger.info(f"✅ Calculated tar #{tar_idx} from step {args.resume_from_step}")
+                logger.info(f"   Starting directly from: {Path(urls[0]).name}")
+                logger.info(f"   NO iteration through previous tars!")
+            else:
+                urls = tar_files
+        else:
+            # Single file or already a list
+            urls = args.data_dir
+        
+        # Use STANDARD loader - the tar reordering above handles resumption perfectly
         dataset = glide_wds_loader(
-            urls=args.data_dir,
+            urls=urls,
             dataset_name=args.wds_dataset_name,
             image_key=args.wds_image_key,
             caption_key=args.wds_caption_key,
@@ -278,12 +394,45 @@ def main():
             pin_memory=True,
         )
         # Count number of tar files to estimate dataset size
-        import glob
-        tar_files = glob.glob(args.data_dir)
-        num_tars = len(tar_files)
-        data_len = num_tars * 10000  # 10k images per tar estimate
-        logger.info(f"Found {num_tars} tar files, estimated {data_len:,} total images")
+        # (urls already contains the expanded list if glob was used)
+        if isinstance(urls, list):
+            num_tars = len(urls)
+        elif "{" in args.data_dir and "}" in args.data_dir:
+            # Extract the pattern for brace expansion
+            # e.g., "/path/data-0000{00..68}.tar" -> expand to all files
+            base_pattern = args.data_dir
+            # Try to expand using bash-style brace expansion
+            import subprocess
+            try:
+                result = subprocess.run(
+                    f"echo {args.data_dir}",
+                    shell=True,
+                    capture_output=True,
+                    text=True
+                )
+                tar_files = result.stdout.strip().split()
+                num_tars = len(tar_files)
+            except:
+                # Fallback: assume it's the synthetic dataset with 69 tars
+                logger.warning("Could not expand tar pattern, assuming synthetic dataset with 69 tars")
+                num_tars = 69
+        else:
+            # Regular glob pattern
+            tar_files = glob.glob(args.data_dir)
+            num_tars = len(tar_files)
+        
+        # Set a reasonable default if no files found
+        if num_tars == 0:
+            logger.warning(f"No tar files found with pattern: {args.data_dir}")
+            logger.warning("Using default of 1000 samples for epoch length")
+            data_len = 1000
+        else:
+            data_len = num_tars * 10000  # 10k images per tar estimate
+            logger.info(f"Found {num_tars} tar files, estimated {data_len:,} total images")
     else:
+        # Calculate samples to skip based on resume step
+        samples_to_skip = args.resume_from_step * args.batch_size * args.gradient_accumulation_steps
+        
         dataset = TextImageDataset(
             args.data_dir,
             side_x=64,
@@ -291,6 +440,7 @@ def main():
             resize_ratio=1.0,
             use_captions=True,
             uncond_p=args.uncond_p,
+            skip_samples=samples_to_skip,
         )
         dataloader = torch.utils.data.DataLoader(
             dataset,
@@ -306,6 +456,55 @@ def main():
         checkpoints_dir=args.checkpoints_dir,
         save_frequency=args.save_frequency,
     )
+    
+    # Load evaluation prompts from file if provided
+    test_prompts = None
+    grid_size = None
+    if args.eval_prompt_file:
+        if os.path.exists(args.eval_prompt_file):
+            with open(args.eval_prompt_file, 'r') as f:
+                lines = [line.strip() for line in f.readlines() if line.strip()]
+            
+            # Support power-of-2 grid sizes
+            valid_sizes = [1, 2, 4, 8, 16, 32, 64, 128, 256]
+            num_prompts = len(lines)
+            
+            # Find appropriate grid size
+            target_size = 8  # Default
+            for size in valid_sizes:
+                if num_prompts <= size:
+                    target_size = size
+                    break
+            else:
+                # More than 256 prompts, truncate
+                target_size = 256
+                logger.warning(f"{num_prompts} prompts found, truncating to {target_size}")
+                lines = lines[:target_size]
+                num_prompts = target_size
+            
+            # Pad if necessary
+            if num_prompts < target_size:
+                logger.info(f"{num_prompts} prompts found, padding to {target_size} for grid")
+                while len(lines) < target_size:
+                    lines.append(lines[-1] if lines else args.test_prompt)
+            
+            test_prompts = lines[:target_size]
+            grid_size = target_size
+            logger.info(f"Loaded {len(test_prompts)} evaluation prompts")
+        else:
+            logger.warning(f"Eval prompt file {args.eval_prompt_file} not found")
+    
+    # Default to single test prompt if no file provided
+    if test_prompts is None:
+        test_prompts = [args.test_prompt]
+        grid_size = 1
+    
+    # Calculate grid dimensions
+    grid_configs = {
+        1: (1, 1), 2: (1, 2), 4: (2, 2), 8: (2, 4),
+        16: (4, 4), 32: (4, 8), 64: (8, 8), 128: (8, 16), 256: (16, 16)
+    }
+    grid_rows, grid_cols = grid_configs.get(grid_size, (1, 1))
     
     # Setup wandb with comprehensive config tracking
     try:
@@ -355,8 +554,16 @@ def main():
     
     # Training loop
     logger.info("Starting training...")
-    global_step = 0
+    
+    # Determine starting global step for resumption
+    if args.resume_from_step > 0:
+        global_step = args.resume_from_step
+        logger.info(f"📊 Resuming from global step {global_step}")
+    else:
+        global_step = 0
+    
     accumulation_step = 0
+    last_grad_norm = 0.0  # Keep track of last gradient norm to avoid flicker
     
     for epoch in range(args.num_epochs):
         logger.info(f"\nEpoch {epoch + 1}/{args.num_epochs}")
@@ -376,6 +583,8 @@ def main():
                 trainer=trainer,
                 device=device,
                 uncond_p=args.uncond_p,
+                freeze_transformer=args.freeze_transformer,
+                freeze_diffusion=args.freeze_diffusion,
             )
             
             accumulation_step += 1
@@ -390,7 +599,13 @@ def main():
             grad_norm = result.get('grad_norm', 0)
             if isinstance(grad_norm, torch.Tensor):
                 grad_norm = grad_norm.item()
-            grad_norm_str = f"{grad_norm:.3f}" if grad_norm > 0 else "-"
+            
+            # Update last_grad_norm only when we have a real gradient update
+            if grad_norm > 0:
+                last_grad_norm = grad_norm
+            
+            # Always show a value (use last known value to avoid flicker)
+            grad_norm_str = f"{last_grad_norm:.3f}"
             
             # Format loss scale
             loss_scale = result.get('loss_scale', 1.0)
@@ -446,20 +661,76 @@ def main():
             # Save checkpoint
             if global_step % args.save_frequency == 0 and global_step > 0:
                 logger.info(f"Saving checkpoint at step {global_step}...")
-                checkpoint_data = {
-                    'model': glide_model.state_dict(),
-                    'optimizer': trainer.optimizer.state_dict(),
-                    'epoch': epoch,
-                    'global_step': global_step,
-                    'trainer_state': trainer.state_dict(),
-                    'fp16_config': fp16_config.__dict__,
-                }
-                
                 checkpoint_manager.save_checkpoint(
-                    checkpoint_data,
-                    step=global_step,
-                    metrics={'loss': np.mean(epoch_losses[-100:]) if epoch_losses else 0},
+                    glide_model,
+                    trainer.optimizer,
+                    epoch,
+                    global_step,
+                    is_interrupted=False
                 )
+            
+            # Generate sample images
+            if global_step % args.sample_frequency == 0 and global_step > 0:
+                upscale_info = f" with {args.swinir_model_type} upscaling" if args.use_swinir else ""
+                logger.info(f"🎨 Generating {len(test_prompts)} sample images at step {global_step} using {args.sampler} sampler{upscale_info}...")
+                glide_model.eval()
+                
+                sample_images = []
+                wandb_gallery_images = []
+                output_dir = Path("./outputs")
+                output_dir.mkdir(exist_ok=True)
+                
+                with torch.no_grad():
+                    for prompt_idx, test_prompt in enumerate(test_prompts):
+                        # Generate sample
+                        samples = sample(
+                            glide_model=glide_model,
+                            glide_options=glide_options,
+                            side_x=args.side_x,
+                            side_y=args.side_y,
+                            prompt=test_prompt,
+                            batch_size=1,
+                            guidance_scale=args.test_guidance_scale,
+                            device=device,
+                            prediction_respacing=str(args.timestep_respacing) if args.num_steps is None else str(args.num_steps),
+                            sampler=args.sampler,
+                            num_steps=args.num_steps,
+                            eta=args.eta,
+                            use_swinir=args.use_swinir,
+                            swinir_model_type=args.swinir_model_type,
+                        )
+                        
+                        # Convert to PIL image
+                        sample_img = pred_to_pil(samples)
+                        sample_images.append(sample_img)
+                        
+                        # Save individual sample
+                        sample_path = output_dir / f"step{global_step:06d}_prompt{prompt_idx:03d}.png"
+                        sample_img.save(sample_path)
+                        
+                        # Add to gallery with caption
+                        if wandb_run is not None:
+                            wandb_gallery_images.append(wandb.Image(sample_img, caption=test_prompt))
+                
+                # Create and save grid
+                if len(sample_images) > 1:
+                    grid_img = create_image_grid(sample_images, rows=grid_rows, cols=grid_cols)
+                    grid_path = output_dir / f"step{global_step:06d}_grid.png"
+                    grid_img.save(grid_path)
+                    logger.info(f"💾 Saved {len(sample_images)} samples and grid to {output_dir}")
+                else:
+                    grid_img = sample_images[0] if sample_images else None
+                    logger.info(f"💾 Saved sample to {output_dir}")
+                
+                # Log to wandb
+                if wandb_run is not None and grid_img is not None:
+                    wandb_log = {
+                        "samples/grid": wandb.Image(grid_img, caption=f"{grid_rows}x{grid_cols} Grid"),
+                        "samples/gallery": wandb_gallery_images,
+                    }
+                    wandb_run.log(wandb_log, step=global_step)
+                
+                glide_model.train()
             
             global_step += 1
             
@@ -508,9 +779,10 @@ def main():
     logger.info("="*80)
     logger.info("Training complete!")
     logger.info(f"  Total steps: {global_step}")
-    logger.info(f"  Final loss: {avg_epoch_loss:.4f}")
+    if 'avg_loss' in locals() and avg_loss is not None:
+        logger.info(f"  Final loss: {avg_loss:.4f}")
     
-    if args.use_fp16:
+    if args.use_fp16 and trainer.stats['total_steps'] > 0:
         success_rate = trainer.stats['successful_steps'] / trainer.stats['total_steps'] * 100
         logger.info(f"  FP16 success rate: {success_rate:.1f}%")
         logger.info(f"  NaN recoveries: {trainer.stats['nan_recoveries']}")
