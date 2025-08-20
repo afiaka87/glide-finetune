@@ -68,4 +68,4 @@ def load_checkpoint(
     path = fetch_file_cached(
         MODEL_PATHS[checkpoint_name], progress=progress, cache_dir=cache_dir, chunk_size=chunk_size
     )
-    return th.load(path, map_location=device)
+    return th.load(path, map_location=device, weights_only=False)

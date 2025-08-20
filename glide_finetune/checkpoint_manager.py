@@ -181,7 +181,7 @@ class CheckpointManager:
                 
                 # Load optimizer if available
                 if optimizer and optimizer_file.exists():
-                    optimizer.load_state_dict(th.load(optimizer_file, map_location="cpu"))
+                    optimizer.load_state_dict(th.load(optimizer_file, map_location="cpu", weights_only=False))
                     print("   ✓ Restored optimizer state")
             else:
                 # Look for latest regular checkpoint
@@ -217,7 +217,7 @@ class CheckpointManager:
         
         # Load model weights
         if checkpoint_file and checkpoint_file.exists():
-            state_dict = th.load(checkpoint_file, map_location="cpu")
+            state_dict = th.load(checkpoint_file, map_location="cpu", weights_only=False)
             model.load_state_dict(state_dict)
             print(f"✓ Loaded model weights from {checkpoint_file}")
         
