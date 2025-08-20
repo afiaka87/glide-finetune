@@ -57,6 +57,7 @@ def glide_wds_loader(
         cache_dir=cache_path,
         cache_size=10**10,
         handler=handle_duplicates,  # Use custom handler for duplicates
+        shardshuffle=False,  # Disable shard shuffling for consistent ordering
     )
 
     def filter_dataset_laion(item):
@@ -195,4 +196,5 @@ def glide_wds_loader(
     transformed_dataset = filtered_dataset.map(
         preprocess_dataset, handler=wds.handlers.reraise_exception
     )
+    
     return transformed_dataset
