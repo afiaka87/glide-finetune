@@ -65,6 +65,7 @@ class TextImageDataset(Dataset):
         upscale_factor=4,
         trim_white_padding=False,
         white_thresh=245,
+        skip_samples=0,  # Number of samples to skip for resumption
     ):
         super().__init__()
         folder = Path(folder)
@@ -95,6 +96,14 @@ class TextImageDataset(Dataset):
         self.upscale_factor = upscale_factor
         self.trim_white_padding = trim_white_padding
         self.white_thresh = white_thresh
+        
+        # Handle dataset resumption by rotating keys
+        self.skip_samples = skip_samples
+        if skip_samples > 0:
+            # Rotate the keys list to start from the skip position
+            skip_idx = skip_samples % len(self.keys)
+            self.keys = self.keys[skip_idx:] + self.keys[:skip_idx]
+            print(f"📊 Rotated dataset to skip {skip_samples} samples (starting at index {skip_idx})")
 
     def __len__(self):
         return len(self.keys)
