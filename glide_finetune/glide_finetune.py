@@ -13,6 +13,7 @@ from wandb import wandb
 
 from glide_finetune import glide_util, train_util
 from glide_finetune.metrics_tracker import MetricsTracker, print_model_info
+from glide_finetune.text_encoder_cache import TextEncoderCache, cached_text_encoder_forward
 
 # Midjourney-style test prompts for evaluation
 DEFAULT_TEST_PROMPTS = [
@@ -116,6 +117,92 @@ def upsample_train_step(
     return th.nn.functional.mse_loss(epsilon, noise.to(device).detach())
 
 
+def base_train_step_freeze_aware(
+    glide_model: Text2ImUNet,
+    glide_diffusion: SpacedDiffusion,
+    batch: Tuple[th.Tensor, th.Tensor, th.Tensor],
+    device: str,
+    freeze_transformer: bool = False,
+    freeze_diffusion: bool = False,
+    text_encoder_cache: TextEncoderCache = None,
+):
+    """
+    Perform a single training step with freeze-aware handling.
+    
+    When freeze_transformer=True:
+        - Text encoder runs under no_grad and outputs are detached
+        - Only UNet parameters receive gradients
+        
+    When freeze_diffusion=True:
+        - Text encoder runs normally with gradients
+        - Gradients flow through frozen UNet to text encoder
+        
+    Args:
+        glide_model: The model to train.
+        glide_diffusion: The diffusion to use.
+        batch: A tuple of (tokens, masks, reals).
+        device: The device to use.
+        freeze_transformer: Whether transformer is frozen.
+        freeze_diffusion: Whether diffusion is frozen.
+    Returns:
+        The loss.
+    """
+    tokens, masks, reals = [x.to(device) for x in batch]
+    timesteps = th.randint(
+        0, len(glide_diffusion.betas) - 1, (reals.shape[0],), device=device
+    )
+    noise = th.randn_like(reals, device=device)
+    x_t = glide_diffusion.q_sample(reals, timesteps, noise=noise).to(device)
+    _, C = x_t.shape[:2]
+    
+    if freeze_transformer:
+        # When transformer is frozen, run text encoding under no_grad
+        # Use cache if available for better performance
+        if hasattr(glide_model, 'xf_width') and glide_model.xf_width:
+            if text_encoder_cache is not None:
+                # Try to get from cache first
+                text_outputs = cached_text_encoder_forward(
+                    glide_model, tokens, masks, text_encoder_cache
+                )
+                xf_proj = text_outputs["xf_proj"]
+                xf_out = text_outputs["xf_out"]
+            else:
+                # No cache, compute normally
+                with th.no_grad():
+                    text_outputs = glide_model.get_text_emb(tokens, masks)
+                    xf_proj = text_outputs["xf_proj"].detach()
+                    xf_out = text_outputs["xf_out"].detach() if text_outputs["xf_out"] is not None else None
+            
+            # Build time embeddings and combine with text
+            from glide_text2im.nn import timestep_embedding
+            emb = glide_model.time_embed(timestep_embedding(timesteps, glide_model.model_channels))
+            emb = emb + xf_proj.to(emb)
+            
+            # Run UNet with detached text embeddings
+            h = x_t.type(glide_model.dtype)
+            hs = []
+            for module in glide_model.input_blocks:
+                h = module(h, emb, xf_out)
+                hs.append(h)
+            h = glide_model.middle_block(h, emb, xf_out)
+            for module in glide_model.output_blocks:
+                h = th.cat([h, hs.pop()], dim=1)
+                h = module(h, emb, xf_out)
+            h = h.type(x_t.dtype)
+            model_output = glide_model.out(h)
+        else:
+            # No text encoder, just run normally
+            model_output = glide_model(x_t, timesteps, tokens=tokens, mask=masks)
+    else:
+        # Normal forward pass (for freeze_diffusion or no freezing)
+        # Gradients will flow through everything if freeze_diffusion=False,
+        # or will be stopped at UNet layers if freeze_diffusion=True
+        model_output = glide_model(x_t, timesteps, tokens=tokens, mask=masks)
+    
+    epsilon, _ = th.split(model_output, C, dim=1)
+    return th.nn.functional.mse_loss(epsilon, noise.to(device).detach())
+
+
 def run_glide_finetune_epoch(
     glide_model: Text2ImUNet,
     glide_diffusion: SpacedDiffusion,
@@ -148,9 +235,30 @@ def run_glide_finetune_epoch(
     checkpoint_manager=None,
     use_swinir: bool = False,
     swinir_model_type: str = "classical_sr_x4",
+    freeze_transformer: bool = False,
+    freeze_diffusion: bool = False,
+    use_text_encoder_cache: bool = True,  # Enable caching for frozen transformer
 ):
-    if train_upsample: train_step = upsample_train_step
-    else: train_step = base_train_step
+    # Create text encoder cache if using frozen transformer
+    text_encoder_cache = None
+    if freeze_transformer and use_text_encoder_cache:
+        text_encoder_cache = TextEncoderCache(max_cache_size=1000, device=device)
+        print("Created text encoder cache for frozen transformer mode")
+    
+    # Select appropriate training step based on freeze settings
+    if train_upsample:
+        train_step = upsample_train_step
+    elif freeze_transformer or freeze_diffusion:
+        # Use freeze-aware training step
+        def train_step(glide_model, glide_diffusion, batch, device):
+            return base_train_step_freeze_aware(
+                glide_model, glide_diffusion, batch, device,
+                freeze_transformer=freeze_transformer,
+                freeze_diffusion=freeze_diffusion,
+                text_encoder_cache=text_encoder_cache
+            )
+    else:
+        train_step = base_train_step
     
     # Use default prompts if none provided
     if test_prompts is None:
@@ -248,6 +356,11 @@ def run_glide_finetune_epoch(
         if train_idx > 0 and train_idx % log_frequency == 0:
             console_summary = metrics_tracker.get_console_summary()
             opt_steps = metrics_tracker.total_optimizer_steps
+            
+            # Log cache statistics if using cache
+            if text_encoder_cache is not None:
+                cache_stats = text_encoder_cache.get_stats()
+                console_summary += f" | cache: {cache_stats['hits']}/{cache_stats['hits']+cache_stats['misses']} ({cache_stats['hit_rate']:.1%})"
             print(f"[Epoch {epoch} | Iter {train_idx} | OptStep {opt_steps}] {console_summary}")
             
             # Get all metrics for wandb
