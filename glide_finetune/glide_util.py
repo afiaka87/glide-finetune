@@ -64,21 +64,11 @@ def load_model(
     if activation_checkpointing:
         glide_model.use_checkpoint = True
 
-    glide_model.requires_grad_(True)
-    if freeze_transformer:
-        glide_model.transformer.requires_grad_(False)
-        glide_model.transformer_proj.requires_grad_(False)
-        glide_model.token_embedding.requires_grad_(False)
-        glide_model.padding_embedding.requires_grad_(False)
-        glide_model.positional_embedding.requires_grad_(False)
-    if freeze_diffusion:
-        glide_model.out.requires_grad_(False)
-        glide_model.input_blocks.requires_grad_(False)
-        glide_model.middle_block.requires_grad_(False)
-        glide_model.output_blocks.requires_grad_(False)
+    # Don't set requires_grad here - let the freeze functions handle it properly
+    # The old implementation was incomplete and didn't handle eval/train modes
     if len(glide_path) > 0:  # user provided checkpoint
         assert os.path.exists(glide_path), "glide path does not exist"
-        weights = th.load(glide_path, map_location="cpu")
+        weights = th.load(glide_path, map_location="cpu", weights_only=False)
         glide_model.load_state_dict(weights)
     else:  # use default checkpoint from openai
         glide_model.load_state_dict(
@@ -87,7 +77,26 @@ def load_model(
     if use_fp16:
         glide_model.convert_to_fp16()
         print("Converted to fp16, likely gradients will explode")
+    
+    # Apply proper freezing after model is loaded
+    _apply_freeze_settings(glide_model, freeze_transformer, freeze_diffusion)
+    
     return glide_model, glide_diffusion, options
+
+
+def _apply_freeze_settings(model, freeze_transformer_flag: bool, freeze_diffusion_flag: bool):
+    """Apply freeze settings with proper eval/train modes using the new freeze policy."""
+    from .freeze_utils import apply_freeze_policy
+    
+    # Apply the freeze policy with mutual exclusivity check
+    summary = apply_freeze_policy(
+        model,
+        freeze_transformer=freeze_transformer_flag,
+        freeze_diffusion=freeze_diffusion_flag,
+    )
+    
+    # The summary is already logged by apply_freeze_policy
+    return summary
 
 def read_image(path: str, shape: Tuple[int, int]):
     pil_img = PIL.Image.open(path).convert('RGB')
