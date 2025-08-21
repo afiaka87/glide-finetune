@@ -1,0 +1,22 @@
+# DeepSpeed ZeRO Stage 3 configuration  
+# Shards everything (model, optimizer, gradients) across GPUs with CPU offloading
+# Maximum memory efficiency for very large models
+# Usage: accelerate launch --config_file configs/accelerate_deepspeed_zero3.yaml train_glide_multi_gpu.py
+
+compute_environment: LOCAL_MACHINE
+deepspeed_config:
+  deepspeed_config_file: configs/deepspeed_zero3_config.json
+  zero3_init_flag: true
+distributed_type: DEEPSPEED
+downcast_bf16: 'no'
+machine_rank: 0
+main_training_function: main
+mixed_precision: fp16
+num_machines: 1
+num_processes: auto
+rdzv_backend: static
+same_network: true
+tpu_env: []
+tpu_use_cluster: false
+tpu_use_sudo: false
+use_cpu: false

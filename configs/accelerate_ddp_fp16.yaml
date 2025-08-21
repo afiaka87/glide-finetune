@@ -1,0 +1,18 @@
+# DDP with FP16 mixed precision for faster training
+# Usage: accelerate launch --config_file configs/accelerate_ddp_fp16.yaml train_glide_multi_gpu.py
+
+compute_environment: LOCAL_MACHINE
+distributed_type: MULTI_GPU
+downcast_bf16: 'no'
+gpu_ids: all
+machine_rank: 0
+main_training_function: main
+mixed_precision: fp16
+num_machines: 1
+num_processes: auto
+rdzv_backend: static
+same_network: true
+tpu_env: []
+tpu_use_cluster: false
+tpu_use_sudo: false
+use_cpu: false
