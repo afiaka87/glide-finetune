@@ -319,7 +319,7 @@ def build_bloom_filter(
     
     for tar_file in tqdm(tar_files, desc="Processing tar files"):
         try:
-            dataset = wds.WebDataset(tar_file, handler=wds.handlers.warn_and_continue)
+            dataset = wds.WebDataset(tar_file, handler=wds.handlers.warn_and_continue, shardshuffle=False)
             
             for sample in dataset:
                 if max_samples and stats['total'] >= max_samples:

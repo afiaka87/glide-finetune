@@ -93,6 +93,7 @@ def glide_wds_loader_optimized(
         cache_dir=cache_path,
         cache_size=10**10 if cache_path else 0,
         handler=handler,
+        shardshuffle=False,  # Disable shard shuffling for consistent ordering
     )
     
     # Define bloom filter selection
