@@ -13,3 +13,10 @@ current_prediction.png
 CLAUDE.md
 .trash/
 CKPT/
+
+glide_outputs/
+outputs/
+.claude/
+.compiled_models_cache/
+
+glide-cutouts/
