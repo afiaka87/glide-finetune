@@ -162,6 +162,25 @@ from glide_finetune.fp16_training import (
 from glide_finetune.freeze_utils import apply_freeze_policy, build_optimizer_params
 
 
+# WebDataLoader with length estimation
+class WebDataLoader:
+    """DataLoader wrapper that provides length estimation for WebDatasets."""
+    
+    def __init__(self, dataloader: DataLoader, num_tars: int, samples_per_tar: int = 10000):
+        self.dataloader = dataloader
+        self.estimated_length = num_tars * samples_per_tar
+        
+    def __iter__(self):
+        return iter(self.dataloader)
+        
+    def __len__(self):
+        return self.estimated_length // self.dataloader.batch_size
+        
+    def __getattr__(self, name):
+        # Delegate all other attributes to the wrapped dataloader
+        return getattr(self.dataloader, name)
+
+
 # Constants and defaults
 DEFAULT_SIDE_X = 64
 DEFAULT_SIDE_Y = 64
@@ -197,7 +216,7 @@ SUPPORTED_SWINIR_MODELS = [
 ]
 
 # Supported WebDataset types
-SUPPORTED_WDS_DATASETS = ["laion", "alamy", "synthetic"]
+SUPPORTED_WDS_DATASETS = ["laion", "alamy", "synthetic", "webdataset"]
 
 # FP16 modes
 FP16_MODES = ["auto", "conservative", "aggressive"]
@@ -1171,7 +1190,7 @@ def create_webdataset_loader(
         distributed: Whether to create distributed loader
 
     Returns:
-        DataLoader for WebDataset
+        DataLoader for WebDataset (wrapped with length estimation)
     """
     # Expand glob patterns for WebDataset
     if (
@@ -1186,16 +1205,22 @@ def create_webdataset_loader(
             f"Found {len(tar_files)} tar files matching pattern: {config.data.data_dir}"
         )
         urls = tar_files
+        num_tars = len(tar_files)
     else:
+        # Single file or URL - assume 1 tar
         urls = config.data.data_dir
+        num_tars = 1
 
     # Choose appropriate WebDataset loader
     if config.data.use_optimized_loader and config.data.bloom_filter_path:
-        return create_optimized_webdataset_loader(config, model, urls, distributed)
+        dataloader = create_optimized_webdataset_loader(config, model, urls, distributed)
     elif distributed:
-        return create_distributed_webdataset_loader(config, model, urls)
+        dataloader = create_distributed_webdataset_loader(config, model, urls)
     else:
-        return create_standard_webdataset_loader(config, model, urls)
+        dataloader = create_standard_webdataset_loader(config, model, urls)
+    
+    # Wrap with length estimation
+    return WebDataLoader(dataloader, num_tars)
 
 
 def create_standard_webdataset_loader(
@@ -1444,7 +1469,6 @@ def generate_samples(
             # Generate sample
             samples = sample(
                 glide_model=model,
-                glide_diffusion=diffusion,
                 glide_options=options,
                 side_x=64,  # Base resolution
                 side_y=64,
@@ -2086,6 +2110,10 @@ def run_training(config: TrainConfig, strategy) -> None:
     """
     # Setup interrupt handler
     interrupt_handler = InterruptHandler()
+    
+    # Initialize variables for exception handling
+    checkpoint_manager = None
+    wandb_run = None
 
     try:
         # Setup model, optimizer, and data loader
@@ -2198,22 +2226,25 @@ def run_training(config: TrainConfig, strategy) -> None:
                     }
                 )
 
-                # Log metrics
+                # Log metrics to WandB (every step)
+                log_data = {
+                    "train/loss": result["loss"],
+                    "train/learning_rate": result.get("learning_rate", 0),
+                    "train/epoch": epoch + (batch_idx / len(dataloader)),
+                    "train/global_step": global_step,
+                }
+
+                if "grad_norm" in result:
+                    log_data["train/grad_norm"] = result["grad_norm"]
+                if "loss_scale" in result:
+                    log_data["train/loss_scale"] = result["loss_scale"]
+
+                if wandb_run:
+                    wandb_run.log(log_data, step=global_step)
+
+                # Console logging (controlled by log_frequency)
                 if global_step % config.logging.log_frequency == 0:
-                    log_data = {
-                        "train/loss": result["loss"],
-                        "train/learning_rate": result.get("learning_rate", 0),
-                        "train/epoch": epoch + (batch_idx / len(dataloader)),
-                        "train/global_step": global_step,
-                    }
-
-                    if "grad_norm" in result:
-                        log_data["train/grad_norm"] = result["grad_norm"]
-                    if "loss_scale" in result:
-                        log_data["train/loss_scale"] = result["loss_scale"]
-
-                    if wandb_run:
-                        wandb_run.log(log_data, step=global_step)
+                    pass  # Console logging happens in the step function
 
                 # Generate samples
                 if (
