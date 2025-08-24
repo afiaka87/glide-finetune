@@ -160,6 +160,7 @@ from glide_finetune.fp16_training import (
     SelectiveFP16Converter,
 )
 from glide_finetune.freeze_utils import apply_freeze_policy, build_optimizer_params
+from glide_finetune.randomize_utils import randomize_transformer, randomize_diffusion
 
 
 # WebDataLoader with length estimation
@@ -256,6 +257,9 @@ class ModelConfig:
     train_upsample: bool = False
     freeze_transformer: bool = False
     freeze_diffusion: bool = False
+    randomize_transformer: bool = False
+    randomize_diffusion: bool = False
+    randomize_init_std: Optional[float] = None
     activation_checkpointing: bool = False
     upscale_factor: int = 4
     image_to_upsample: str = "low_res_face.png"
@@ -535,6 +539,24 @@ def create_unified_parser() -> argparse.ArgumentParser:
         help="Freeze diffusion/UNet",
     )
     model_group.add_argument(
+        "--randomize_transformer",
+        "-rnd_xt",
+        action="store_true",
+        help="Randomize transformer/text encoder weights",
+    )
+    model_group.add_argument(
+        "--randomize_diffusion",
+        "-rnd_unet",
+        action="store_true",
+        help="Randomize diffusion/UNet weights",
+    )
+    model_group.add_argument(
+        "--randomize_init_std",
+        type=float,
+        default=None,
+        help="Standard deviation for weight randomization (None = automatic)",
+    )
+    model_group.add_argument(
         "--activation_checkpointing",
         "-grad_ckpt",
         action="store_true",
@@ -794,11 +816,18 @@ def create_unified_parser() -> argparse.ArgumentParser:
 def validate_args(args: argparse.Namespace) -> None:
     """Validate argument combinations and dependencies."""
     # Mutual exclusions
-    if args.freeze_transformer and args.freeze_diffusion:
-        raise ValueError(
-            "Cannot freeze both transformer and diffusion. "
-            "Choose one: --freeze_transformer (train UNet) or --freeze_diffusion (train text encoder)"
+    # Validate mutual exclusion for freeze/randomize options
+    from glide_finetune.layer_utils import validate_mutual_exclusion
+    
+    try:
+        validate_mutual_exclusion(
+            freeze_transformer=args.freeze_transformer,
+            freeze_diffusion=args.freeze_diffusion,
+            randomize_transformer=args.randomize_transformer,
+            randomize_diffusion=args.randomize_diffusion,
         )
+    except ValueError as e:
+        raise ValueError(str(e))
 
     if args.use_fp16 and args.use_bf16:
         raise ValueError("Cannot use both FP16 and BF16 mixed precision")
@@ -860,6 +889,9 @@ def args_to_config(args: argparse.Namespace) -> TrainConfig:
             train_upsample=args.train_upsample,
             freeze_transformer=args.freeze_transformer,
             freeze_diffusion=args.freeze_diffusion,
+            randomize_transformer=args.randomize_transformer,
+            randomize_diffusion=args.randomize_diffusion,
+            randomize_init_std=args.randomize_init_std,
             activation_checkpointing=args.activation_checkpointing,
             upscale_factor=args.upscale_factor,
             image_to_upsample=args.image_to_upsample,
@@ -974,6 +1006,33 @@ def detect_device(device_str: str = "") -> th.device:
         )
 
     return device
+
+
+def apply_model_modifications(model: nn.Module, config: ModelConfig) -> None:
+    """Apply freeze and randomization policies to the model.
+    
+    Args:
+        model: The model to modify
+        config: Model configuration with freeze/randomize settings
+    """
+    # Apply freeze policy if needed
+    if config.freeze_transformer or config.freeze_diffusion:
+        freeze_summary = apply_freeze_policy(
+            model,
+            freeze_transformer=config.freeze_transformer,
+            freeze_diffusion=config.freeze_diffusion,
+        )
+        print(f"\n{freeze_summary}\n")
+    
+    # Apply randomization if needed
+    if config.randomize_transformer:
+        print("\nRandomizing transformer weights...")
+        summary = randomize_transformer(model, init_std=config.randomize_init_std)
+        print(f"Randomized {summary.selected_params:,} parameters\n")
+    elif config.randomize_diffusion:
+        print("\nRandomizing diffusion weights...")
+        summary = randomize_diffusion(model, init_std=config.randomize_init_std)
+        print(f"Randomized {summary.selected_params:,} parameters\n")
 
 
 def load_glide_model(
@@ -1697,6 +1756,7 @@ class SingleGPUStrategy:
     def setup_model(self, config: TrainConfig) -> Tuple[nn.Module, Any, Dict]:
         """Setup model for single GPU training."""
         model, diffusion, options = load_glide_model(config.model, device=self.device)
+        apply_model_modifications(model, config.model)
         model.train()
         return model, diffusion, options
 
@@ -1802,6 +1862,9 @@ class FP16Strategy:
     def setup_model(self, config: TrainConfig) -> Tuple[nn.Module, Any, Dict]:
         """Setup model for FP16 training."""
         model, diffusion, options = load_glide_model(config.model, device=self.device)
+        
+        # Apply freeze/randomization policies BEFORE FP16 conversion
+        apply_model_modifications(model, config.model)
 
         # Apply FP16 conversion
         if config.fp16.use_fp16:
@@ -1973,15 +2036,16 @@ class MultiGPUStrategy:
 
         model, diffusion, options = load_glide_model(config.model)
 
-        # Apply freeze policy if needed
-        if config.model.freeze_transformer or config.model.freeze_diffusion:
-            freeze_summary = apply_freeze_policy(
-                model,
-                freeze_transformer=config.model.freeze_transformer,
-                freeze_diffusion=config.model.freeze_diffusion,
-            )
+        # Apply freeze/randomization policies (only print on main process)
+        if config.model.freeze_transformer or config.model.freeze_diffusion or config.model.randomize_transformer or config.model.randomize_diffusion:
             if self.accelerator.is_main_process:
-                print(f"\n{freeze_summary}\n")
+                apply_model_modifications(model, config.model)
+            else:
+                # Apply quietly on other processes
+                import io
+                import contextlib
+                with contextlib.redirect_stdout(io.StringIO()):
+                    apply_model_modifications(model, config.model)
 
         return model, diffusion, options
 
@@ -2000,8 +2064,9 @@ class MultiGPUStrategy:
     ) -> Optional[CheckpointManager]:
         """Setup checkpoint manager (only on main process)."""
         if self.accelerator and self.accelerator.is_main_process:
+            save_dir = config.logging.save_directory or config.logging.checkpoints_dir
             self.checkpoint_manager = CheckpointManager(
-                checkpoints_dir=config.logging.checkpoints_dir,
+                checkpoints_dir=save_dir,
                 save_frequency=config.logging.save_frequency,
             )
             return self.checkpoint_manager
@@ -2227,20 +2292,38 @@ def run_training(config: TrainConfig, strategy) -> None:
                 )
 
                 # Log metrics to WandB (every step)
-                log_data = {
-                    "train/loss": result["loss"],
-                    "train/learning_rate": result.get("learning_rate", 0),
-                    "train/epoch": epoch + (batch_idx / len(dataloader)),
-                    "train/global_step": global_step,
-                }
+                # Ensure all values are Python scalars, not tensors
+                import math
+                
+                loss_val = result["loss"]
+                if hasattr(loss_val, 'item'):
+                    loss_val = loss_val.item()
+                loss_val = float(loss_val)
+                
+                # Skip logging if loss is NaN or inf
+                if math.isnan(loss_val) or math.isinf(loss_val):
+                    print(f"Warning: Skipping W&B log at step {global_step} due to NaN/inf loss")
+                else:
+                    log_data = {
+                        "train/loss": loss_val,
+                        "train/learning_rate": float(result.get("learning_rate", 0)),
+                        "train/epoch": float(epoch + (batch_idx / len(dataloader))),
+                        "train/global_step": int(global_step),
+                    }
 
-                if "grad_norm" in result:
-                    log_data["train/grad_norm"] = result["grad_norm"]
-                if "loss_scale" in result:
-                    log_data["train/loss_scale"] = result["loss_scale"]
+                    if "grad_norm" in result:
+                        grad_val = result["grad_norm"]
+                        if hasattr(grad_val, 'item'):
+                            grad_val = grad_val.item()
+                        log_data["train/grad_norm"] = float(grad_val)
+                    if "loss_scale" in result:
+                        scale_val = result["loss_scale"]
+                        if hasattr(scale_val, 'item'):
+                            scale_val = scale_val.item()
+                        log_data["train/loss_scale"] = float(scale_val)
 
-                if wandb_run:
-                    wandb_run.log(log_data, step=global_step)
+                    if wandb_run:
+                        wandb_run.log(log_data, step=global_step)
 
                 # Console logging (controlled by log_frequency)
                 if global_step % config.logging.log_frequency == 0:
