@@ -13,30 +13,19 @@ from typing import Optional, Set, List, Tuple, Dict, Any, Sequence
 from dataclasses import dataclass
 import re
 
-# ---- Canonical name patterns (exact GLIDE architecture) --------------------------
-
-# Text/transformer side (13.2% of params)
-TRANSFORMER_PATTERNS: Tuple[str, ...] = (
-    r"^transformer\.",          # transformer.resblocks.*
-    r"^token_embedding",        # token_embedding.weight
-    r"^positional_embedding",   # positional_embedding
-    r"^padding_embedding",      # padding_embedding
-    r"^final_ln",               # final_ln.weight / bias
-    r"^transformer_proj",       # transformer_proj.weight / bias
-)
-
-# Diffusion/UNet side (86.8% of params)
-DIFFUSION_PATTERNS: Tuple[str, ...] = (
-    r"^time_embed\.",           # time_embed.*
-    r"^input_blocks\.",         # input_blocks.*
-    r"^middle_block\.",         # middle_block.*
-    r"^output_blocks\.",        # output_blocks.*
-    r"^out\.",                  # out.0 / out.2
-)
-
-# Optional adapter patterns for future LoRA support
-DEFAULT_ADAPTER_PATTERNS: Tuple[str, ...] = (
-    "lora_", "loraA", "loraB", "adapter_", "ada_"
+# Import shared layer selection utilities
+from .layer_utils import (
+    TRANSFORMER_PATTERNS,
+    DIFFUSION_PATTERNS,
+    DEFAULT_ADAPTER_PATTERNS,
+    TRANSFORMER_COMPONENTS,
+    DIFFUSION_COMPONENTS,
+    unwrap_model,
+    name_matches_patterns,
+    get_transformer_components,
+    get_diffusion_components,
+    apply_to_selected_components,
+    select_layers_by_mode,
 )
 
 # ---- Data structures ---------------------------------------------------------
@@ -58,23 +47,15 @@ class FreezeSummary:
         )
 
 # ---- Helpers ----------------------------------------------------------------
+# Note: Most helpers moved to layer_utils.py for sharing with randomize_utils.py
 
 def _unwrap_ddp(model: nn.Module) -> nn.Module:
-    """Unwrap DDP model if needed."""
-    return getattr(model, "module", model)
+    """Unwrap DDP model if needed. Alias for consistency."""
+    return unwrap_model(model)
 
 def _name_matches(name: str, patterns: Sequence[str]) -> bool:
-    """Check if parameter name matches any pattern (substring or regex)."""
-    for pat in patterns:
-        # If pattern contains regex special chars, treat as regex
-        if any(ch in pat for ch in "^$.*+?[](){}|\\"): 
-            if re.search(pat, name):
-                return True
-        else:
-            # Simple substring match
-            if pat in name:
-                return True
-    return False
+    """Check if parameter name matches any pattern. Alias for consistency."""
+    return name_matches_patterns(name, patterns)
 
 def _iter_named_modules(model: nn.Module) -> List[Tuple[str, nn.Module]]:
     """Iterate named modules, skipping root."""
@@ -133,51 +114,27 @@ def freeze_transformer(model: nn.Module):
     """
     print("\n=== Freezing Transformer Components ===")
     
-    # Text encoder components to freeze
-    text_encoder_components = [
-        'transformer',           # Main text encoder transformer
-        'transformer_proj',      # Projection from transformer to UNet conditioning
-        'token_embedding',       # Token embeddings
-        'positional_embedding',  # Positional embeddings
-        'padding_embedding',     # Padding embeddings (if present)
-        'final_ln',             # Final layer norm (if present)
-        'unemb',                # Unembedding layer for AR models (if present)
-    ]
+    # Define the freeze operation
+    def freeze_op(component, component_name):
+        if isinstance(component, nn.Parameter):
+            component.requires_grad = False
+        else:
+            freeze_module(component, eval_mode=True)
     
-    frozen_count = 0
-    for component_name in text_encoder_components:
-        if hasattr(model, component_name):
-            component = getattr(model, component_name)
-            if component is not None:
-                if isinstance(component, nn.Parameter):
-                    component.requires_grad = False
-                    frozen_count += 1
-                    print(f"  Froze parameter: {component_name}")
-                else:
-                    freeze_module(component, eval_mode=True)
-                    frozen_count += 1
-                    print(f"  Froze module: {component_name}")
+    # Apply freezing to transformer components
+    summary = apply_to_selected_components(
+        model, 
+        mode="transformer",
+        operation_fn=freeze_op,
+        operation_name="freeze"
+    )
     
-    # Ensure UNet components are trainable
-    unet_components = [
-        'input_blocks',
-        'middle_block', 
-        'output_blocks',
-        'time_embed',
-        'label_emb',
-        'out',
-    ]
-    
-    trainable_count = 0
-    for component_name in unet_components:
-        if hasattr(model, component_name):
-            component = getattr(model, component_name)
-            if component is not None:
-                unfreeze_module(component, train_mode=True)
-                trainable_count += 1
-                print(f"  Kept trainable: {component_name}")
-    
-    print(f"Freeze transformer summary: {frozen_count} components frozen, {trainable_count} components trainable")
+    # Ensure diffusion components are trainable
+    diffusion_components = get_diffusion_components(model)
+    for component_name, component in diffusion_components.items():
+        if not isinstance(component, nn.Parameter):
+            unfreeze_module(component, train_mode=True)
+            print(f"  Kept trainable: {component_name}")
 
 
 def freeze_diffusion(model: nn.Module):
@@ -191,51 +148,32 @@ def freeze_diffusion(model: nn.Module):
     Args:
         model: The GLIDE model (Text2ImUNet or similar)
     """
-    # UNet components to freeze
-    unet_components = [
-        'input_blocks',     # Downsampling blocks with ResBlocks and attention
-        'middle_block',     # Bottleneck block
-        'output_blocks',    # Upsampling blocks with ResBlocks and attention
-        'time_embed',       # Time embedding MLP
-        'label_emb',        # Class label embedding (if present)
-        'out',             # Final output convolution
-    ]
+    print("\n=== Freezing Diffusion Components ===")
     
-    frozen_count = 0
-    for component_name in unet_components:
-        if hasattr(model, component_name):
-            component = getattr(model, component_name)
-            if component is not None:
-                freeze_module(component, eval_mode=True)
-                frozen_count += 1
-                print(f"  Froze module: {component_name}")
+    # Define the freeze operation
+    def freeze_op(component, component_name):
+        if isinstance(component, nn.Parameter):
+            component.requires_grad = False
+        else:
+            freeze_module(component, eval_mode=True)
     
-    # Ensure text encoder components are trainable
-    text_encoder_components = [
-        'transformer',
-        'transformer_proj',
-        'token_embedding',
-        'positional_embedding',
-        'padding_embedding',
-        'final_ln',
-        'unemb',
-    ]
+    # Apply freezing to diffusion components
+    summary = apply_to_selected_components(
+        model,
+        mode="diffusion",
+        operation_fn=freeze_op,
+        operation_name="freeze"
+    )
     
-    trainable_count = 0
-    for component_name in text_encoder_components:
-        if hasattr(model, component_name):
-            component = getattr(model, component_name)
-            if component is not None:
-                if isinstance(component, nn.Parameter):
-                    component.requires_grad = True
-                    trainable_count += 1
-                    print(f"  Kept trainable parameter: {component_name}")
-                else:
-                    unfreeze_module(component, train_mode=True)
-                    trainable_count += 1
-                    print(f"  Kept trainable module: {component_name}")
-    
-    print(f"Freeze diffusion summary: {frozen_count} components frozen, {trainable_count} components trainable")
+    # Ensure transformer components are trainable
+    transformer_components = get_transformer_components(model)
+    for component_name, component in transformer_components.items():
+        if isinstance(component, nn.Parameter):
+            component.requires_grad = True
+            print(f"  Kept trainable parameter: {component_name}")
+        else:
+            unfreeze_module(component, train_mode=True)
+            print(f"  Kept trainable module: {component_name}")
 
 
 def unfreeze_all(model: nn.Module):
