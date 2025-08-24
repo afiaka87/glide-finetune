@@ -20,3 +20,5 @@ outputs/
 .compiled_models_cache/
 
 glide-cutouts/
+
+checkpoints/
