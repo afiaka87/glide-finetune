@@ -3,6 +3,7 @@ __pycache__/
 .venv/
 .cache/
 .compiled_models_cache/
+.coverage
 
 # IDE and Tools
 .vscode/
