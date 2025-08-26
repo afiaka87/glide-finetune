@@ -38,8 +38,16 @@ MODEL_TYPES = ["base", "upsample", "base-inpaint", "upsample-inpaint"]
 
 
 def get_uncond_tokens_mask(tokenizer: Encoder) -> tuple[th.Tensor, th.Tensor]:
-    uncond_tokens, uncond_mask = tokenizer.padded_tokens_and_mask([], 128)
-    return th.tensor(uncond_tokens), th.tensor(uncond_mask, dtype=th.bool)
+    # Handle both API styles
+    if hasattr(tokenizer, 'padded_tokens_and_mask'):
+        uncond_tokens, uncond_mask = tokenizer.padded_tokens_and_mask([], 128)
+        return th.tensor(uncond_tokens), th.tensor(uncond_mask, dtype=th.bool)
+    else:
+        # SimpleTokenizer returns (tokens, length) not (tokens, mask)
+        uncond_tokens, text_len = tokenizer.padded_tokens_and_len([], 128)
+        # Create mask from length - True for valid tokens, False for padding
+        uncond_mask = [i < text_len for i in range(128)]
+        return th.tensor(uncond_tokens), th.tensor(uncond_mask, dtype=th.bool)
 
 
 def get_tokens_and_mask(
@@ -48,9 +56,18 @@ def get_tokens_and_mask(
     if len(prompt) == 0:
         return get_uncond_tokens_mask(tokenizer)
     tokens = tokenizer.encode(prompt)
-    tokens, mask = tokenizer.padded_tokens_and_mask(tokens, context_len)
-    tokens = th.tensor(tokens)  # + uncond_tokens)
-    mask = th.tensor(mask, dtype=th.bool)  # + uncond_mask, dtype=th.bool)
+    
+    # Handle both API styles
+    if hasattr(tokenizer, 'padded_tokens_and_mask'):
+        tokens, mask = tokenizer.padded_tokens_and_mask(tokens, context_len)
+        mask = th.tensor(mask, dtype=th.bool)
+    else:
+        # SimpleTokenizer returns (tokens, length) not (tokens, mask)
+        tokens, text_len = tokenizer.padded_tokens_and_len(tokens, context_len)
+        # Create mask from length - True for valid tokens, False for padding
+        mask = th.tensor([i < text_len for i in range(context_len)], dtype=th.bool)
+    
+    tokens = th.tensor(tokens)
     return tokens, mask
 
 

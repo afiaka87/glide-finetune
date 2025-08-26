@@ -8,6 +8,7 @@ Supports:
 """
 
 import argparse
+import glob
 import json
 import sys
 from pathlib import Path
@@ -161,10 +162,19 @@ def process_webdataset(
     if not WDS_AVAILABLE:
         logger.error("WebDataset support not available. Install webdataset.")
         return
+    # Expand glob patterns in tar files
+    if "*" in tar_pattern or "?" in tar_pattern:
+        tar_files = sorted(glob.glob(tar_pattern))
+        if not tar_files:
+            logger.error(f"No tar files found matching pattern: {tar_pattern}")
+            return
+    else:
+        # Single file or list of files
+        tar_files = [tar_pattern]
     
     # Create dataset
-    dataset = wds.WebDataset(tar_pattern).decode()
-    
+    dataset = wds.WebDataset(tar_files).decode()
+
     # Storage for results
     records = []
     batch_texts = []
@@ -291,10 +301,14 @@ def main():
     logger.info(f"Loading CLIP model: {args.clip_model}")
     clip_model, preprocess = load_openai_clip(args.clip_model, device=args.device)
     clip_model.eval()
-    
+
+    # Expand User
+    data_dir = args.data_path
+    output_dir = args.output_path
+
     # Process dataset
     if args.dataset_type == "coco":
-        data_dir = Path(args.data_path)
+        data_dir = Path(args.data_path).expanduser()
         output_dir = Path(args.output_path)
         process_coco_dataset(
             data_dir,
@@ -305,9 +319,12 @@ def main():
             args.resume_from,
         )
     else:  # webdataset
-        output_path = Path(args.output_path)
+        output_path = Path(args.output_path).expanduser()
+        tar_files = list(Path(args.data_path).expanduser().glob("*.tar"))
+        print(tar_files)
         process_webdataset(
-            args.data_path,
+            # Path(args.data_path).expanduser(),
+            tar_files,
             output_path,
             clip_model,
             args.device,
