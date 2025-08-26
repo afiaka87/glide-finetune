@@ -273,6 +273,13 @@ class ModelConfig:
     activation_checkpointing: bool = False
     upscale_factor: int = 4
     image_to_upsample: str = "low_res_face.png"
+    # CLIP Adapter fields
+    use_clip_adapter: bool = False
+    clip_model_name: str = "ViT-B/32"
+    clip_adapter_hidden_dim: int | None = None
+    clip_adapter_gate_init: float = -5.0
+    clip_adapter_lr: float | None = None
+    clip_adapter_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -589,6 +596,42 @@ def create_unified_parser() -> argparse.ArgumentParser:
         default="low_res_face.png",
         help="Low-resolution image for upsampler testing",
     )
+    
+    # CLIP Adapter arguments
+    model_group.add_argument(
+        "--use_clip_adapter",
+        action="store_true",
+        help="Enable CLIP adapter for enhanced text conditioning",
+    )
+    model_group.add_argument(
+        "--clip_model_name",
+        type=str,
+        default="ViT-B/32",
+        help="CLIP model variant to use (default: ViT-B/32)",
+    )
+    model_group.add_argument(
+        "--clip_adapter_hidden_dim",
+        type=int,
+        default=None,
+        help="Hidden dimension for CLIP adapter (default: same as time_embed_dim)",
+    )
+    model_group.add_argument(
+        "--clip_adapter_gate_init",
+        type=float,
+        default=-5.0,
+        help="Initial gate value for CLIP adapter (sigmoid(-5.0) ≈ 0.0067)",
+    )
+    model_group.add_argument(
+        "--clip_adapter_lr",
+        type=float,
+        default=None,
+        help="Separate learning rate for CLIP adapter (default: same as main LR)",
+    )
+    model_group.add_argument(
+        "--clip_adapter_only",
+        action="store_true",
+        help="Train only the CLIP adapter, freeze base model",
+    )
 
     # Training arguments
     training_group = parser.add_argument_group("Training Configuration")
@@ -868,6 +911,15 @@ def validate_args(args: argparse.Namespace) -> None:
 
     if args.use_optimized_loader and not args.bloom_filter_path:
         logger.warning("Warning: --use_optimized_loader specified but no --bloom_filter_path provided")
+    
+    # CLIP Adapter validation
+    if args.clip_adapter_only and not args.use_clip_adapter:
+        msg = "--clip_adapter_only requires --use_clip_adapter"
+        raise ValueError(msg)
+    
+    if args.clip_adapter_only and (args.freeze_transformer or args.freeze_diffusion):
+        msg = "--clip_adapter_only is incompatible with --freeze_transformer or --freeze_diffusion"
+        raise ValueError(msg)
 
 
 def args_to_config(args: argparse.Namespace) -> TrainConfig:
@@ -892,6 +944,7 @@ def args_to_config(args: argparse.Namespace) -> TrainConfig:
             batch_size=args.batch_size,
             num_workers=args.num_workers,
             epoch_samples=args.epoch_samples,
+            resampling_method=args.resampling_method,
         ),
         model=ModelConfig(
             model_path=args.model_path,
@@ -905,6 +958,12 @@ def args_to_config(args: argparse.Namespace) -> TrainConfig:
             activation_checkpointing=args.activation_checkpointing,
             upscale_factor=args.upscale_factor,
             image_to_upsample=args.image_to_upsample,
+            use_clip_adapter=args.use_clip_adapter,
+            clip_model_name=args.clip_model_name,
+            clip_adapter_hidden_dim=args.clip_adapter_hidden_dim,
+            clip_adapter_gate_init=args.clip_adapter_gate_init,
+            clip_adapter_lr=args.clip_adapter_lr,
+            clip_adapter_only=args.clip_adapter_only,
         ),
         training=TrainingConfig(
             learning_rate=args.learning_rate,
