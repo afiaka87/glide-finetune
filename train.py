@@ -1922,6 +1922,17 @@ class SingleGPUStrategy:
         
         if clip_features is not None:
             clip_features = clip_features.to(self.device).float()
+        elif config.model.use_clip_adapter and tokens is not None:
+            # Compute CLIP features on-the-fly if adapter is enabled but features not provided
+            from glide_finetune.clip_compute import get_clip_computer
+            
+            clip_computer = get_clip_computer(
+                clip_model_name=config.model.clip_model_name,
+                device=self.device
+            )
+            clip_features = clip_computer.compute_from_tokens(
+                tokens, masks, tokenizer=model.tokenizer
+            )
 
         # Forward pass
         timesteps = th.randint(0, len(diffusion.betas) - 1, (images.shape[0],), device=self.device)
@@ -2039,17 +2050,27 @@ class FP16Strategy:
         # Define loss computation function
         def compute_loss():
             # Unpack batch
+            clip_features = None
             if isinstance(batch, (list, tuple)):
                 if len(batch) == 3:
                     tokens, masks, images = batch
                 elif len(batch) == 4:
-                    tokens, masks, images, _ = batch
+                    # Could be either (tokens, masks, images, upsampled) or (tokens, masks, images, clip)
+                    tokens, masks, images, fourth = batch
+                    # Check if fourth element is CLIP features (1D) or upsampled image (3D)
+                    if fourth.dim() == 2:  # CLIP features: (batch, clip_dim)
+                        clip_features = fourth
+                    # Otherwise it's upsampled image, ignore for base model
+                elif len(batch) == 5:
+                    # (tokens, masks, images, upsampled, clip)
+                    tokens, masks, images, _, clip_features = batch
                 else:
                     raise ValueError(f"Unexpected batch format with {len(batch)} elements")
             else:
                 images = batch["images"]
                 tokens = batch.get("tokens")
                 masks = batch.get("masks")
+                clip_features = batch.get("clip_features")
 
             # Move to device
             images = images.to(self.device).float()
@@ -2062,6 +2083,20 @@ class FP16Strategy:
                     mask = th.rand(images.shape[0], device=self.device) < config.data.uncond_p
                     tokens = tokens.clone()
                     tokens[mask] = 0
+            
+            if clip_features is not None:
+                clip_features = clip_features.to(self.device).float()
+            elif config.model.use_clip_adapter and tokens is not None:
+                # Compute CLIP features on-the-fly if adapter is enabled but features not provided
+                from glide_finetune.clip_compute import get_clip_computer
+                
+                clip_computer = get_clip_computer(
+                    clip_model_name=config.model.clip_model_name,
+                    device=self.device
+                )
+                clip_features = clip_computer.compute_from_tokens(
+                    tokens, masks, tokenizer=model.tokenizer
+                )
 
             # Sample timesteps
             timesteps = th.randint(
@@ -2072,13 +2107,17 @@ class FP16Strategy:
             noise = th.randn_like(images, device=self.device)
             x_t = diffusion.q_sample(images, timesteps, noise=noise)
 
+            # Build model kwargs
+            model_kwargs = {}
+            if tokens is not None:
+                model_kwargs["tokens"] = tokens
+            if masks is not None:
+                model_kwargs["mask"] = masks
+            if clip_features is not None and config.model.use_clip_adapter:
+                model_kwargs["clip_embeddings"] = clip_features
+
             # Forward pass
-            model_output = model(
-                x_t,
-                timesteps,
-                tokens=tokens if tokens is not None else None,
-                mask=masks if masks is not None else None,
-            )
+            model_output = model(x_t, timesteps, **model_kwargs)
 
             # Compute loss
             _, channels = x_t.shape[:2]
@@ -2195,22 +2234,64 @@ class MultiGPUStrategy:
             raise RuntimeError("Accelerator not initialized")
 
         with self.accelerator.accumulate(model):
+            # Unpack batch with CLIP feature support
+            clip_features = None
+            if config.model.train_upsample:
+                # Upsampler mode - handle different batch formats
+                if len(batch) == 4:
+                    tokens, masks, low_res, high_res = batch
+                elif len(batch) == 5:
+                    tokens, masks, low_res, high_res, clip_features = batch
+                else:
+                    raise ValueError(f"Unexpected batch format with {len(batch)} elements for upsampler")
+            else:
+                # Base model mode - handle different batch formats
+                if len(batch) == 3:
+                    tokens, masks, images = batch
+                elif len(batch) == 4:
+                    tokens, masks, images, fourth = batch
+                    # Check if fourth element is CLIP features or upsampled
+                    if fourth.dim() == 2:  # CLIP features
+                        clip_features = fourth
+                    # Otherwise ignore (upsampled image)
+                elif len(batch) == 5:
+                    tokens, masks, images, _, clip_features = batch
+                else:
+                    raise ValueError(f"Unexpected batch format with {len(batch)} elements")
+            
+            # Compute CLIP features if needed
+            if clip_features is None and config.model.use_clip_adapter and tokens is not None:
+                from glide_finetune.clip_compute import get_clip_computer
+                
+                clip_computer = get_clip_computer(
+                    clip_model_name=config.model.clip_model_name,
+                    device=self.accelerator.device
+                )
+                clip_features = clip_computer.compute_from_tokens(
+                    tokens, masks, tokenizer=model.tokenizer
+                )
+            
+            # Build model kwargs
+            model_kwargs = {"tokens": tokens, "mask": masks}
+            if config.model.train_upsample:
+                model_kwargs["low_res"] = low_res
+            if clip_features is not None and config.model.use_clip_adapter:
+                model_kwargs["clip_embeddings"] = clip_features
+            
             # Forward pass
             if config.model.train_upsample:
-                tokens, masks, low_res, high_res = batch
                 loss = diffusion.training_losses(
                     model,
                     high_res,
                     t=None,
-                    model_kwargs={"tokens": tokens, "mask": masks, "low_res": low_res},
+                    model_kwargs=model_kwargs,
                 )["loss"].mean()
             else:
-                tokens, masks, images = batch
                 loss = diffusion.training_losses(
                     model,
                     images,
                     t=None,
-                    model_kwargs={"tokens": tokens, "mask": masks},
+                    model_kwargs=model_kwargs,
                 )["loss"].mean()
 
             # Backward pass
