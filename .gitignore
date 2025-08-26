@@ -27,6 +27,9 @@ CLAUDE.md
 MIGRATION.md
 VALIDATION_REPORT.md
 PLAN.md
+PLAN_CLIP_CONDITION.md
+PLAN_CLIP_PSEUDOTESTS.md
+chat-gpt-5-clip-adapter-design.md
 
 # Scripts (local development)
 *.sh
