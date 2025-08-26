@@ -256,6 +256,7 @@ class DataConfig:
     num_workers: int = 4
     epoch_samples: int | None = None
     resampling_method: str = "bicubic"  # Options: bicubic, lanczos
+    clip_features_path: str | None = None  # Path to precomputed CLIP features
 
 
 @dataclass(frozen=True)
@@ -526,6 +527,12 @@ def create_unified_parser() -> argparse.ArgumentParser:
         default="bicubic",
         choices=["bicubic", "lanczos"],
         help="Image resampling method for downscaling (default: bicubic)",
+    )
+    data_group.add_argument(
+        "--clip_features_path",
+        type=str,
+        default=None,
+        help="Path to precomputed CLIP features (NPY dir for COCO, Parquet for WebDataset)",
     )
 
     # Model arguments
@@ -1323,6 +1330,7 @@ def create_local_dataset_loader(
         trim_white_padding=config.data.trim_white_padding,
         white_thresh=config.data.white_thresh,
         resampling_method=config.data.resampling_method,
+        clip_features_path=config.data.clip_features_path,
     )
 
     # Create DataLoader
@@ -1878,17 +1886,27 @@ class SingleGPUStrategy:
     ) -> dict[str, float]:
         """Perform single GPU training step."""
         # Unpack batch
+        clip_features = None
         if isinstance(batch, (list, tuple)):
             if len(batch) == 3:
                 tokens, masks, images = batch
             elif len(batch) == 4:
-                tokens, masks, images, _ = batch  # Ignore upsampled for base model
+                # Could be either (tokens, masks, images, upsampled) or (tokens, masks, images, clip)
+                tokens, masks, images, fourth = batch
+                # Check if fourth element is CLIP features (1D) or upsampled image (3D)
+                if fourth.dim() == 2:  # CLIP features: (batch, clip_dim)
+                    clip_features = fourth
+                # Otherwise it's upsampled image, ignore for base model
+            elif len(batch) == 5:
+                # (tokens, masks, images, upsampled, clip)
+                tokens, masks, images, _, clip_features = batch
             else:
                 raise ValueError(f"Unexpected batch format with {len(batch)} elements")
         else:
             images = batch["images"]
             tokens = batch.get("tokens")
             masks = batch.get("masks")
+            clip_features = batch.get("clip_features")
 
         # Move to device
         images = images.to(self.device).float()
@@ -1901,18 +1919,25 @@ class SingleGPUStrategy:
                 mask = th.rand(images.shape[0], device=self.device) < config.data.uncond_p
                 tokens = tokens.clone()
                 tokens[mask] = 0
+        
+        if clip_features is not None:
+            clip_features = clip_features.to(self.device).float()
 
         # Forward pass
         timesteps = th.randint(0, len(diffusion.betas) - 1, (images.shape[0],), device=self.device)
         noise = th.randn_like(images, device=self.device)
         x_t = diffusion.q_sample(images, timesteps, noise=noise)
+        
+        # Build model kwargs
+        model_kwargs = {}
+        if tokens is not None:
+            model_kwargs["tokens"] = tokens
+        if masks is not None:
+            model_kwargs["mask"] = masks
+        if clip_features is not None and config.model.use_clip_adapter:
+            model_kwargs["clip_embeddings"] = clip_features
 
-        model_output = model(
-            x_t,
-            timesteps,
-            tokens=tokens if tokens is not None else None,
-            mask=masks if masks is not None else None,
-        )
+        model_output = model(x_t, timesteps, **model_kwargs)
 
         # Compute loss
         _, channels = x_t.shape[:2]
