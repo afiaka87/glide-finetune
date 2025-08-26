@@ -47,11 +47,18 @@ def glide_wds_loader(
     upscale_factor: int = 4,
     trim_white_padding: bool = False,
     white_thresh: int = 245,
+    resampling_method: str = "bicubic",  # Resampling method for image resizing
 ) -> Iterator[tuple[th.Tensor, th.Tensor, th.Tensor]]:
     if words_to_skip is None:
         words_to_skip = []
     base_image_shape = (base_x, base_y)
     upsample_image_shape = (int(base_x * upscale_factor), int(base_y * upscale_factor))
+    
+    # Set resampling method
+    if resampling_method.lower() == "lanczos":
+        resample = Image.Resampling.LANCZOS
+    else:  # default to bicubic
+        resample = Image.Resampling.BICUBIC
 
     # Custom handler that warns about duplicates but continues
     def handle_duplicates(exn: Exception) -> bool:
@@ -193,12 +200,12 @@ def glide_wds_loader(
         else:
             original_pil_image = original_pil_image.convert("RGB")
 
-        base_pil_image = original_pil_image.resize(base_image_shape, resample=Image.Resampling.BICUBIC)
+        base_pil_image = original_pil_image.resize(base_image_shape, resample=resample)
         base_tensor = pil_image_to_norm_tensor(base_pil_image)  # type: ignore[no-untyped-call]
 
         # The upsample model needs both the base and the upsample images e.g. 64x64 and 256x256.
         if enable_upsample:
-            upsample_pil_image = original_pil_image.resize(upsample_image_shape)
+            upsample_pil_image = original_pil_image.resize(upsample_image_shape, resample=resample)
             upsample_tensor = pil_image_to_norm_tensor(upsample_pil_image)  # type: ignore[no-untyped-call]
             return (
                 tokens.clone(),

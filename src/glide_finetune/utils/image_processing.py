@@ -107,6 +107,7 @@ def random_center_crop(
     min_scale: float = 0.8,
     jitter_frac: float = 0.1,
     out_size: tuple[int, int] | None = None,
+    resample: int = PIL.Image.BICUBIC,
 ) -> Image.Image:
     """
     Take a crop roughly around the centre, with mild random scale + offset.
@@ -151,7 +152,7 @@ def random_center_crop(
 
     # Optionally resize to target size
     if out_size is not None:
-        crop = crop.resize(out_size, resample=PIL.Image.BICUBIC)
+        crop = crop.resize(out_size, resample=resample)
 
     return crop
 
@@ -163,6 +164,7 @@ def preprocess_image_with_padding_removal(
     use_random_crop: bool = True,
     min_crop_scale: float = 0.8,
     crop_jitter: float = 0.1,
+    resample: int = PIL.Image.BICUBIC,
 ) -> Image.Image:
     """
     Complete preprocessing pipeline: trim white padding, optional random crop, resize.
@@ -185,8 +187,8 @@ def preprocess_image_with_padding_removal(
 
     # Step 2: Optional random center crop (only if image is larger than target)
     if use_random_crop and trimmed.width > target_size[0] and trimmed.height > target_size[1]:
-        trimmed = random_center_crop(trimmed, min_scale=min_crop_scale, jitter_frac=crop_jitter)
+        trimmed = random_center_crop(trimmed, min_scale=min_crop_scale, jitter_frac=crop_jitter, resample=resample)
 
     # Step 3: Resize to final target size
-    return trimmed.resize(target_size, resample=PIL.Image.BICUBIC)
+    return trimmed.resize(target_size, resample=resample)
 

@@ -255,6 +255,7 @@ class DataConfig:
     batch_size: int = 1
     num_workers: int = 4
     epoch_samples: int | None = None
+    resampling_method: str = "bicubic"  # Options: bicubic, lanczos
 
 
 @dataclass(frozen=True)
@@ -511,6 +512,13 @@ def create_unified_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Samples per epoch for WebDataset",
+    )
+    data_group.add_argument(
+        "--resampling_method",
+        type=str,
+        default="bicubic",
+        choices=["bicubic", "lanczos"],
+        help="Image resampling method for downscaling (default: bicubic)",
     )
 
     # Model arguments
@@ -1218,6 +1226,7 @@ def create_local_dataset_loader(
         upscale_factor=config.model.upscale_factor,
         trim_white_padding=config.data.trim_white_padding,
         white_thresh=config.data.white_thresh,
+        resampling_method=config.data.resampling_method,
     )
 
     # Create DataLoader
@@ -1310,6 +1319,7 @@ def create_standard_webdataset_loader(
         dataset_name=config.data.wds_dataset_name,
         trim_white_padding=config.data.trim_white_padding,
         white_thresh=config.data.white_thresh,
+        resampling_method=config.data.resampling_method,
     )
 
     return DataLoader(
@@ -1361,6 +1371,7 @@ def create_optimized_webdataset_loader(
         caption_key=config.data.caption_key,
         image_key=config.data.image_key,
         dataset_name=config.data.wds_dataset_name,
+        resampling_method=config.data.resampling_method,
     )
 
     return DataLoader(

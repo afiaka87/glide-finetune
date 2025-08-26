@@ -40,6 +40,7 @@ def glide_wds_loader_optimized(
     upscale_factor: int = 4,
     trim_white_padding: bool = False,
     white_thresh: int = 245,
+    resampling_method: str = "bicubic",  # Resampling method for image resizing
     # Caption parameters
     enable_text: bool = True,
     uncond_p: float = 0.2,
@@ -91,6 +92,12 @@ def glide_wds_loader_optimized(
         "runtime_rejected": 0,
         "final_accepted": 0,
     }
+    
+    # Set resampling method
+    if resampling_method.lower() == "lanczos":
+        resample = Image.Resampling.LANCZOS
+    else:  # default to bicubic
+        resample = Image.Resampling.BICUBIC
 
     # Create WebDataset
     dataset = wds.WebDataset(
@@ -207,13 +214,13 @@ def glide_wds_loader_optimized(
                 original_pil_image = original_pil_image.convert("RGB")
 
             # Resize to base size
-            base_pil_image = original_pil_image.resize(base_image_shape, resample=Image.Resampling.BICUBIC)
+            base_pil_image = original_pil_image.resize(base_image_shape, resample=resample)
             base_tensor = pil_image_to_norm_tensor(base_pil_image)  # type: ignore[no-untyped-call]
 
             # Handle upsampling if needed
             if enable_upsample:
                 upsample_pil_image = original_pil_image.resize(
-                    upsample_image_shape, resample=Image.Resampling.BICUBIC
+                    upsample_image_shape, resample=resample
                 )
                 upsample_tensor = pil_image_to_norm_tensor(upsample_pil_image)  # type: ignore[no-untyped-call]
 

@@ -81,6 +81,7 @@ class TextImageDataset(Dataset):
         trim_white_padding: bool = False,
         white_thresh: int = 245,
         skip_samples: int = 0,  # Number of samples to skip for resumption
+        resampling_method: str = "bicubic",  # Resampling method for image resizing
     ) -> None:
         super().__init__()
         folder = Path(folder)
@@ -111,6 +112,12 @@ class TextImageDataset(Dataset):
         self.upscale_factor = upscale_factor
         self.trim_white_padding = trim_white_padding
         self.white_thresh = white_thresh
+        
+        # Set resampling method
+        if resampling_method.lower() == "lanczos":
+            self.resample = PIL.Image.LANCZOS
+        else:  # default to bicubic
+            self.resample = PIL.Image.BICUBIC
 
         # Handle dataset resumption by rotating keys
         self.skip_samples = skip_samples
@@ -182,7 +189,7 @@ class TextImageDataset(Dataset):
             )
             upsample_tensor = pil_image_to_norm_tensor(upsample_pil_image)
             base_pil_image = upsample_pil_image.resize(
-                (self.side_x, self.side_y), resample=PIL.Image.BICUBIC
+                (self.side_x, self.side_y), resample=self.resample
             )
             base_tensor = pil_image_to_norm_tensor(base_pil_image)
             return th.tensor(tokens), th.tensor(mask, dtype=th.bool), base_tensor, upsample_tensor
