@@ -226,7 +226,7 @@ SUPPORTED_SWINIR_MODELS = [
 ]
 
 # Supported WebDataset types
-SUPPORTED_WDS_DATASETS = ["laion", "alamy", "synthetic", "webdataset"]
+SUPPORTED_WDS_DATASETS = ["laion", "alamy", "synthetic", "webdataset", "generic", "custom"]
 
 # FP16 modes
 FP16_MODES = ["auto", "conservative", "aggressive"]

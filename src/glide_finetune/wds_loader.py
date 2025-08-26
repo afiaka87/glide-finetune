@@ -43,7 +43,7 @@ def glide_wds_loader(
     similarity_threshold_upper: float = 0.0,
     similarity_threshold_lower: float = 0.5,
     words_to_skip: list[str] | None = None,
-    dataset_name: str = "laion",  # can be laion, alamy, synthetic.
+    dataset_name: str = "laion",  # can be laion, alamy, synthetic, webdataset, generic, or custom
     upscale_factor: int = 4,
     trim_white_padding: bool = False,
     white_thresh: int = 245,
@@ -141,8 +141,19 @@ def glide_wds_loader(
         filtered_dataset = dataset.select(filter_dataset_alamy)
     elif dataset_name == "synthetic":
         filtered_dataset = dataset.select(filter_dataset_synthetic)
+    elif dataset_name in ["webdataset", "generic", "custom"]:
+        # Generic dataset - apply minimal filtering based on provided keys
+        def filter_dataset_generic(item: dict[str, Any]) -> bool:
+            if enable_image and image_key not in item:
+                return False
+            if enable_text and caption_key not in item:
+                return False
+            if enable_metadata and metadata_key not in item:
+                return False
+            return True
+        filtered_dataset = dataset.select(filter_dataset_generic)
     else:
-        msg = f"Unknown dataset: {dataset_name}. Must be one of 'laion', 'alamy', or 'synthetic'."
+        msg = f"Unknown dataset: {dataset_name}. Must be one of 'laion', 'alamy', 'synthetic', 'webdataset', 'generic', or 'custom'."
         raise ValueError(
             msg
         )
