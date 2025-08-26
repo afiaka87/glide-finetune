@@ -1,24 +1,35 @@
+# Python
+__pycache__/
 .venv/
 .cache/
-__pycache__/
-finetune_checkpoints/wandb/
-glide_model_cache/
-.vscode/
-outputs/
-wandb/
-finetune_checkpoints/
-docker_child/
-current_prediction.png
-*.sh
-CLAUDE.md
-.trash/
-CKPT/
-
-glide_outputs/
-outputs/
-.claude/
 .compiled_models_cache/
 
-glide-cutouts/
+# IDE and Tools
+.vscode/
+.claude/
 
+# Model Checkpoints and Outputs
 checkpoints/
+finetune_checkpoints/
+CKPT/
+glide_model_cache/
+glide_outputs/
+glide-cutouts/
+outputs/
+current_prediction.png
+
+# Logging and Monitoring
+wandb/
+
+# Documentation and Planning (local-only)
+CLAUDE.md
+MIGRATION.md
+VALIDATION_REPORT.md
+PLAN.md
+
+# Scripts (local development)
+*.sh
+
+# Miscellaneous
+.trash/
+docker_child/
