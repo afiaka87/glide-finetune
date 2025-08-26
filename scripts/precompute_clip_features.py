@@ -168,12 +168,14 @@ def process_webdataset(
         if not tar_files:
             logger.error(f"No tar files found matching pattern: {tar_pattern}")
             return
+        logger.info(f"Found {len(tar_files)} tar files from pattern")
     else:
         # Single file or list of files
         tar_files = [tar_pattern]
+        logger.info(f"Using single tar file: {tar_pattern}")
     
-    # Create dataset
-    dataset = wds.WebDataset(tar_files).decode()
+    # Create dataset with proper shardshuffle setting
+    dataset = wds.WebDataset(tar_files, shardshuffle=False).decode()
 
     # Storage for results
     records = []
@@ -319,12 +321,9 @@ def main():
             args.resume_from,
         )
     else:  # webdataset
-        output_path = Path(args.output_path).expanduser()
-        tar_files = list(Path(args.data_path).expanduser().glob("*.tar"))
-        print(tar_files)
+        output_path = Path(args.output_path)
         process_webdataset(
-            # Path(args.data_path).expanduser(),
-            tar_files,
+            args.data_path,
             output_path,
             clip_model,
             args.device,
