@@ -13,6 +13,7 @@ from glide_finetune.utils.glide_util import get_tokens_and_mask, get_uncond_toke
 from glide_finetune.utils.image_processing import (
     trim_white_padding_pil,
 )
+from glide_finetune.clip_features_loader import load_clip_features
 
 # Import logging utilities
 from glide_finetune.utils.logging_utils import get_logger
@@ -82,6 +83,7 @@ class TextImageDataset(Dataset):
         white_thresh: int = 245,
         skip_samples: int = 0,  # Number of samples to skip for resumption
         resampling_method: str = "bicubic",  # Resampling method for image resizing
+        clip_features_path: str | None = None,  # Path to precomputed CLIP features
     ) -> None:
         super().__init__()
         folder = Path(folder)
@@ -118,6 +120,16 @@ class TextImageDataset(Dataset):
             self.resample = PIL.Image.LANCZOS
         else:  # default to bicubic
             self.resample = PIL.Image.BICUBIC
+        
+        # Load precomputed CLIP features if provided
+        self.clip_features_loader = None
+        if clip_features_path:
+            self.clip_features_loader = load_clip_features(clip_features_path)
+            if self.clip_features_loader:
+                logger.info(f"Loaded CLIP features from {clip_features_path}")
+                logger.info(f"CLIP dimension: {self.clip_features_loader.clip_dim}")
+            else:
+                logger.warning(f"Failed to load CLIP features from {clip_features_path}")
 
         # Handle dataset resumption by rotating keys
         self.skip_samples = skip_samples
@@ -132,15 +144,15 @@ class TextImageDataset(Dataset):
     def __len__(self) -> int:
         return len(self.keys)
 
-    def random_sample(self) -> tuple[th.Tensor, th.Tensor, th.Tensor]:
+    def random_sample(self) -> tuple[th.Tensor, ...]:
         return self.__getitem__(randint(0, self.__len__() - 1))
 
-    def sequential_sample(self, ind: int) -> tuple[th.Tensor, th.Tensor, th.Tensor]:
+    def sequential_sample(self, ind: int) -> tuple[th.Tensor, ...]:
         if ind >= self.__len__() - 1:
             return self.__getitem__(0)
         return self.__getitem__(ind + 1)
 
-    def skip_sample(self, ind: int) -> tuple[th.Tensor, th.Tensor, th.Tensor]:
+    def skip_sample(self, ind: int) -> tuple[th.Tensor, ...]:
         if self.shuffle:
             return self.random_sample()
         return self.sequential_sample(ind=ind)
@@ -158,7 +170,7 @@ class TextImageDataset(Dataset):
             logger.info(f"Skipping index {ind}")
             return self.skip_sample(ind)
 
-    def __getitem__(self, ind: int) -> tuple[th.Tensor, th.Tensor, th.Tensor]:
+    def __getitem__(self, ind: int) -> tuple[th.Tensor, ...]:
         key = self.keys[ind]
         image_file = self.image_files[key]
         if self.text_files is None or random.random() < self.uncond_p:  # noqa: S311 - Pseudorandom is appropriate for ML training
@@ -178,6 +190,15 @@ class TextImageDataset(Dataset):
             original_pil_image = trim_white_padding_pil(
                 original_pil_image, white_thresh=self.white_thresh
             )
+        
+        # Load CLIP features if available
+        clip_features = None
+        if self.clip_features_loader:
+            clip_features = self.clip_features_loader.get_feature(key)
+            if clip_features is None:
+                # Feature not found for this image
+                # Create a zero tensor as placeholder - training code should handle this
+                clip_features = th.zeros(self.clip_features_loader.clip_dim)
 
         if (
             self.enable_upsample
@@ -192,10 +213,14 @@ class TextImageDataset(Dataset):
                 (self.side_x, self.side_y), resample=self.resample
             )
             base_tensor = pil_image_to_norm_tensor(base_pil_image)
+            if clip_features is not None:
+                return th.tensor(tokens), th.tensor(mask, dtype=th.bool), base_tensor, upsample_tensor, clip_features
             return th.tensor(tokens), th.tensor(mask, dtype=th.bool), base_tensor, upsample_tensor
 
         base_pil_image = random_resized_crop(
             original_pil_image, (self.side_x, self.side_y), resize_ratio=self.resize_ratio
         )
         base_tensor = pil_image_to_norm_tensor(base_pil_image)
+        if clip_features is not None:
+            return th.tensor(tokens), th.tensor(mask, dtype=th.bool), base_tensor, clip_features
         return th.tensor(tokens), th.tensor(mask, dtype=th.bool), base_tensor
