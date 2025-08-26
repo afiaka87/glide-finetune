@@ -79,6 +79,7 @@ class Text2ImUNet(UNetModel):
         if self.xf_width:
             self.transformer.apply(convert_module_to_f16)
             self.transformer_proj.to(th.float16)
+            # Convert all embeddings to FP16 for consistency
             self.token_embedding.to(th.float16)
             self.positional_embedding.to(th.float16)
             if self.xf_padding:

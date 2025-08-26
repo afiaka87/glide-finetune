@@ -14,9 +14,13 @@ def convert_module_to_f16(l):
     Convert primitive modules to float16.
     """
     if isinstance(l, (nn.Linear, nn.Conv2d, nn.ConvTranspose2d)):
-        l.weight.data = l.weight.data.half()
-        if l.bias is not None:
-            l.bias.data = l.bias.data.half()
+        # Properly convert the entire module to FP16, not just the data
+        # This ensures the module knows it's in FP16 mode
+        l.half()
+        # Alternative that only converts data (original behavior):
+        # l.weight.data = l.weight.data.half()
+        # if l.bias is not None:
+        #     l.bias.data = l.bias.data.half()
 
 
 class LayerNorm(nn.LayerNorm):
