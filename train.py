@@ -123,60 +123,69 @@ import sys
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Dict, Any, List, Tuple, Union, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 import numpy as np
-import torch as th
-import torch.nn as nn
-import wandb
 import PIL.Image
+import torch as th
+import wandb
 from accelerate import Accelerator
 from accelerate.utils import ProjectConfiguration
-from torch.cuda.amp import GradScaler
+from torch import nn
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-# TF32 handling
+if TYPE_CHECKING:
+    from torch.cuda.amp import GradScaler
+
+# TF32 handling (set before imports to affect module loading)
 if os.environ.get("GLIDE_ENABLE_TF32"):
     th.backends.cuda.matmul.allow_tf32 = True
     th.backends.cudnn.allow_tf32 = True
-    print("✓ TF32 enabled via GLIDE_ENABLE_TF32")
 else:
     th.backends.cuda.matmul.allow_tf32 = False
     th.backends.cudnn.allow_tf32 = False
 
 # Local imports
-from glide_finetune.glide_finetune import create_image_grid
-from glide_finetune.glide_util import load_model, sample
-from glide_finetune.loader import TextImageDataset
-from glide_finetune.train_util import pred_to_pil
-from glide_finetune.wds_loader import glide_wds_loader
-from glide_finetune.wds_loader_optimized import glide_wds_loader_optimized
 from glide_finetune.checkpoint_manager import CheckpointManager
+from glide_finetune.utils.layer_utils import validate_mutual_exclusion
 from glide_finetune.fp16_training import (
     FP16TrainingConfig,
     FP16TrainingStep,
     SelectiveFP16Converter,
 )
-from glide_finetune.freeze_utils import apply_freeze_policy, build_optimizer_params
-from glide_finetune.randomize_utils import randomize_transformer, randomize_diffusion
+from glide_finetune.utils.freeze_utils import apply_freeze_policy, build_optimizer_params
+from glide_finetune.glide_finetune import create_image_grid
+from glide_finetune.utils.glide_util import load_model, sample
+from glide_finetune.loader import TextImageDataset
+from glide_finetune.utils.randomize_utils import randomize_diffusion, randomize_transformer
+from glide_finetune.utils.train_util import pred_to_pil
+from glide_finetune.utils.logging_utils import get_logger
+from glide_finetune.wds_loader import glide_wds_loader
+from glide_finetune.wds_loader_optimized import glide_wds_loader_optimized
 
+# Initialize logger after imports
+logger = get_logger("glide_finetune.train")
+
+# Log TF32 status
+if os.environ.get("GLIDE_ENABLE_TF32"):
+    logger.info("✓ TF32 enabled via GLIDE_ENABLE_TF32")
 
 # WebDataLoader with length estimation
 class WebDataLoader:
     """DataLoader wrapper that provides length estimation for WebDatasets."""
-    
-    def __init__(self, dataloader: DataLoader, num_tars: int, samples_per_tar: int = 10000):
+
+    def __init__(self, dataloader: DataLoader[Any], num_tars: int, samples_per_tar: int = 10000):
         self.dataloader = dataloader
         self.estimated_length = num_tars * samples_per_tar
-        
+
     def __iter__(self):
         return iter(self.dataloader)
-        
+
     def __len__(self):
         return self.estimated_length // self.dataloader.batch_size
-        
+
     def __getattr__(self, name):
         # Delegate all other attributes to the wrapped dataloader
         return getattr(self.dataloader, name)
@@ -234,7 +243,7 @@ class DataConfig:
     wds_dataset_name: str = "laion"
     image_key: str = "jpg"
     caption_key: str = "txt"
-    bloom_filter_path: Optional[str] = None
+    bloom_filter_path: str | None = None
     side_x: int = 64
     side_y: int = 64
     resize_ratio: float = 1.0
@@ -245,21 +254,21 @@ class DataConfig:
     use_augmentations: bool = True
     batch_size: int = 1
     num_workers: int = 4
-    epoch_samples: Optional[int] = None
+    epoch_samples: int | None = None
 
 
 @dataclass(frozen=True)
 class ModelConfig:
     """Model configuration."""
 
-    model_path: Optional[str] = None
+    model_path: str | None = None
     resume_ckpt: str = ""
     train_upsample: bool = False
     freeze_transformer: bool = False
     freeze_diffusion: bool = False
     randomize_transformer: bool = False
     randomize_diffusion: bool = False
-    randomize_init_std: Optional[float] = None
+    randomize_init_std: float | None = None
     activation_checkpointing: bool = False
     upscale_factor: int = 4
     image_to_upsample: str = "low_res_face.png"
@@ -278,7 +287,7 @@ class TrainingConfig:
     warmup_start_lr: float = 7e-7
     use_8bit_adam: bool = False
     skip_optimizer_resume: bool = False
-    seed: Optional[int] = None
+    seed: int | None = None
     device: str = ""
     cudnn_benchmark: bool = False
 
@@ -309,7 +318,7 @@ class LoggingConfig:
 
     project_name: str = "glide_unified"
     checkpoints_dir: str = "./checkpoints"
-    save_directory: Optional[str] = None
+    save_directory: str | None = None
     log_frequency: int = 100
     sample_frequency: int = 500
     save_frequency: int = 1000
@@ -321,11 +330,11 @@ class SamplingConfig:
     """Sample generation configuration."""
 
     test_prompt: str = "a beautiful sunset over mountains"
-    eval_prompt_file: Optional[str] = None
+    eval_prompt_file: str | None = None
     test_batch_size: int = 1
     test_guidance_scale: float = 4.0
     sampler: str = "plms"
-    num_steps: Optional[int] = None
+    num_steps: int | None = None
     eta: float = 0.0
     timestep_respacing: int = 100
     use_swinir: bool = False
@@ -349,13 +358,11 @@ class TrainConfig:
 class TrainingStrategy(Protocol):
     """Protocol for training strategies."""
 
-    def setup_model(self, config: TrainConfig) -> Tuple[nn.Module, Any, Dict]:
+    def setup_model(self, config: TrainConfig) -> tuple[nn.Module, Any, dict]:
         """Setup model, diffusion, and options."""
         ...
 
-    def setup_optimizer(
-        self, model: nn.Module, config: TrainConfig
-    ) -> th.optim.Optimizer:
+    def setup_optimizer(self, model: nn.Module, config: TrainConfig) -> th.optim.Optimizer:
         """Setup optimizer."""
         ...
 
@@ -370,7 +377,7 @@ class TrainingStrategy(Protocol):
         batch: Any,
         optimizer: th.optim.Optimizer,
         config: TrainConfig,
-    ) -> Dict[str, float]:
+    ) -> dict[str, float]:
         """Perform a single training step."""
         ...
 
@@ -495,9 +502,7 @@ def create_unified_parser() -> argparse.ArgumentParser:
     data_group.add_argument(
         "--no_augmentations", action="store_true", help="Disable data augmentations"
     )
-    data_group.add_argument(
-        "--batch_size", "-bs", type=int, default=1, help="Batch size per GPU"
-    )
+    data_group.add_argument("--batch_size", "-bs", type=int, default=1, help="Batch size per GPU")
     data_group.add_argument(
         "--num_workers", type=int, default=4, help="Number of data loading workers"
     )
@@ -817,8 +822,6 @@ def validate_args(args: argparse.Namespace) -> None:
     """Validate argument combinations and dependencies."""
     # Mutual exclusions
     # Validate mutual exclusion for freeze/randomize options
-    from glide_finetune.layer_utils import validate_mutual_exclusion
-    
     try:
         validate_mutual_exclusion(
             freeze_transformer=args.freeze_transformer,
@@ -827,37 +830,36 @@ def validate_args(args: argparse.Namespace) -> None:
             randomize_diffusion=args.randomize_diffusion,
         )
     except ValueError as e:
-        raise ValueError(str(e))
+        raise ValueError(str(e)) from e
 
     if args.use_fp16 and args.use_bf16:
-        raise ValueError("Cannot use both FP16 and BF16 mixed precision")
+        msg = "Cannot use both FP16 and BF16 mixed precision"
+        raise ValueError(msg)
 
     if args.use_augmentations and args.no_augmentations:
-        raise ValueError(
-            "Cannot specify both --use_augmentations and --no_augmentations"
-        )
+        msg = "Cannot specify both --use_augmentations and --no_augmentations"
+        raise ValueError(msg)
 
     # Handle augmentation flags
     if args.no_augmentations:
         args.use_augmentations = False
 
     # Validate paths
-    if args.resume_ckpt and not (
-        Path(args.resume_ckpt).exists() or args.resume_ckpt == ""
-    ):
-        raise ValueError(f"Resume checkpoint not found: {args.resume_ckpt}")
+    if args.resume_ckpt and not (Path(args.resume_ckpt).exists() or args.resume_ckpt == ""):
+        msg = f"Resume checkpoint not found: {args.resume_ckpt}"
+        raise ValueError(msg)
 
     if args.eval_prompt_file and not Path(args.eval_prompt_file).exists():
-        raise ValueError(f"Evaluation prompt file not found: {args.eval_prompt_file}")
+        msg = f"Evaluation prompt file not found: {args.eval_prompt_file}"
+        raise ValueError(msg)
 
     # WebDataset validation
     if args.use_optimized_loader and not args.use_webdataset:
-        raise ValueError("--use_optimized_loader requires --use_webdataset")
+        msg = "--use_optimized_loader requires --use_webdataset"
+        raise ValueError(msg)
 
     if args.use_optimized_loader and not args.bloom_filter_path:
-        print(
-            "Warning: --use_optimized_loader specified but no --bloom_filter_path provided"
-        )
+        logger.warning("Warning: --use_optimized_loader specified but no --bloom_filter_path provided")
 
 
 def args_to_config(args: argparse.Namespace) -> TrainConfig:
@@ -947,7 +949,7 @@ def args_to_config(args: argparse.Namespace) -> TrainConfig:
 
 
 # Pure utility functions
-def setup_seed(seed: Optional[int] = None) -> int:
+def setup_seed(seed: int | None = None) -> int:
     """Setup seeds for reproducible training.
 
     Args:
@@ -958,9 +960,9 @@ def setup_seed(seed: Optional[int] = None) -> int:
     """
     if seed is None:
         seed = random.randint(0, 2**32 - 1)
-        print(f"No seed specified, using random seed: {seed}")
+        logger.info(f"No seed specified, using random seed: {seed}")
     else:
-        print(f"Using seed: {seed}")
+        logger.info(f"Using seed: {seed}")
 
     # Set seeds for all random number generators
     random.seed(seed)
@@ -974,11 +976,11 @@ def setup_seed(seed: Optional[int] = None) -> int:
 
     # Deterministic behavior setup
     if seed != 0:  # 0 is the default performance mode
-        print("⚠️  Enabling deterministic mode. This may reduce training speed.")
+        logger.info("⚠️  Enabling deterministic mode. This may reduce training speed.")
         th.backends.cudnn.deterministic = True
         th.backends.cudnn.benchmark = False
     else:
-        print("Using default seed (0) - keeping performance optimizations enabled.")
+        logger.info("Using default seed (0) - keeping performance optimizations enabled.")
         th.backends.cudnn.benchmark = True
 
     return seed
@@ -998,19 +1000,17 @@ def detect_device(device_str: str = "") -> th.device:
     else:
         device = th.device("cpu") if not th.cuda.is_available() else th.device("cuda")
 
-    print(f"Using device: {device}")
+    logger.info(f"Using device: {device}")
     if device.type == "cuda":
-        print(f"GPU: {th.cuda.get_device_name(device)}")
-        print(
-            f"Memory: {th.cuda.get_device_properties(device).total_memory / 1e9:.1f} GB"
-        )
+        logger.info(f"GPU: {th.cuda.get_device_name(device)}")
+        logger.info(f"Memory: {th.cuda.get_device_properties(device).total_memory / 1e9:.1f} GB")
 
     return device
 
 
 def apply_model_modifications(model: nn.Module, config: ModelConfig) -> None:
     """Apply freeze and randomization policies to the model.
-    
+
     Args:
         model: The model to modify
         config: Model configuration with freeze/randomize settings
@@ -1022,22 +1022,22 @@ def apply_model_modifications(model: nn.Module, config: ModelConfig) -> None:
             freeze_transformer=config.freeze_transformer,
             freeze_diffusion=config.freeze_diffusion,
         )
-        print(f"\n{freeze_summary}\n")
-    
+        logger.info(f"\n{freeze_summary}\n")
+
     # Apply randomization if needed
     if config.randomize_transformer:
-        print("\nRandomizing transformer weights...")
+        logger.info("\nRandomizing transformer weights...")
         summary = randomize_transformer(model, init_std=config.randomize_init_std)
-        print(f"Randomized {summary.selected_params:,} parameters\n")
+        logger.info(f"Randomized {summary.selected_params:,} parameters\n")
     elif config.randomize_diffusion:
-        print("\nRandomizing diffusion weights...")
+        logger.info("\nRandomizing diffusion weights...")
         summary = randomize_diffusion(model, init_std=config.randomize_init_std)
-        print(f"Randomized {summary.selected_params:,} parameters\n")
+        logger.info(f"Randomized {summary.selected_params:,} parameters\n")
 
 
 def load_glide_model(
-    config: ModelConfig, use_fp16: bool = False, device: Optional[th.device] = None
-) -> Tuple[nn.Module, Any, Dict]:
+    config: ModelConfig, use_fp16: bool = False, device: th.device | None = None
+) -> tuple[nn.Module, Any, dict]:
     """Load GLIDE model with optional checkpoint resumption.
 
     Args:
@@ -1051,17 +1051,17 @@ def load_glide_model(
     # Determine model path
     model_path = config.model_path or config.resume_ckpt
     if model_path and not Path(model_path).exists():
-        print(f"Warning: Model path {model_path} not found, using base model")
+        logger.warning(f"Warning: Model path {model_path} not found, using base model")
         model_path = None
 
     # Determine model type
     model_type = "upsample" if config.train_upsample else "base"
 
-    print(f"Loading {model_type} model...")
+    logger.info(f"Loading {model_type} model...")
     if model_path:
-        print(f"  From: {model_path}")
+        logger.info(f"  From: {model_path}")
     else:
-        print("  Using OpenAI base model")
+        logger.info("  Using OpenAI base model")
 
     # Load model
     glide_model, glide_diffusion, glide_options = load_model(
@@ -1079,14 +1079,12 @@ def load_glide_model(
 
     # Print model info
     total_params = sum(p.numel() for p in glide_model.parameters())
-    trainable_params = sum(
-        p.numel() for p in glide_model.parameters() if p.requires_grad
-    )
-    print(f"Model parameters: {total_params:,} total, {trainable_params:,} trainable")
+    trainable_params = sum(p.numel() for p in glide_model.parameters() if p.requires_grad)
+    logger.info(f"Model parameters: {total_params:,} total, {trainable_params:,} trainable")
 
     if config.freeze_transformer or config.freeze_diffusion:
         frozen_params = total_params - trainable_params
-        print(f"Frozen parameters: {frozen_params:,}")
+        logger.info(f"Frozen parameters: {frozen_params:,}")
 
     return glide_model, glide_diffusion, glide_options
 
@@ -1121,9 +1119,9 @@ def create_optimizer(
                 betas=(0.9, 0.999),
                 eps=1e-8,
             )
-            print("Using 8-bit AdamW optimizer")
+            logger.info("Using 8-bit AdamW optimizer")
         except ImportError:
-            print("Warning: bitsandbytes not available, falling back to standard AdamW")
+            logger.warning("Warning: bitsandbytes not available, falling back to standard AdamW")
             optimizer = th.optim.AdamW(
                 param_groups,
                 lr=config.learning_rate,
@@ -1146,7 +1144,7 @@ def create_warmup_scheduler(
     warmup_steps: int,
     warmup_start_lr: float = 7e-7,
     target_lr: float = 1e-5,
-) -> Optional[LambdaLR]:
+) -> LambdaLR | None:
     """Create learning rate scheduler with linear warmup.
 
     Args:
@@ -1167,9 +1165,8 @@ def create_warmup_scheduler(
             progress = float(current_step) / float(max(1, warmup_steps))
             actual_lr = warmup_start_lr + progress * (target_lr - warmup_start_lr)
             return actual_lr / target_lr
-        else:
-            # After warmup, use full learning rate
-            return 1.0
+        # After warmup, use full learning rate
+        return 1.0
 
     return LambdaLR(optimizer, lr_lambda)
 
@@ -1190,8 +1187,7 @@ def create_dataloader(
     """
     if config.data.use_webdataset:
         return create_webdataset_loader(config, model, distributed)
-    else:
-        return create_local_dataset_loader(config, model, distributed)
+    return create_local_dataset_loader(config, model, distributed)
 
 
 def create_local_dataset_loader(
@@ -1234,7 +1230,7 @@ def create_local_dataset_loader(
         drop_last=distributed,  # Important for distributed training
     )
 
-    print(f"Local dataset: {len(dataset):,} images")
+    logger.info(f"Local dataset: {len(dataset):,} images")
     return loader
 
 
@@ -1252,17 +1248,11 @@ def create_webdataset_loader(
         DataLoader for WebDataset (wrapped with length estimation)
     """
     # Expand glob patterns for WebDataset
-    if (
-        "*" in config.data.data_dir
-        or "?" in config.data.data_dir
-        or "[" in config.data.data_dir
-    ):
+    if "*" in config.data.data_dir or "?" in config.data.data_dir or "[" in config.data.data_dir:
         tar_files = sorted(glob.glob(config.data.data_dir))
         if not tar_files:
             raise ValueError(f"No files found matching pattern: {config.data.data_dir}")
-        print(
-            f"Found {len(tar_files)} tar files matching pattern: {config.data.data_dir}"
-        )
+        logger.info(f"Found {len(tar_files)} tar files matching pattern: {config.data.data_dir}")
         urls = tar_files
         num_tars = len(tar_files)
     else:
@@ -1277,13 +1267,13 @@ def create_webdataset_loader(
         dataloader = create_distributed_webdataset_loader(config, model, urls)
     else:
         dataloader = create_standard_webdataset_loader(config, model, urls)
-    
+
     # Wrap with length estimation
     return WebDataLoader(dataloader, num_tars)
 
 
 def create_standard_webdataset_loader(
-    config: TrainConfig, model: nn.Module, urls: Union[str, List[str]]
+    config: TrainConfig, model: nn.Module, urls: str | list[str]
 ) -> DataLoader:
     """Create standard WebDataset loader.
 
@@ -1295,7 +1285,7 @@ def create_standard_webdataset_loader(
     Returns:
         DataLoader for standard WebDataset
     """
-    print("Using standard WebDataset loader")
+    logger.info("Using standard WebDataset loader")
 
     dataset = glide_wds_loader(
         urls=urls,
@@ -1334,7 +1324,7 @@ def create_standard_webdataset_loader(
 def create_optimized_webdataset_loader(
     config: TrainConfig,
     model: nn.Module,
-    urls: Union[str, List[str]],
+    urls: str | list[str],
     distributed: bool = False,
 ) -> DataLoader:
     """Create optimized WebDataset loader with bloom filter.
@@ -1348,18 +1338,13 @@ def create_optimized_webdataset_loader(
     Returns:
         DataLoader for optimized WebDataset
     """
-    if (
-        not config.data.bloom_filter_path
-        or not Path(config.data.bloom_filter_path).exists()
-    ):
-        print(
+    if not config.data.bloom_filter_path or not Path(config.data.bloom_filter_path).exists():
+        logger.info(
             f"Warning: Bloom filter not found at {config.data.bloom_filter_path}, falling back to standard loader"
         )
         return create_standard_webdataset_loader(config, model, urls)
 
-    print(
-        f"Using optimized WebDataset loader with bloom filter: {config.data.bloom_filter_path}"
-    )
+    logger.info(f"Using optimized WebDataset loader with bloom filter: {config.data.bloom_filter_path}")
 
     dataset = glide_wds_loader_optimized(
         urls=urls,
@@ -1388,7 +1373,7 @@ def create_optimized_webdataset_loader(
 
 
 def create_distributed_webdataset_loader(
-    config: TrainConfig, model: nn.Module, urls: Union[str, List[str]]
+    config: TrainConfig, model: nn.Module, urls: str | list[str]
 ) -> DataLoader:
     """Create distributed WebDataset loader for multi-GPU training.
 
@@ -1403,7 +1388,7 @@ def create_distributed_webdataset_loader(
     try:
         from glide_finetune.wds_loader_distributed import distributed_wds_loader
 
-        print("Using distributed WebDataset loader")
+        logger.info("Using distributed WebDataset loader")
 
         # Note: This assumes the distributed loader exists - if not, fall back
         loader = distributed_wds_loader(
@@ -1431,18 +1416,18 @@ def create_distributed_webdataset_loader(
             use_augmentations=config.data.use_augmentations,
         )
 
-        return loader
+        return loader  # type: ignore[return-value]
 
     except ImportError:
-        print(
+        logger.info(
             "Warning: Distributed WebDataset loader not available, falling back to standard loader"
         )
         return create_standard_webdataset_loader(config, model, urls)
 
 
 def load_evaluation_prompts(
-    eval_prompt_file: Optional[str], default_prompt: str
-) -> Tuple[List[str], int]:
+    eval_prompt_file: str | None, default_prompt: str
+) -> tuple[list[str], int]:
     """Load evaluation prompts from file or use default.
 
     Args:
@@ -1454,12 +1439,12 @@ def load_evaluation_prompts(
     """
     if not eval_prompt_file or not Path(eval_prompt_file).exists():
         if eval_prompt_file:
-            print(
+            logger.info(
                 f"Warning: Evaluation prompt file {eval_prompt_file} not found. Using default prompt."
             )
         return [default_prompt], 1
 
-    with open(eval_prompt_file, "r") as f:
+    with open(eval_prompt_file) as f:
         lines = [line.strip() for line in f.readlines() if line.strip()]
 
     # Support power-of-2 grid sizes: 1, 2, 4, 8, 16, 32, 64, 128, 256
@@ -1475,7 +1460,7 @@ def load_evaluation_prompts(
     else:
         # More than 256 prompts, truncate to 256
         target_size = 256
-        print(
+        logger.info(
             f"Warning: {num_prompts} prompts found in {eval_prompt_file}, truncating to {target_size} for visualization."
         )
         lines = lines[:target_size]
@@ -1483,13 +1468,13 @@ def load_evaluation_prompts(
 
     # Pad if necessary to reach target size
     if num_prompts < target_size:
-        print(
+        logger.info(
             f"Info: {num_prompts} prompts found in {eval_prompt_file}, padding to {target_size} for grid visualization."
         )
         while len(lines) < target_size:
             lines.append(lines[-1] if lines else default_prompt)
     else:
-        print(f"Loaded {num_prompts} evaluation prompts from {eval_prompt_file}")
+        logger.info(f"Loaded {num_prompts} evaluation prompts from {eval_prompt_file}")
 
     return lines[:target_size], target_size
 
@@ -1498,13 +1483,13 @@ def load_evaluation_prompts(
 def generate_samples(
     model: nn.Module,
     diffusion: Any,
-    options: Dict,
-    prompts: List[str],
+    options: dict,
+    prompts: list[str],
     config: SamplingConfig,
     device: th.device,
     step: int,
     output_dir: Path,
-) -> List[PIL.Image.Image]:
+) -> list[PIL.Image.Image]:
     """Generate sample images for evaluation.
 
     Args:
@@ -1558,8 +1543,8 @@ def generate_samples(
 
 
 def create_sample_grid(
-    sample_images: List[PIL.Image.Image], grid_size: int, step: int, output_dir: Path
-) -> Optional[PIL.Image.Image]:
+    sample_images: list[PIL.Image.Image], grid_size: int, step: int, output_dir: Path
+) -> PIL.Image.Image | None:
     """Create and save sample grid.
 
     Args:
@@ -1593,15 +1578,14 @@ def create_sample_grid(
         grid_path = output_dir / f"step{step:06d}_grid.png"
         grid_img.save(grid_path)
         return grid_img
-    else:
-        return sample_images[0] if sample_images else None
+    return sample_images[0] if sample_images else None
 
 
 def log_samples_to_wandb(
     wandb_run,
-    sample_images: List[PIL.Image.Image],
-    prompts: List[str],
-    grid_img: Optional[PIL.Image.Image],
+    sample_images: list[PIL.Image.Image],
+    prompts: list[str],
+    grid_img: PIL.Image.Image | None,
     grid_size: int,
     step: int,
 ) -> None:
@@ -1620,7 +1604,7 @@ def log_samples_to_wandb(
 
     # Create gallery images with captions
     wandb_gallery_images = []
-    for img, prompt in zip(sample_images, prompts):
+    for img, prompt in zip(sample_images, prompts, strict=False):
         wandb_gallery_images.append(wandb.Image(img, caption=prompt))
 
     # Log data
@@ -1641,9 +1625,7 @@ def log_samples_to_wandb(
             256: (16, 16),
         }.get(grid_size, (1, 1))
 
-        log_data["samples/grid"] = wandb.Image(
-            grid_img, caption=f"{grid_rows}x{grid_cols} Grid"
-        )
+        log_data["samples/grid"] = wandb.Image(grid_img, caption=f"{grid_rows}x{grid_cols} Grid")
 
     wandb_run.log(log_data, step=step)
 
@@ -1678,9 +1660,7 @@ def setup_wandb_logging(config: TrainConfig, model: nn.Module) -> Any:
             "use_fp16": config.fp16.use_fp16,
             "use_bf16": config.fp16.use_bf16,
             "fp16_mode": config.fp16.fp16_mode if config.fp16.use_fp16 else "none",
-            "fp16_loss_scale": config.fp16.fp16_loss_scale
-            if config.fp16.use_fp16
-            else 1.0,
+            "fp16_loss_scale": config.fp16.fp16_loss_scale if config.fp16.use_fp16 else 1.0,
             "uncond_p": config.data.uncond_p,
             "train_upsample": config.model.train_upsample,
             "freeze_transformer": config.model.freeze_transformer,
@@ -1704,11 +1684,11 @@ def setup_wandb_logging(config: TrainConfig, model: nn.Module) -> Any:
         wandb_run.summary["model/trainable_params"] = trainable_params
         wandb_run.summary["model/frozen_params"] = total_params - trainable_params
 
-        print(f"WandB initialized: {wandb_run.url}")
+        logger.info(f"WandB initialized: {wandb_run.url}")
         return wandb_run
 
     except Exception as e:
-        print(f"WandB setup failed: {e}. Continuing without wandb logging.")
+        logger.info(f"WandB setup failed: {e}. Continuing without wandb logging.")
         return None
 
 
@@ -1724,13 +1704,13 @@ class InterruptHandler:
         """Handle CTRL-C interrupt."""
         if self.interrupted:
             # Second interrupt - force exit
-            print("\n\n⚠️  Force exit requested. Exiting immediately...")
+            logger.info("\n\n⚠️  Force exit requested. Exiting immediately...")
             signal.signal(signal.SIGINT, self.original_sigint)
             sys.exit(1)
 
         self.interrupted = True
-        print("\n\n⚠️  Training interrupted!")
-        print("Press CTRL-C again to force exit, or wait for checkpoint save...")
+        logger.info("\n\n⚠️  Training interrupted!")
+        logger.info("Press CTRL-C again to force exit, or wait for checkpoint save...")
 
     def reset(self):
         """Reset interrupt flag after handling."""
@@ -1750,19 +1730,17 @@ class SingleGPUStrategy:
 
     def __init__(self, device: th.device):
         self.device = device
-        self.checkpoint_manager: Optional[CheckpointManager] = None
-        self.scaler: Optional[GradScaler] = None
+        self.checkpoint_manager: CheckpointManager | None = None
+        self.scaler: GradScaler | None = None
 
-    def setup_model(self, config: TrainConfig) -> Tuple[nn.Module, Any, Dict]:
+    def setup_model(self, config: TrainConfig) -> tuple[nn.Module, Any, dict]:
         """Setup model for single GPU training."""
         model, diffusion, options = load_glide_model(config.model, device=self.device)
         apply_model_modifications(model, config.model)
         model.train()
         return model, diffusion, options
 
-    def setup_optimizer(
-        self, model: nn.Module, config: TrainConfig
-    ) -> th.optim.Optimizer:
+    def setup_optimizer(self, model: nn.Module, config: TrainConfig) -> th.optim.Optimizer:
         """Setup optimizer for single GPU training."""
         return create_optimizer(model, config.training, config.training.use_8bit_adam)
 
@@ -1785,7 +1763,7 @@ class SingleGPUStrategy:
         batch: Any,
         optimizer: th.optim.Optimizer,
         config: TrainConfig,
-    ) -> Dict[str, float]:
+    ) -> dict[str, float]:
         """Perform single GPU training step."""
         # Unpack batch
         if isinstance(batch, (list, tuple)):
@@ -1808,16 +1786,12 @@ class SingleGPUStrategy:
 
             # Apply unconditional training
             if config.data.uncond_p > 0:
-                mask = (
-                    th.rand(images.shape[0], device=self.device) < config.data.uncond_p
-                )
+                mask = th.rand(images.shape[0], device=self.device) < config.data.uncond_p
                 tokens = tokens.clone()
                 tokens[mask] = 0
 
         # Forward pass
-        timesteps = th.randint(
-            0, len(diffusion.betas) - 1, (images.shape[0],), device=self.device
-        )
+        timesteps = th.randint(0, len(diffusion.betas) - 1, (images.shape[0],), device=self.device)
         noise = th.randn_like(images, device=self.device)
         x_t = diffusion.q_sample(images, timesteps, noise=noise)
 
@@ -1829,8 +1803,8 @@ class SingleGPUStrategy:
         )
 
         # Compute loss
-        _, C = x_t.shape[:2]
-        epsilon, _ = th.split(model_output, C, dim=1)
+        _, channels = x_t.shape[:2]
+        epsilon, _ = th.split(model_output, channels, dim=1)
         loss = th.nn.functional.mse_loss(epsilon, noise.detach())
 
         # Backward pass
@@ -1838,9 +1812,7 @@ class SingleGPUStrategy:
         loss.backward()
 
         # Gradient clipping
-        grad_norm = th.nn.utils.clip_grad_norm_(
-            model.parameters(), config.training.grad_clip
-        )
+        grad_norm = th.nn.utils.clip_grad_norm_(model.parameters(), config.training.grad_clip)
 
         optimizer.step()
 
@@ -1856,39 +1828,33 @@ class FP16Strategy:
 
     def __init__(self, device: th.device):
         self.device = device
-        self.trainer: Optional[FP16TrainingStep] = None
-        self.checkpoint_manager: Optional[CheckpointManager] = None
+        self.trainer: FP16TrainingStep | None = None
+        self.checkpoint_manager: CheckpointManager | None = None
 
-    def setup_model(self, config: TrainConfig) -> Tuple[nn.Module, Any, Dict]:
+    def setup_model(self, config: TrainConfig) -> tuple[nn.Module, Any, dict]:
         """Setup model for FP16 training."""
         model, diffusion, options = load_glide_model(config.model, device=self.device)
-        
+
         # Apply freeze/randomization policies BEFORE FP16 conversion
         apply_model_modifications(model, config.model)
 
         # Apply FP16 conversion
         if config.fp16.use_fp16:
-            print(f"Converting model to FP16 (mode: {config.fp16.fp16_mode})")
-            converter = SelectiveFP16Converter(
-                aggressive=(config.fp16.fp16_mode == "aggressive")
-            )
+            logger.info(f"Converting model to FP16 (mode: {config.fp16.fp16_mode})")
+            converter = SelectiveFP16Converter(aggressive=(config.fp16.fp16_mode == "aggressive"))
             model, conv_stats = converter.convert_model_mixed_precision(model)
-            print(f"  FP16 params: {conv_stats['fp16_params']:,}")
-            print(f"  FP32 params: {conv_stats['fp32_params']:,}")
-            print(
+            logger.info(f"  FP16 params: {conv_stats['fp16_params']:,}")
+            logger.info(f"  FP32 params: {conv_stats['fp32_params']:,}")
+            logger.info(
                 f"  FP16 ratio: {conv_stats['fp16_params'] / (conv_stats['fp16_params'] + conv_stats['fp32_params']) * 100:.1f}%"
             )
 
         model.train()
         return model, diffusion, options
 
-    def setup_optimizer(
-        self, model: nn.Module, config: TrainConfig
-    ) -> th.optim.Optimizer:
+    def setup_optimizer(self, model: nn.Module, config: TrainConfig) -> th.optim.Optimizer:
         """Setup optimizer for FP16 training."""
-        base_optimizer = create_optimizer(
-            model, config.training, config.training.use_8bit_adam
-        )
+        base_optimizer = create_optimizer(model, config.training, config.training.use_8bit_adam)
 
         # Create FP16 trainer
         fp16_config = FP16TrainingConfig(
@@ -1923,7 +1889,7 @@ class FP16Strategy:
         batch: Any,
         optimizer: th.optim.Optimizer,
         config: TrainConfig,
-    ) -> Dict[str, float]:
+    ) -> dict[str, float]:
         """Perform FP16 training step."""
         if self.trainer is None:
             raise RuntimeError("FP16 trainer not initialized")
@@ -1937,9 +1903,7 @@ class FP16Strategy:
                 elif len(batch) == 4:
                     tokens, masks, images, _ = batch
                 else:
-                    raise ValueError(
-                        f"Unexpected batch format with {len(batch)} elements"
-                    )
+                    raise ValueError(f"Unexpected batch format with {len(batch)} elements")
             else:
                 images = batch["images"]
                 tokens = batch.get("tokens")
@@ -1953,10 +1917,7 @@ class FP16Strategy:
 
                 # Apply unconditional training
                 if config.data.uncond_p > 0:
-                    mask = (
-                        th.rand(images.shape[0], device=self.device)
-                        < config.data.uncond_p
-                    )
+                    mask = th.rand(images.shape[0], device=self.device) < config.data.uncond_p
                     tokens = tokens.clone()
                     tokens[mask] = 0
 
@@ -1978,8 +1939,8 @@ class FP16Strategy:
             )
 
             # Compute loss
-            _, C = x_t.shape[:2]
-            epsilon, _ = th.split(model_output, C, dim=1)
+            _, channels = x_t.shape[:2]
+            epsilon, _ = th.split(model_output, channels, dim=1)
             return th.nn.functional.mse_loss(epsilon, noise.detach())
 
         # Use FP16 trainer for the step
@@ -1991,8 +1952,8 @@ class MultiGPUStrategy:
     """Multi-GPU distributed training strategy using Accelerate."""
 
     def __init__(self):
-        self.accelerator: Optional[Accelerator] = None
-        self.checkpoint_manager: Optional[CheckpointManager] = None
+        self.accelerator: Accelerator | None = None
+        self.checkpoint_manager: CheckpointManager | None = None
 
     def setup_accelerator(self, config: TrainConfig) -> Accelerator:
         """Setup Accelerator for distributed training."""
@@ -2029,7 +1990,7 @@ class MultiGPUStrategy:
 
         return self.accelerator
 
-    def setup_model(self, config: TrainConfig) -> Tuple[nn.Module, Any, Dict]:
+    def setup_model(self, config: TrainConfig) -> tuple[nn.Module, Any, dict]:
         """Setup model for multi-GPU training."""
         if self.accelerator is None:
             self.accelerator = self.setup_accelerator(config)
@@ -2037,21 +1998,25 @@ class MultiGPUStrategy:
         model, diffusion, options = load_glide_model(config.model)
 
         # Apply freeze/randomization policies (only print on main process)
-        if config.model.freeze_transformer or config.model.freeze_diffusion or config.model.randomize_transformer or config.model.randomize_diffusion:
+        if (
+            config.model.freeze_transformer
+            or config.model.freeze_diffusion
+            or config.model.randomize_transformer
+            or config.model.randomize_diffusion
+        ):
             if self.accelerator.is_main_process:
                 apply_model_modifications(model, config.model)
             else:
                 # Apply quietly on other processes
-                import io
                 import contextlib
+                import io
+
                 with contextlib.redirect_stdout(io.StringIO()):
                     apply_model_modifications(model, config.model)
 
         return model, diffusion, options
 
-    def setup_optimizer(
-        self, model: nn.Module, config: TrainConfig
-    ) -> th.optim.Optimizer:
+    def setup_optimizer(self, model: nn.Module, config: TrainConfig) -> th.optim.Optimizer:
         """Setup optimizer for multi-GPU training."""
         return create_optimizer(model, config.training, config.training.use_8bit_adam)
 
@@ -2059,9 +2024,7 @@ class MultiGPUStrategy:
         """Setup data loader for multi-GPU training."""
         return create_dataloader(config, model, distributed=True)
 
-    def setup_checkpoint_manager(
-        self, config: TrainConfig
-    ) -> Optional[CheckpointManager]:
+    def setup_checkpoint_manager(self, config: TrainConfig) -> CheckpointManager | None:
         """Setup checkpoint manager (only on main process)."""
         if self.accelerator and self.accelerator.is_main_process:
             save_dir = config.logging.save_directory or config.logging.checkpoints_dir
@@ -2079,7 +2042,7 @@ class MultiGPUStrategy:
         batch: Any,
         optimizer: th.optim.Optimizer,
         config: TrainConfig,
-    ) -> Dict[str, float]:
+    ) -> dict[str, float]:
         """Perform multi-GPU training step."""
         if self.accelerator is None:
             raise RuntimeError("Accelerator not initialized")
@@ -2108,9 +2071,7 @@ class MultiGPUStrategy:
 
             # Gradient clipping
             if config.training.grad_clip > 0:
-                self.accelerator.clip_grad_norm_(
-                    model.parameters(), config.training.grad_clip
-                )
+                self.accelerator.clip_grad_norm_(model.parameters(), config.training.grad_clip)
 
             # Optimizer step
             optimizer.step()
@@ -2123,8 +2084,8 @@ class MultiGPUStrategy:
 
 
 def create_training_strategy(
-    mode: str, device: Optional[th.device] = None
-) -> Union[SingleGPUStrategy, FP16Strategy, MultiGPUStrategy]:
+    mode: str, device: th.device | None = None
+) -> SingleGPUStrategy | FP16Strategy | MultiGPUStrategy:
     """Factory function to create training strategy based on mode.
 
     Args:
@@ -2138,14 +2099,13 @@ def create_training_strategy(
         if device is None:
             raise ValueError("Device required for single GPU strategy")
         return SingleGPUStrategy(device)
-    elif mode == "fp16":
+    if mode == "fp16":
         if device is None:
             raise ValueError("Device required for FP16 strategy")
         return FP16Strategy(device)
-    elif mode == "multi_gpu":
+    if mode == "multi_gpu":
         return MultiGPUStrategy()
-    else:
-        raise ValueError(f"Unknown training mode: {mode}")
+    raise ValueError(f"Unknown training mode: {mode}")
 
 
 def determine_training_mode(config: TrainConfig) -> str:
@@ -2159,10 +2119,9 @@ def determine_training_mode(config: TrainConfig) -> str:
     """
     if config.multi_gpu.use_distributed or config.multi_gpu.use_accelerate:
         return "multi_gpu"
-    elif config.fp16.use_fp16 or config.fp16.use_bf16:
+    if config.fp16.use_fp16 or config.fp16.use_bf16:
         return "fp16"
-    else:
-        return "single_gpu"
+    return "single_gpu"
 
 
 # Main training loop
@@ -2175,20 +2134,20 @@ def run_training(config: TrainConfig, strategy) -> None:
     """
     # Setup interrupt handler
     interrupt_handler = InterruptHandler()
-    
+
     # Initialize variables for exception handling
     checkpoint_manager = None
     wandb_run = None
 
     try:
         # Setup model, optimizer, and data loader
-        print("Setting up model...")
+        logger.info("Setting up model...")
         model, diffusion, options = strategy.setup_model(config)
 
-        print("Setting up optimizer...")
+        logger.info("Setting up optimizer...")
         optimizer = strategy.setup_optimizer(model, config)
 
-        print("Setting up data loader...")
+        logger.info("Setting up data loader...")
         dataloader = strategy.setup_dataloader(config, model)
 
         # Setup checkpoint manager
@@ -2206,7 +2165,7 @@ def run_training(config: TrainConfig, strategy) -> None:
                 config.training.warmup_start_lr,
                 config.training.learning_rate,
             )
-            print(f"Setup warmup scheduler: {config.training.warmup_steps} steps")
+            logger.info(f"Setup warmup scheduler: {config.training.warmup_steps} steps")
 
         # Load evaluation prompts
         eval_prompts, grid_size = load_evaluation_prompts(
@@ -2225,39 +2184,35 @@ def run_training(config: TrainConfig, strategy) -> None:
                 start_epoch, global_step = checkpoint_manager.load_checkpoint(
                     config.model.resume_ckpt, model, optimizer
                 )
-                print(
-                    f"Resumed from checkpoint: epoch {start_epoch}, step {global_step}"
-                )
+                logger.info(f"Resumed from checkpoint: epoch {start_epoch}, step {global_step}")
 
                 if global_step > 0:
                     checkpoint_manager.cleanup_interrupted_files()
 
             except Exception as e:
-                print(f"Warning: Failed to resume from checkpoint: {e}")
-                print("Starting from scratch...")
+                logger.warning(f"Warning: Failed to resume from checkpoint: {e}")
+                logger.info("Starting from scratch...")
 
         # Training loop
-        print("\nStarting training...")
-        print(f"  Epochs: {config.training.num_epochs}")
-        print(f"  Batch size: {config.data.batch_size}")
-        print(
-            f"  Gradient accumulation steps: {config.training.gradient_accumulation_steps}"
-        )
-        print(
+        logger.info("\nStarting training...")
+        logger.info(f"  Epochs: {config.training.num_epochs}")
+        logger.info(f"  Batch size: {config.data.batch_size}")
+        logger.info(f"  Gradient accumulation steps: {config.training.gradient_accumulation_steps}")
+        logger.info(
             f"  Effective batch size: {config.data.batch_size * config.training.gradient_accumulation_steps}"
         )
-        print(f"  Learning rate: {config.training.learning_rate}")
+        logger.info(f"  Learning rate: {config.training.learning_rate}")
 
         for epoch in range(start_epoch, config.training.num_epochs):
             if interrupt_handler.interrupted:
-                print("Training interrupted, saving checkpoint...")
+                logger.info("Training interrupted, saving checkpoint...")
                 if checkpoint_manager:
                     checkpoint_manager.save_checkpoint(
                         model, optimizer, epoch, global_step, is_interrupted=True
                     )
                 break
 
-            print(f"\nEpoch {epoch + 1}/{config.training.num_epochs}")
+            logger.info(f"\nEpoch {epoch + 1}/{config.training.num_epochs}")
             epoch_losses = []
 
             # Set up progress bar
@@ -2268,9 +2223,7 @@ def run_training(config: TrainConfig, strategy) -> None:
                     break
 
                 # Training step
-                result = strategy.training_step(
-                    model, diffusion, batch, optimizer, config
-                )
+                result = strategy.training_step(model, diffusion, batch, optimizer, config)
 
                 global_step += 1
 
@@ -2294,15 +2247,15 @@ def run_training(config: TrainConfig, strategy) -> None:
                 # Log metrics to WandB (every step)
                 # Ensure all values are Python scalars, not tensors
                 import math
-                
+
                 loss_val = result["loss"]
-                if hasattr(loss_val, 'item'):
+                if hasattr(loss_val, "item"):
                     loss_val = loss_val.item()
                 loss_val = float(loss_val)
-                
+
                 # Skip logging if loss is NaN or inf
                 if math.isnan(loss_val) or math.isinf(loss_val):
-                    print(f"Warning: Skipping W&B log at step {global_step} due to NaN/inf loss")
+                    logger.warning(f"Warning: Skipping W&B log at step {global_step} due to NaN/inf loss")
                 else:
                     log_data = {
                         "train/loss": loss_val,
@@ -2313,12 +2266,12 @@ def run_training(config: TrainConfig, strategy) -> None:
 
                     if "grad_norm" in result:
                         grad_val = result["grad_norm"]
-                        if hasattr(grad_val, 'item'):
+                        if hasattr(grad_val, "item"):
                             grad_val = grad_val.item()
                         log_data["train/grad_norm"] = float(grad_val)
                     if "loss_scale" in result:
                         scale_val = result["loss_scale"]
-                        if hasattr(scale_val, 'item'):
+                        if hasattr(scale_val, "item"):
                             scale_val = scale_val.item()
                         log_data["train/loss_scale"] = float(scale_val)
 
@@ -2330,11 +2283,8 @@ def run_training(config: TrainConfig, strategy) -> None:
                     pass  # Console logging happens in the step function
 
                 # Generate samples
-                if (
-                    global_step % config.logging.sample_frequency == 0
-                    and global_step > 0
-                ):
-                    print(f"\nGenerating samples at step {global_step}...")
+                if global_step % config.logging.sample_frequency == 0 and global_step > 0:
+                    logger.info(f"\nGenerating samples at step {global_step}...")
 
                     # Determine device for sampling
                     device = None
@@ -2358,9 +2308,7 @@ def run_training(config: TrainConfig, strategy) -> None:
                     )
 
                     # Create grid
-                    grid_img = create_sample_grid(
-                        sample_images, grid_size, global_step, output_dir
-                    )
+                    grid_img = create_sample_grid(sample_images, grid_size, global_step, output_dir)
 
                     # Log to wandb
                     log_samples_to_wandb(
@@ -2372,14 +2320,12 @@ def run_training(config: TrainConfig, strategy) -> None:
                         global_step,
                     )
 
-                    print(f"Saved {len(sample_images)} samples to {output_dir}")
+                    logger.info(f"Saved {len(sample_images)} samples to {output_dir}")
 
                 # Save checkpoint
                 if checkpoint_manager and checkpoint_manager.should_save(global_step):
-                    print(f"\nSaving checkpoint at step {global_step}...")
-                    checkpoint_manager.save_checkpoint(
-                        model, optimizer, epoch, global_step
-                    )
+                    logger.info(f"\nSaving checkpoint at step {global_step}...")
+                    checkpoint_manager.save_checkpoint(model, optimizer, epoch, global_step)
 
             progress_bar.close()
 
@@ -2387,9 +2333,9 @@ def run_training(config: TrainConfig, strategy) -> None:
             if epoch_losses:
                 avg_loss = np.mean(epoch_losses)
                 std_loss = np.std(epoch_losses)
-                print(f"\nEpoch {epoch + 1} complete:")
-                print(f"  Average loss: {avg_loss:.6f} (±{std_loss:.6f})")
-                print(f"  Total steps: {global_step:,}")
+                logger.info(f"\nEpoch {epoch + 1} complete:")
+                logger.info(f"  Average loss: {avg_loss:.6f} (±{std_loss:.6f})")
+                logger.info(f"  Total steps: {global_step:,}")
 
                 if wandb_run:
                     wandb_run.log(
@@ -2403,32 +2349,32 @@ def run_training(config: TrainConfig, strategy) -> None:
 
         # Final checkpoint
         if checkpoint_manager and not interrupt_handler.interrupted:
-            print("\nSaving final checkpoint...")
+            logger.info("\nSaving final checkpoint...")
             checkpoint_manager.save_checkpoint(
                 model, optimizer, config.training.num_epochs, global_step
             )
 
-        print("\n" + "=" * 80)
-        print("Training complete!")
-        print(f"  Total steps: {global_step:,}")
+        logger.info("\n" + "=" * 80)
+        logger.info("Training complete!")
+        logger.info(f"  Total steps: {global_step:,}")
         if epoch_losses:
-            print(f"  Final loss: {np.mean(epoch_losses[-100:]):.4f}")
-        print("=" * 80)
+            logger.info(f"  Final loss: {np.mean(epoch_losses[-100:]):.4f}")
+        logger.info("=" * 80)
 
     except Exception as e:
-        print(f"\nError during training: {e}")
+        logger.info(f"\nError during training: {e}")
         traceback.print_exc()
 
         # Save emergency checkpoint
         if checkpoint_manager:
-            print("Saving emergency checkpoint...")
+            logger.info("Saving emergency checkpoint...")
             try:
                 checkpoint_manager.save_checkpoint(
                     model, optimizer, epoch, global_step, is_interrupted=True
                 )
-                print("Emergency checkpoint saved.")
+                logger.info("Emergency checkpoint saved.")
             except Exception as save_error:
-                print(f"Failed to save emergency checkpoint: {save_error}")
+                logger.info(f"Failed to save emergency checkpoint: {save_error}")
 
         raise
 
@@ -2597,7 +2543,7 @@ def main() -> None:
 
     # Determine training mode and create strategy
     training_mode = determine_training_mode(config)
-    print(f"Training mode: {training_mode}")
+    logger.info(f"Training mode: {training_mode}")
 
     strategy = create_training_strategy(training_mode, device)
 

@@ -4,25 +4,26 @@ Enhanced evaluation module for GLIDE fine-tuning with CLIP scoring and base mode
 Based on the ChatGPT conversation requirements for win-rate metrics and CLIP evaluation.
 """
 
-import os
 import time
-from pathlib import Path
-from typing import List, Tuple, Dict, Any, Optional
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
-import torch as th
-import torch.nn.functional as F
-import numpy as np
-from PIL import Image
 import open_clip
+import torch as th
+from PIL import Image
 
-from .glide_util import load_model, sample, get_tokens_and_mask
+from .glide_util import load_model, sample
 from .train_util import pred_to_pil
+from .utils.logging_utils import get_logger
 
 try:
     import wandb
 except ImportError:
     wandb = None
+
+# Initialize logger
+logger = get_logger("glide_finetune.clip_eval")
 
 
 @dataclass
@@ -60,7 +61,7 @@ class ClipScorer:
         self.tokenizer = open_clip.get_tokenizer(model_name)
 
     @th.inference_mode()
-    def score_images(self, prompts: List[str], images: List[Image.Image]) -> th.Tensor:
+    def score_images(self, prompts: list[str], images: list[Image.Image]) -> th.Tensor:
         """
         Calculate CLIP scores for text-image pairs.
 
@@ -79,15 +80,14 @@ class ClipScorer:
         text_features = text_features / text_features.norm(dim=-1, keepdim=True)
 
         # Process images
-        image_tensors = th.stack(
-            [self.preprocess(img.convert("RGB")) for img in images]
-        ).to(self.device)
+        image_tensors = th.stack([self.preprocess(img.convert("RGB")) for img in images]).to(
+            self.device
+        )
         image_features = self.model.encode_image(image_tensors)
         image_features = image_features / image_features.norm(dim=-1, keepdim=True)
 
         # Calculate cosine similarity
-        similarities = (text_features * image_features).sum(dim=-1)
-        return similarities
+        return (text_features * image_features).sum(dim=-1)
 
 
 class GlideSampler:
@@ -109,21 +109,19 @@ class GlideSampler:
             base_path = self.config.base_model_path
         else:
             # Use default cached base model
-            base_path = os.path.join(
-                os.path.dirname(__file__), "..", "glide_model_cache", "base.pt"
+            base_path = str(
+                Path(__file__).parent.parent / "glide_model_cache" / "base.pt"
             )
 
-        if os.path.exists(base_path):
-            print(f"Loading base model from {base_path}")
+        if Path(base_path).exists():
+            logger.info(f"Loading base model from {base_path}")
             self.base_model, self.base_diffusion, self.base_options = load_model(
                 glide_path=base_path, model_type="base", use_fp16=False
             )
             self.base_model.to(self.config.device)
             self.base_model.eval()
         else:
-            print(
-                f"Loading base model from OpenAI checkpoint (no cache found at {base_path})"
-            )
+            logger.info(f"Loading base model from OpenAI checkpoint (no cache found at {base_path})")
             self.base_model, self.base_diffusion, self.base_options = load_model(
                 model_type="base", use_fp16=False
             )
@@ -137,33 +135,33 @@ class GlideSampler:
         self.current_options = options
 
     @th.inference_mode()
-    def sample_current(self, prompts: List[str], seeds: List[int]) -> List[Image.Image]:
+    def sample_current(self, prompts: list[str], seeds: list[int]) -> list[Image.Image]:
         """Sample from the current fine-tuned model."""
         if self.current_model is None:
-            raise ValueError("Current model not set. Call set_current_model() first.")
+            msg = "Current model not set. Call set_current_model() first."
+            raise ValueError(msg)
 
         return self._sample_with_model(
             prompts,
             seeds,
             self.current_model,
-            self.current_diffusion,
             self.current_options,
         )
 
     @th.inference_mode()
-    def sample_base(self, prompts: List[str], seeds: List[int]) -> List[Image.Image]:
+    def sample_base(self, prompts: list[str], seeds: list[int]) -> list[Image.Image]:
         """Sample from the base model."""
         return self._sample_with_model(
-            prompts, seeds, self.base_model, self.base_diffusion, self.base_options
+            prompts, seeds, self.base_model, self.base_options
         )
 
     def _sample_with_model(
-        self, prompts: List[str], seeds: List[int], model, diffusion, options
-    ) -> List[Image.Image]:
+        self, prompts: list[str], seeds: list[int], model, options
+    ) -> list[Image.Image]:
         """Sample images using the specified model."""
         images = []
 
-        for prompt, seed in zip(prompts, seeds):
+        for prompt, seed in zip(prompts, seeds, strict=False):
             # Set seed for reproducibility
             th.manual_seed(seed)
             th.cuda.manual_seed_all(seed)
@@ -195,46 +193,40 @@ class EvaluationRunner:
     def __init__(self, config: EvaluationConfig):
         self.config = config
         self.sampler = GlideSampler(config)
-        self.clip_scorer = ClipScorer(
-            config.clip_model, config.clip_pretrained, config.device
-        )
+        self.clip_scorer = ClipScorer(config.clip_model, config.clip_pretrained, config.device)
         self.prompts = self._load_prompts()
 
-    def _load_prompts(self) -> List[str]:
+    def _load_prompts(self) -> list[str]:
         """Load prompts from file."""
-        with open(self.config.prompts_file, "r", encoding="utf-8") as f:
+        with Path(self.config.prompts_file).open(encoding="utf-8") as f:
             lines = [line.strip() for line in f.readlines() if line.strip()]
 
         # Take first max_prompts
         prompts = lines[: self.config.max_prompts]
         if len(prompts) < self.config.max_prompts:
-            print(
+            logger.info(
                 f"Warning: Only {len(prompts)} prompts available, expected {self.config.max_prompts}"
             )
 
         return prompts
 
-    def _generate_seeds(self, base_seeds: List[int], variation: int) -> List[int]:
+    def _generate_seeds(self, base_seeds: list[int], variation: int) -> list[int]:
         """Generate seeds for a specific variation."""
         return [seed + variation * self.config.seed_offset for seed in base_seeds]
 
-    def run_evaluation(
-        self, current_model, current_diffusion, current_options
-    ) -> Dict[str, Any]:
+    def run_evaluation(self, current_model, current_diffusion, current_options) -> dict[str, Any]:
         """
         Run full evaluation comparing current model to base model.
 
         Returns:
             Dictionary with evaluation metrics including CLIP scores and win rates.
         """
-        print(
+        logger.info(
             f"Running evaluation with {len(self.prompts)} prompts, {self.config.variations} variations"
         )
 
         # Set current model
-        self.sampler.set_current_model(
-            current_model, current_diffusion, current_options
-        )
+        self.sampler.set_current_model(current_model, current_diffusion, current_options)
 
         # Base seeds (0 to num_prompts-1)
         base_seeds = list(range(len(self.prompts)))
@@ -247,23 +239,21 @@ class EvaluationRunner:
         start_time = time.time()
 
         for variation in range(self.config.variations):
-            print(f"Processing variation {variation + 1}/{self.config.variations}")
+            logger.info(f"Processing variation {variation + 1}/{self.config.variations}")
 
             # Generate seeds for this variation
             seeds = self._generate_seeds(base_seeds, variation)
 
             # Sample from both models with identical seeds
-            print("  Sampling from current model...")
+            logger.info("  Sampling from current model...")
             current_images = self.sampler.sample_current(self.prompts, seeds)
 
-            print("  Sampling from base model...")
+            logger.info("  Sampling from base model...")
             base_images = self.sampler.sample_base(self.prompts, seeds)
 
             # Calculate CLIP scores
-            print("  Calculating CLIP scores...")
-            clip_scores_current = self.clip_scorer.score_images(
-                self.prompts, current_images
-            )
+            logger.info("  Calculating CLIP scores...")
+            clip_scores_current = self.clip_scorer.score_images(self.prompts, current_images)
             clip_scores_base = self.clip_scorer.score_images(self.prompts, base_images)
 
             all_clip_scores_current.append(clip_scores_current)
@@ -275,15 +265,13 @@ class EvaluationRunner:
         eval_time = time.time() - start_time
         metrics = self._calculate_metrics(all_clip_scores_current, all_clip_scores_base)
         metrics["evaluation_time"] = eval_time
-        metrics["total_images_generated"] = len(all_current_images) + len(
-            all_base_images
-        )
+        metrics["total_images_generated"] = len(all_current_images) + len(all_base_images)
 
         return metrics
 
     def _calculate_metrics(
-        self, current_scores: List[th.Tensor], base_scores: List[th.Tensor]
-    ) -> Dict[str, Any]:
+        self, current_scores: list[th.Tensor], base_scores: list[th.Tensor]
+    ) -> dict[str, Any]:
         """Calculate aggregated metrics from CLIP scores."""
         # Stack all variations: [variations, prompts]
         current_scores_tensor = th.stack(current_scores)  # [V, P]
@@ -373,7 +361,7 @@ def run_clip_evaluation(
     variations: int = 1,
     device: str = "cuda",
     **kwargs,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Quick evaluation function that can be called from training loops.
 
