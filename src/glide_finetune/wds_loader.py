@@ -142,14 +142,14 @@ def glide_wds_loader(
     elif dataset_name == "synthetic":
         filtered_dataset = dataset.select(filter_dataset_synthetic)
     elif dataset_name in ["webdataset", "generic", "custom"]:
-        # Generic dataset - apply minimal filtering based on provided keys
+        # Generic dataset - only check for image and caption keys, no other filtering
         def filter_dataset_generic(item: dict[str, Any]) -> bool:
+            # Only require the keys that are actually needed
             if enable_image and image_key not in item:
                 return False
             if enable_text and caption_key not in item:
                 return False
-            if enable_metadata and metadata_key not in item:
-                return False
+            # No metadata requirement for generic datasets
             return True
         filtered_dataset = dataset.select(filter_dataset_generic)
     else:
