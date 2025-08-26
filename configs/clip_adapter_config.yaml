@@ -1,0 +1,69 @@
+# CLIP Adapter Configuration
+# This file locks the exact CLIP model variant and adapter settings
+
+clip_model:
+  # We use OpenAI's original CLIP ViT-B/32 for compatibility
+  # This matches the CLIP model that GLIDE was originally trained with
+  model_name: "ViT-B/32"
+  variant: "openai"  # Options: "openai", "openclip" 
+  
+  # For OpenCLIP, specify exact checkpoint
+  # openclip_checkpoint: "laion2b_s34b_b79k"  # Not used for openai variant
+  
+  # Expected dimensions (will be verified at runtime)
+  expected_text_width: 512  # ViT-B/32 text encoder output dimension
+  expected_vision_width: 768  # ViT-B/32 vision encoder output dimension
+  expected_embed_dim: 512  # Final embedding dimension
+  
+  # Model download settings
+  cache_dir: "~/.cache/clip"
+  device: "cuda"  # Will fallback to CPU if CUDA unavailable
+
+adapter:
+  # Zero-conv initialization parameters (ControlNet-inspired)
+  first_linear_std: 0.02  # Small but non-zero init for first layer
+  layer_norm_gamma: 0.001  # 1e-3, tiny but non-zero for gradient flow
+  gate_init: -5.0  # sigmoid(-5.0) ≈ 0.0067
+  
+  # Training hyperparameters
+  learning_rate: 1.0e-4  # Adapter learning rate
+  gate_learning_rate: 5.0e-4  # Higher LR for gate parameter
+  warmup_steps: 2000  # Linear warmup for adapter
+  grad_clip_norm: 1.0  # Gradient clipping norm
+  
+  # Dropout probabilities for condition augmentation
+  bpe_dropout_prob: 0.15  # Probability to drop BPE conditioning
+  clip_dropout_prob: 0.15  # Independent probability to drop CLIP
+  
+  # RMS matching (optional)
+  use_rms_matching: false  # Whether to match adapter output RMS to xf_proj
+  rms_matching_momentum: 0.99  # Momentum for running RMS estimate
+  
+  # EMA settings
+  ema_decay: 0.9995  # EMA decay rate for adapter weights
+  
+  # Stability monitoring
+  max_gate_value: 0.5  # Emergency fallback if gate exceeds this
+  loss_spike_threshold: 10.0  # Fallback if loss spikes by this factor
+  
+  # Runtime modes
+  default_mode: "both"  # Options: "off", "bpe", "clip", "both"
+  
+# Checkpoint settings
+checkpoint:
+  version: 1  # Adapter checkpoint version
+  namespace: "clip_adapter"  # Namespace for adapter weights in state dict
+  
+# Testing tolerances
+testing:
+  parity_tolerance_fp32: 1.0e-6  # Maximum loss difference for FP32 parity
+  parity_tolerance_fp16: 1.0e-4  # Maximum loss difference for FP16 parity
+  parity_tolerance_amp: 1.0e-3   # Maximum loss difference with AMP
+
+# Logging
+logging:
+  log_gate_every: 100  # Log gate value every N steps
+  log_adapter_norm_every: 100  # Log adapter norm every N steps
+  log_cosine_similarity_every: 100  # Log cos(adapter, xf_proj) every N steps
+  log_noise_bands: true  # Log loss by timestep bands
+  noise_band_boundaries: [0, 200, 500, 800, 1000]  # Timestep boundaries for bands
