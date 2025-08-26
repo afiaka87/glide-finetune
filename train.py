@@ -1157,7 +1157,10 @@ def load_glide_model(
 
 
 def create_optimizer(
-    model: nn.Module, config: TrainingConfig, use_8bit: bool = False
+    model: nn.Module, 
+    config: TrainingConfig, 
+    use_8bit: bool = False,
+    model_config: ModelConfig | None = None,
 ) -> th.optim.Optimizer:
     """Create optimizer with proper parameter groups.
 
@@ -1165,10 +1168,44 @@ def create_optimizer(
         model: Model to optimize
         config: Training configuration
         use_8bit: Whether to use 8-bit optimizer
+        model_config: Model configuration (for adapter-only mode)
 
     Returns:
         Configured optimizer
     """
+    # Check for adapter-only mode
+    if model_config and model_config.clip_adapter_only:
+        # Import adapter optimizer utilities
+        from glide_finetune.adapter_optimizer import (
+            AdapterOptimizerConfig,
+            create_adapter_optimizer,
+            freeze_base_model,
+        )
+        
+        # Freeze base model first
+        freeze_base_model(model, skip_eval_mode=True)
+        
+        # Create adapter-specific optimizer configuration
+        adapter_config = AdapterOptimizerConfig(
+            adapter_lr=model_config.clip_adapter_lr or config.learning_rate,
+            gate_lr=(model_config.clip_adapter_lr or config.learning_rate) * 5,  # 5x higher for gate
+            weight_decay=config.adam_weight_decay,
+            gradient_clip_norm=config.grad_clip,
+            scheduler_type="linear",  # Can be made configurable later
+            warmup_steps=config.warmup_steps,
+        )
+        
+        # Create adapter-only optimizer (returns optimizer and optional scheduler)
+        optimizer, _scheduler = create_adapter_optimizer(
+            model, 
+            config=adapter_config,
+            total_training_steps=None  # Will handle scheduler separately
+        )
+        
+        logger.info("Created adapter-only optimizer")
+        return optimizer
+    
+    # Standard optimizer path (existing code)
     # Build parameter groups with proper frozen parameter exclusion
     param_groups = build_optimizer_params(model, weight_decay=config.adam_weight_decay)
 
@@ -1812,7 +1849,12 @@ class SingleGPUStrategy:
 
     def setup_optimizer(self, model: nn.Module, config: TrainConfig) -> th.optim.Optimizer:
         """Setup optimizer for single GPU training."""
-        return create_optimizer(model, config.training, config.training.use_8bit_adam)
+        return create_optimizer(
+            model, 
+            config.training, 
+            config.training.use_8bit_adam,
+            model_config=config.model
+        )
 
     def setup_dataloader(self, config: TrainConfig, model: nn.Module) -> DataLoader:
         """Setup data loader for single GPU training."""
@@ -1924,7 +1966,12 @@ class FP16Strategy:
 
     def setup_optimizer(self, model: nn.Module, config: TrainConfig) -> th.optim.Optimizer:
         """Setup optimizer for FP16 training."""
-        base_optimizer = create_optimizer(model, config.training, config.training.use_8bit_adam)
+        base_optimizer = create_optimizer(
+            model, 
+            config.training, 
+            config.training.use_8bit_adam,
+            model_config=config.model
+        )
 
         # Create FP16 trainer
         fp16_config = FP16TrainingConfig(
@@ -2088,7 +2135,12 @@ class MultiGPUStrategy:
 
     def setup_optimizer(self, model: nn.Module, config: TrainConfig) -> th.optim.Optimizer:
         """Setup optimizer for multi-GPU training."""
-        return create_optimizer(model, config.training, config.training.use_8bit_adam)
+        return create_optimizer(
+            model,
+            config.training, 
+            config.training.use_8bit_adam,
+            model_config=config.model
+        )
 
     def setup_dataloader(self, config: TrainConfig, model: nn.Module) -> DataLoader:
         """Setup data loader for multi-GPU training."""
