@@ -1,0 +1,105 @@
+# Ruff configuration for GLIDE finetune project
+# Following Clay's strict standards
+
+# Global configuration
+line-length = 100
+target-version = "py311"
+
+# Exclude patterns
+exclude = [
+    ".git",
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+    "checkpoints",
+    "wandb",
+    ".trash",
+    "glide-text2im",
+]
+
+[lint]
+# Enable specific rule categories
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "UP",   # pyupgrade
+    "PL",   # pylint
+    "N",    # pep8-naming
+    "S",    # flake8-bandit
+    "A",    # flake8-builtins
+    "C4",   # flake8-comprehensions
+    "DTZ",  # flake8-datetimez
+    "EM",   # flake8-errmsg
+    "ISC",  # flake8-implicit-str-concat
+    "PIE",  # flake8-pie
+    "PT",   # flake8-pytest-style
+    "Q",    # flake8-quotes
+    "RET",  # flake8-return
+    "SIM",  # flake8-simplify
+    "TCH",  # flake8-type-checking
+    "ARG",  # flake8-unused-arguments
+    "PTH",  # flake8-use-pathlib
+    "ERA",  # eradicate
+    "PD",   # pandas-vet
+    "PGH",  # pygrep-hooks
+    "RUF",  # ruff-specific rules
+]
+
+# Ignore specific rules
+ignore = [
+    "E501",  # line too long (handled by formatter)
+    "S101",  # use of assert (needed for tests)
+    "B008",  # function calls in argument defaults
+    "PLR0913", # too many arguments
+    "PLR2004", # magic value comparison
+]
+
+# Allow unused variables when underscore-prefixed
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+# Allow autofix for all enabled rules
+fixable = ["ALL"]
+unfixable = []
+
+[lint.per-file-ignores]
+"tests/**/*.py" = [
+    "S101",  # asserts allowed in tests
+    "ARG",   # unused arguments in tests
+    "PLR2004", # magic values in tests
+]
+"scripts/**/*.py" = [
+    "S101",  # asserts allowed in scripts
+]
+"**/migrations/*.py" = [
+    "ERA001", # commented code in migrations
+]
+
+[lint.isort]
+known-first-party = ["glide_finetune", "glide_text2im"]
+combine-as-imports = true
+force-single-line = false
+
+[lint.pylint]
+max-args = 8
+max-branches = 12
+max-returns = 6
+max-statements = 50
+
+[lint.mccabe]
+max-complexity = 10
+
+[format]
+# Use double quotes for strings
+quote-style = "double"
+
+# Unix line endings
+line-ending = "lf"
+
+# Format docstrings
+docstring-code-format = true
+
+[lint.pydocstyle]
+convention = "google"
