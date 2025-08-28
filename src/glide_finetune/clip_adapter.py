@@ -276,21 +276,39 @@ def integrate_clip_adapter_to_model(
 
 def load_openai_clip(
     model_name: str = "ViT-B/32",
-    device: Union[str, torch.device] = "cpu"
+    device: Union[str, torch.device] = "cpu",
+    accelerator: Optional[Any] = None
 ) -> Tuple[nn.Module, callable]:
     """Load standard OpenAI CLIP model.
     
     IMPORTANT: This loads the standard OpenAI CLIP, NOT the noise-aware CLIP
     from glide_text2im. We use OpenAI's CLIP for cleaner conditioning.
     
+    In distributed training, only the main process downloads the model while
+    others wait to avoid conflicts.
+    
     Args:
         model_name: CLIP model variant (default: "ViT-B/32")
         device: Device to load model on
+        accelerator: Optional Accelerator instance for distributed sync
     
     Returns:
         Tuple of (clip_model, tokenize_function)
     """
-    clip_model, preprocess = clip.load(model_name, device=device)
+    # In distributed mode, ensure only main process downloads
+    if accelerator is not None and accelerator.num_processes > 1:
+        if accelerator.is_main_process:
+            # Main process downloads the model
+            clip_model, preprocess = clip.load(model_name, device=device)
+        # All processes wait for main to finish
+        accelerator.wait_for_everyone()
+        if not accelerator.is_main_process:
+            # Other processes load from cache (already downloaded)
+            clip_model, preprocess = clip.load(model_name, device=device)
+    else:
+        # Single process or no accelerator - load normally
+        clip_model, preprocess = clip.load(model_name, device=device)
+    
     clip_model.eval()
     
     # Freeze CLIP model

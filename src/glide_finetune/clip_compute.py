@@ -27,6 +27,7 @@ class CLIPFeatureComputer:
         clip_model_name: str = "ViT-B/32",
         device: str | torch.device = "cuda",
         cache_features: bool = False,
+        accelerator: Any = None,
     ):
         """Initialize CLIP feature computer.
         
@@ -34,17 +35,22 @@ class CLIPFeatureComputer:
             clip_model_name: Name of CLIP model to load
             device: Device to run CLIP model on
             cache_features: Whether to cache computed features (not recommended for distributed training)
+            accelerator: Optional Accelerator instance for distributed sync
         """
         self.clip_model_name = clip_model_name
         self.device = device if isinstance(device, torch.device) else torch.device(device)
         self.cache_features = cache_features
         self.feature_cache = {} if cache_features else None
+        self.accelerator = accelerator
         
-        # Load CLIP model once on initialization
-        logger.info(f"Loading CLIP model: {clip_model_name} on {self.device}")
+        # Load CLIP model once on initialization (with distributed sync if needed)
+        if accelerator and accelerator.is_main_process:
+            logger.info(f"Loading CLIP model: {clip_model_name} on {self.device}")
+        
         self.clip_model, self.clip_preprocess = load_openai_clip(
             clip_model_name, 
-            device=str(self.device)
+            device=str(self.device),
+            accelerator=accelerator
         )
         self.clip_model.eval()
         
@@ -178,6 +184,7 @@ class CLIPComputerManager:
         clip_model_name: str = "ViT-B/32",
         device: str | torch.device = "cuda",
         reset: bool = False,
+        accelerator: Any = None,
     ) -> CLIPFeatureComputer:
         """Get or create a CLIP computer for the specified device.
         
@@ -185,6 +192,7 @@ class CLIPComputerManager:
             clip_model_name: Name of CLIP model to use
             device: Device to run on
             reset: If True, create a new instance even if one exists
+            accelerator: Optional Accelerator instance for distributed sync
             
         Returns:
             CLIPFeatureComputer instance for this device
@@ -206,8 +214,10 @@ class CLIPComputerManager:
                 clip_model_name=clip_model_name,
                 device=device,
                 cache_features=False,  # Disable caching in distributed training
+                accelerator=accelerator,
             )
-            logger.info(f"Created CLIP computer for {key}")
+            if not accelerator or accelerator.is_main_process:
+                logger.info(f"Created CLIP computer for {key}")
         
         return self._computers[key]
     
@@ -226,9 +236,16 @@ def get_clip_computer(
     clip_model_name: str = "ViT-B/32",
     device: str | torch.device = "cuda",
     reset: bool = False,
+    accelerator: Any = None,
 ) -> CLIPFeatureComputer:
     """Backward-compatible function using default manager.
     
     For new code, prefer creating your own CLIPComputerManager instance.
+    
+    Args:
+        clip_model_name: Name of CLIP model to use
+        device: Device to run on
+        reset: If True, create a new instance even if one exists
+        accelerator: Optional Accelerator instance for distributed sync
     """
-    return _default_manager.get_computer(clip_model_name, device, reset)
+    return _default_manager.get_computer(clip_model_name, device, reset, accelerator)

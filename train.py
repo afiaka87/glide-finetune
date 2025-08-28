@@ -1720,6 +1720,7 @@ def generate_samples(
     step: int,
     output_dir: Path,
     model_config: ModelConfig | None = None,
+    accelerator: Any = None,
 ) -> list[PIL.Image.Image]:
     """Generate sample images for evaluation.
     
@@ -1751,9 +1752,11 @@ def generate_samples(
     clip_computer = None
     if has_clip_adapter and model_config:
         from glide_finetune.clip_compute import get_clip_computer
+        # Pass accelerator for distributed sync
         clip_computer = get_clip_computer(
             clip_model_name=model_config.clip_model_name,
-            device=device
+            device=device,
+            accelerator=accelerator
         )
 
     # Evaluation batch size for each mode (from config)
@@ -2174,7 +2177,18 @@ class SingleGPUStrategy:
     def setup_model(self, config: TrainConfig) -> tuple[nn.Module, Any, dict]:
         """Setup model for single GPU training."""
         model, diffusion, options = load_glide_model(config.model, device=self.device)
-        model = apply_model_modifications(model, config.model)
+        
+        # Freeze base model if adapter-only mode (BEFORE apply_model_modifications)
+        if config.model.clip_adapter_only:
+            from glide_finetune.adapter_optimizer import freeze_base_model
+            
+            logger.info("Freezing base model for adapter-only training")
+            counts = freeze_base_model(model, skip_eval_mode=True)
+            logger.info(f"Froze {counts['frozen']:,} params, {counts['trainable']:,} adapter params trainable")
+        else:
+            # Apply other freeze/randomization policies
+            model = apply_model_modifications(model, config.model)
+        
         model.train()
         return model, diffusion, options
 
@@ -2310,8 +2324,16 @@ class FP16Strategy:
         """Setup model for FP16 training."""
         model, diffusion, options = load_glide_model(config.model, device=self.device)
 
-        # Apply freeze/randomization policies BEFORE FP16 conversion
-        model = apply_model_modifications(model, config.model)
+        # Freeze base model if adapter-only mode (BEFORE FP16 conversion)
+        if config.model.clip_adapter_only:
+            from glide_finetune.adapter_optimizer import freeze_base_model
+            
+            logger.info("Freezing base model for adapter-only training")
+            counts = freeze_base_model(model, skip_eval_mode=True)
+            logger.info(f"Froze {counts['frozen']:,} params, {counts['trainable']:,} adapter params trainable")
+        else:
+            # Apply other freeze/randomization policies BEFORE FP16 conversion
+            model = apply_model_modifications(model, config.model)
 
         # Apply FP16 conversion
         if config.fp16.use_fp16:
@@ -2417,9 +2439,11 @@ class FP16Strategy:
                 # Compute CLIP features on-the-fly if adapter is enabled but features not provided
                 from glide_finetune.clip_compute import get_clip_computer
                 
+                # No accelerator in SingleGPUStrategy
                 clip_computer = get_clip_computer(
                     clip_model_name=config.model.clip_model_name,
-                    device=self.device
+                    device=self.device,
+                    accelerator=None
                 )
                 clip_features = clip_computer.compute_from_tokens(
                     tokens, masks, tokenizer=model.tokenizer
@@ -2750,9 +2774,12 @@ def run_training(config: TrainConfig, strategy) -> None:
         # Preload CLIP model if using CLIP adapter (keeps it in GPU memory)
         if config.model.use_clip_adapter:
             from glide_finetune.clip_compute import get_clip_computer
+            # Pass accelerator if strategy has it (for distributed sync)
+            accelerator = getattr(strategy, 'accelerator', None)
             clip_computer = get_clip_computer(
                 clip_model_name=config.model.clip_model_name,
-                device=strategy.device
+                device=strategy.device,
+                accelerator=accelerator
             )
             logger.info(f"Preloaded CLIP model ({config.model.clip_model_name}) to GPU memory")
         
@@ -2936,6 +2963,8 @@ def run_training(config: TrainConfig, strategy) -> None:
                         device = next(model.parameters()).device
 
                     # Generate samples
+                    # Pass accelerator for CLIP model sync in distributed training
+                    strategy_accelerator = getattr(strategy, 'accelerator', None)
                     sample_images = generate_samples(
                         model,
                         diffusion,
@@ -2946,6 +2975,7 @@ def run_training(config: TrainConfig, strategy) -> None:
                         global_step,
                         output_dir,
                         model_config=config.model,
+                        accelerator=strategy_accelerator,
                     )
 
                     # Create grid
