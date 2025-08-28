@@ -8,16 +8,16 @@ import torch as th
 from torch import nn
 from torch.utils.data import DataLoader
 
-from glide_finetune.loader import TextImageDataset
+from glide_finetune.loaders.loader import TextImageDataset
 from glide_finetune.training_types import ModelConfig, TrainConfig, TrainingConfig
 from glide_finetune.utils.freeze_utils import apply_freeze_policy
 from glide_finetune.utils.glide_util import load_model
 from glide_finetune.utils.logging_utils import get_logger
 from glide_finetune.utils.randomize_utils import randomize_diffusion, randomize_transformer
 from glide_finetune.utils.freeze_utils import build_optimizer_params
-from glide_finetune.wds_loader import glide_wds_loader
-from glide_finetune.wds_loader_distributed import create_distributed_wds_dataloader
-from glide_finetune.wds_loader_optimized import create_optimized_dataloader
+from glide_finetune.loaders.wds_loader import glide_wds_loader
+from glide_finetune.loaders.wds_loader_distributed import create_distributed_wds_dataloader
+from glide_finetune.loaders.wds_loader_optimized import create_optimized_dataloader
 
 logger = get_logger(__name__)
 

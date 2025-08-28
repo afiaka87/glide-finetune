@@ -1,6 +1,7 @@
 import random
 import time
 from pathlib import Path
+from random import choice, randint
 from typing import Any
 
 import PIL
@@ -13,7 +14,7 @@ from glide_finetune.utils.glide_util import get_tokens_and_mask, get_uncond_toke
 from glide_finetune.utils.image_processing import (
     trim_white_padding_pil,
 )
-from glide_finetune.clip_features_loader import load_clip_features
+from glide_finetune.loaders.clip_features_loader import load_clip_features
 
 # Import logging utilities
 from glide_finetune.utils.logging_utils import get_logger

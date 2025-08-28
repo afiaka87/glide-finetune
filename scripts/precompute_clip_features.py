@@ -6,11 +6,11 @@ Supports:
 - COCO-style datasets: Outputs NPY format indexed by filename stem
 - WebDataset: Outputs Parquet format indexed by tar member key
 """
-
 import argparse
 import glob
 import json
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -22,10 +22,18 @@ from tqdm import tqdm
 sys.path.append(str(Path(__file__).parent.parent))
 
 from glide_finetune.clip_adapter import load_openai_clip, get_clip_text_features
-from glide_finetune.loader import get_image_files_dict, get_text_files_dict, get_shared_stems
+from glide_finetune.loaders.loader import get_image_files_dict, get_text_files_dict, get_shared_stems
 from glide_finetune.utils.logging_utils import get_logger
+from torch.utils.data import DataLoader
 
 logger = get_logger("precompute_clip_features")
+
+# Enable TF32 for massive speedup on Ampere/Hopper GPUs
+if torch.cuda.is_available():
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.backends.cudnn.benchmark = True
+    logger.info("TF32 enabled for accelerated computation")
 
 # Check for optional dependencies
 try:
@@ -50,6 +58,7 @@ def process_coco_dataset(
     device: str,
     batch_size: int = 32,
     resume_from: int = 0,
+    use_amp: bool = True,
 ) -> None:
     """Process COCO-style dataset and save features in NPY format.
     
@@ -97,13 +106,14 @@ def process_coco_dataset(
         
         # Compute CLIP features
         if batch_texts:
-            with torch.no_grad():
-                clip_features = get_clip_text_features(
-                    clip_model, 
-                    batch_texts, 
-                    device=device
-                )
-                features_list.append(clip_features.cpu().numpy())
+            with torch.amp.autocast('cuda', enabled=use_amp and device == "cuda"):
+                with torch.no_grad():
+                    clip_features = get_clip_text_features(
+                        clip_model, 
+                        batch_texts, 
+                        device=device
+                    )
+            features_list.append(clip_features.cpu().numpy())
             
             # Update index
             for i, stem in enumerate(batch_stems):
@@ -143,6 +153,10 @@ def process_webdataset(
     batch_size: int = 32,
     caption_key: str = "txt",
     max_samples: int | None = None,
+    use_amp: bool = True,
+    warmup_steps: int = 10,
+    num_workers: int = 4,
+    prefetch_factor: int = 2,
 ) -> None:
     """Process WebDataset and save features in Parquet format.
     
@@ -163,27 +177,74 @@ def process_webdataset(
         logger.error("WebDataset support not available. Install webdataset.")
         return
     # Expand glob patterns in tar files
-    if "*" in tar_pattern or "?" in tar_pattern:
-        tar_files = sorted(glob.glob(tar_pattern))
+    if "*" in tar_pattern or "?" in tar_pattern or "{" in tar_pattern:
+        # Use braceexpand for proper brace expansion
+        from braceexpand import braceexpand
+        
+        # First expand braces
+        expanded_patterns = list(braceexpand(tar_pattern))
+        
+        tar_files = []
+        for pattern in expanded_patterns:
+            # Then apply glob to each expanded pattern
+            if "*" in pattern or "?" in pattern:
+                tar_files.extend(sorted(glob.glob(pattern)))
+            else:
+                # Check if file exists
+                if Path(pattern).exists():
+                    tar_files.append(pattern)
+        
         if not tar_files:
             logger.error(f"No tar files found matching pattern: {tar_pattern}")
+            logger.error(f"Expanded to: {expanded_patterns[:5]}...")
             return
+            
         logger.info(f"Found {len(tar_files)} tar files from pattern")
     else:
         # Single file or list of files
         tar_files = [tar_pattern]
         logger.info(f"Using single tar file: {tar_pattern}")
     
-    # Create dataset with proper shardshuffle setting
-    dataset = wds.WebDataset(tar_files, shardshuffle=False).decode()
+    # Create dataset with optimized settings
+    dataset = (
+        wds.WebDataset(
+            tar_files, 
+            shardshuffle=False,
+            handler=wds.warn_and_continue,  # Continue on errors
+        )
+        .decode("rgb", handler=wds.warn_and_continue)  # Handle decode errors gracefully
+    )
+    
+    # Wrap in DataLoader for parallel I/O and prefetching (helps with pausing)
+    if num_workers > 0:
+        dataloader = DataLoader(
+            dataset,
+            batch_size=None,  # WebDataset handles its own batching
+            num_workers=num_workers,
+            pin_memory=(device == "cuda"),
+            prefetch_factor=prefetch_factor,
+            persistent_workers=True,  # Keep workers alive
+        )
+        logger.info(f"Using DataLoader with {num_workers} workers for parallel I/O")
+    else:
+        dataloader = dataset
+        logger.info("Using direct WebDataset iteration")
 
     # Storage for results
     records = []
     batch_texts = []
     batch_keys = []
     
+    # Performance monitoring
     sample_count = 0
-    for sample in tqdm(dataset, desc="Processing WebDataset"):
+    batch_count = 0
+    start_time = time.time()
+    processing_times = []
+    
+    # Progress bar with dynamic speed display
+    pbar = tqdm(dataloader, desc="Processing WebDataset")
+    
+    for sample in pbar:
         if max_samples and sample_count >= max_samples:
             break
         
@@ -201,36 +262,78 @@ def process_webdataset(
         
         # Process batch when full
         if len(batch_texts) >= batch_size:
+            batch_start = time.time()
+            
+            # Use AMP for inference
+            with torch.amp.autocast('cuda', enabled=use_amp and device == "cuda"):
+                with torch.no_grad():
+                    clip_features = get_clip_text_features(
+                        clip_model,
+                        batch_texts,
+                        device=device
+                    )
+            
+            # Move to CPU and convert to numpy
+            clip_features = clip_features.cpu().numpy()
+            
+            for key, features in zip(batch_keys, clip_features):
+                records.append({
+                    "tar_member": key,
+                    "clip_features": features,
+                })
+            
+            batch_time = time.time() - batch_start
+            batch_count += 1
+            
+            # Track performance after warmup
+            if batch_count > warmup_steps:
+                processing_times.append(batch_time)
+                avg_time = np.mean(processing_times)
+                samples_per_sec = batch_size / avg_time
+                pbar.set_postfix({
+                    "samples/s": f"{samples_per_sec:.1f}",
+                    "batch_ms": f"{avg_time*1000:.1f}",
+                    "total": sample_count,
+                })
+            
+            batch_texts = []
+            batch_keys = []
+            
+            # Periodic cache clearing to prevent fragmentation
+            if batch_count % 100 == 0 and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+    
+    # Process remaining batch
+    if batch_texts:
+        with torch.amp.autocast('cuda', enabled=use_amp and device == "cuda"):
             with torch.no_grad():
                 clip_features = get_clip_text_features(
                     clip_model,
                     batch_texts,
                     device=device
                 )
-                
-                for key, features in zip(batch_keys, clip_features):
-                    records.append({
-                        "tar_member": key,
-                        "clip_features": features.cpu().numpy(),
-                    })
-            
-            batch_texts = []
-            batch_keys = []
+        
+        clip_features = clip_features.cpu().numpy()
+        
+        for key, features in zip(batch_keys, clip_features):
+            records.append({
+                "tar_member": key,
+                "clip_features": features,
+            })
     
-    # Process remaining batch
-    if batch_texts:
-        with torch.no_grad():
-            clip_features = get_clip_text_features(
-                clip_model,
-                batch_texts, 
-                device=device
-            )
-            
-            for key, features in zip(batch_keys, clip_features):
-                records.append({
-                    "tar_member": key,
-                    "clip_features": features.cpu().numpy(),
-                })
+    pbar.close()
+    
+    # Report performance statistics
+    total_time = time.time() - start_time
+    if processing_times:
+        avg_batch_time = np.mean(processing_times)
+        std_batch_time = np.std(processing_times)
+        logger.info(f"\nPerformance Statistics:")
+        logger.info(f"  Total samples: {sample_count:,}")
+        logger.info(f"  Total time: {total_time:.2f}s")
+        logger.info(f"  Average speed: {sample_count/total_time:.1f} samples/s")
+        logger.info(f"  Batch time: {avg_batch_time*1000:.1f} ± {std_batch_time*1000:.1f} ms")
+        logger.info(f"  Throughput: {batch_size/avg_batch_time:.1f} samples/s")
     
     # Save to Parquet
     if records:
@@ -296,6 +399,55 @@ def main():
         default=None,
         help="Maximum samples to process (for testing)",
     )
+    parser.add_argument(
+        "--use_compile",
+        action="store_true",
+        default=True,
+        help="Use torch.compile for optimization (default: True)",
+    )
+    parser.add_argument(
+        "--no_compile",
+        dest="use_compile",
+        action="store_false",
+        help="Disable torch.compile",
+    )
+    parser.add_argument(
+        "--compile_mode",
+        type=str,
+        default="reduce-overhead",
+        choices=["default", "reduce-overhead", "max-autotune"],
+        help="torch.compile mode (default: reduce-overhead)",
+    )
+    parser.add_argument(
+        "--use_amp",
+        action="store_true", 
+        default=True,
+        help="Use automatic mixed precision (default: True)",
+    )
+    parser.add_argument(
+        "--no_amp",
+        dest="use_amp",
+        action="store_false",
+        help="Disable automatic mixed precision",
+    )
+    parser.add_argument(
+        "--num_workers",
+        type=int,
+        default=4,
+        help="Number of workers for data loading (default: 4)",
+    )
+    parser.add_argument(
+        "--prefetch_factor",
+        type=int,
+        default=2,
+        help="Number of batches to prefetch (default: 2)",
+    )
+    parser.add_argument(
+        "--warmup_steps",
+        type=int,
+        default=10,
+        help="Warmup steps before measuring speed (default: 10)",
+    )
     
     args = parser.parse_args()
     
@@ -303,6 +455,16 @@ def main():
     logger.info(f"Loading CLIP model: {args.clip_model}")
     clip_model, preprocess = load_openai_clip(args.clip_model, device=args.device)
     clip_model.eval()
+    
+    # Apply torch.compile if requested and available
+    if args.use_compile and torch.cuda.is_available() and hasattr(torch, "compile"):
+        try:
+            logger.info(f"Compiling CLIP model with mode: {args.compile_mode}")
+            clip_model = torch.compile(clip_model, mode=args.compile_mode)
+            logger.info("✓ Model compiled successfully")
+        except Exception as e:
+            logger.warning(f"torch.compile failed: {e}")
+            logger.warning("Continuing without compilation")
 
     # Expand User
     data_dir = args.data_path
@@ -319,6 +481,7 @@ def main():
             args.device,
             args.batch_size,
             args.resume_from,
+            use_amp=args.use_amp,
         )
     else:  # webdataset
         output_path = Path(args.output_path)
@@ -330,6 +493,10 @@ def main():
             args.batch_size,
             args.caption_key,
             args.max_samples,
+            use_amp=args.use_amp,
+            warmup_steps=args.warmup_steps,
+            num_workers=args.num_workers,
+            prefetch_factor=args.prefetch_factor,
         )
     
     logger.info("Done!")

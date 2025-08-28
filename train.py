@@ -157,13 +157,13 @@ from glide_finetune.fp16_training import (
 )
 from glide_finetune.utils.freeze_utils import apply_freeze_policy, build_optimizer_params
 from glide_finetune.glide_finetune import create_image_grid
-from glide_finetune.utils.glide_util import load_model, sample
-from glide_finetune.loader import TextImageDataset
+from glide_finetune.utils.glide_util import load_model, sample, sample_with_conditioning
+from glide_finetune.loaders.loader import TextImageDataset
 from glide_finetune.utils.randomize_utils import randomize_diffusion, randomize_transformer
 from glide_finetune.utils.train_util import pred_to_pil
 from glide_finetune.utils.logging_utils import get_logger
-from glide_finetune.wds_loader import glide_wds_loader
-from glide_finetune.wds_loader_optimized import glide_wds_loader_optimized
+from glide_finetune.loaders.wds_loader import glide_wds_loader
+from glide_finetune.loaders.wds_loader_optimized import glide_wds_loader_optimized
 
 # Initialize logger after imports
 logger = get_logger("glide_finetune.train")
@@ -342,6 +342,7 @@ class SamplingConfig:
     eval_prompt_file: str | None = None
     test_batch_size: int = 1
     test_guidance_scale: float = 4.0
+    eval_batch_size: int = 8
     sampler: str = "plms"
     num_steps: int | None = None
     eta: float = 0.0
@@ -834,6 +835,12 @@ def create_unified_parser() -> argparse.ArgumentParser:
         help="Guidance scale for sample generation",
     )
     sampling_group.add_argument(
+        "--eval_batch_size",
+        type=int,
+        default=8,
+        help="Number of samples to generate per conditioning mode during evaluation (total = 3x this for CLIP adapter)",
+    )
+    sampling_group.add_argument(
         "--sampler",
         "-sampler",
         type=str,
@@ -1012,6 +1019,7 @@ def args_to_config(args: argparse.Namespace) -> TrainConfig:
             eval_prompt_file=args.eval_prompt_file,
             test_batch_size=args.test_batch_size,
             test_guidance_scale=args.test_guidance_scale,
+            eval_batch_size=args.eval_batch_size,
             sampler=args.sampler,
             num_steps=args.num_steps,
             eta=args.eta,
@@ -1082,12 +1090,15 @@ def detect_device(device_str: str = "") -> th.device:
     return device
 
 
-def apply_model_modifications(model: nn.Module, config: ModelConfig) -> None:
+def apply_model_modifications(model: nn.Module, config: ModelConfig) -> nn.Module:
     """Apply freeze and randomization policies to the model.
 
     Args:
         model: The model to modify
         config: Model configuration with freeze/randomize settings
+        
+    Returns:
+        Modified model (may be wrapped if using CLIP adapter)
     """
     # Apply freeze policy if needed
     if config.freeze_transformer or config.freeze_diffusion:
@@ -1107,6 +1118,12 @@ def apply_model_modifications(model: nn.Module, config: ModelConfig) -> None:
         logger.info("\nRandomizing diffusion weights...")
         summary = randomize_diffusion(model, init_std=config.randomize_init_std)
         logger.info(f"Randomized {summary.selected_params:,} parameters\n")
+    
+    # Note: CLIP adapter is now added in load_glide_model if needed
+    # This handles both fresh training and checkpoint resumption correctly
+    # The adapter is added BEFORE loading the checkpoint to avoid state_dict errors
+    
+    return model
 
 
 def load_glide_model(
@@ -1136,20 +1153,89 @@ def load_glide_model(
         logger.info(f"  From: {model_path}")
     else:
         logger.info("  Using OpenAI base model")
-
-    # Load model
-    glide_model, glide_diffusion, glide_options = load_model(
-        glide_path=model_path or "",
-        use_fp16=False,  # FP16 conversion handled separately
-        freeze_transformer=config.freeze_transformer,
-        freeze_diffusion=config.freeze_diffusion,
-        activation_checkpointing=config.activation_checkpointing,
-        model_type=model_type,
-    )
-
-    # Move to device if specified
-    if device is not None:
-        glide_model = glide_model.to(device)
+    
+    # Check if checkpoint contains CLIP adapter weights
+    checkpoint_has_adapter = False
+    if model_path and Path(model_path).exists():
+        checkpoint = th.load(model_path, map_location="cpu", weights_only=False)
+        checkpoint_has_adapter = any(key.startswith("clip_adapter.") for key in checkpoint.keys())
+        if checkpoint_has_adapter:
+            logger.info("  Checkpoint contains CLIP adapter weights")
+    
+    # If checkpoint has adapter OR config requests adapter, we need to add it BEFORE loading
+    if checkpoint_has_adapter or config.use_clip_adapter:
+        # Load base model without checkpoint first
+        from glide_text2im.model_creation import (
+            model_and_diffusion_defaults,
+            model_and_diffusion_defaults_upsampler,
+            create_model_and_diffusion,
+        )
+        from glide_text2im.download import load_checkpoint
+        
+        # Get options
+        if model_type in ["base", "base-inpaint"]:
+            options = model_and_diffusion_defaults()
+        elif model_type in ["upsample", "upsample-inpaint"]:
+            options = model_and_diffusion_defaults_upsampler()
+        
+        options["use_fp16"] = False  # FP16 conversion handled separately
+        glide_model, glide_diffusion = create_model_and_diffusion(**options)
+        
+        if config.activation_checkpointing:
+            glide_model.use_checkpoint = True
+        
+        # Load base weights first (OpenAI checkpoint)
+        if not model_path:
+            glide_model.load_state_dict(load_checkpoint(model_type, "cpu"))
+        else:
+            # Load OpenAI base weights first if we have a custom checkpoint with adapter
+            glide_model.load_state_dict(load_checkpoint(model_type, "cpu"))
+        
+        # Move to device before adding adapter
+        if device is not None:
+            glide_model = glide_model.to(device)
+        
+        # Add CLIP adapter
+        from glide_finetune.clip_adapter import integrate_clip_adapter_to_model
+        
+        glide_model = integrate_clip_adapter_to_model(
+            glide_model,
+            clip_model_name=config.clip_model_name,
+            hidden_dim=config.clip_adapter_hidden_dim,
+            gate_init=config.clip_adapter_gate_init,
+            device=device or "cpu",
+        )
+        logger.info("  Added CLIP adapter to model")
+        
+        # Now load the full checkpoint with adapter weights
+        if model_path:
+            checkpoint = th.load(model_path, map_location="cpu", weights_only=False)
+            glide_model.load_state_dict(checkpoint)
+            logger.info(f"  Loaded checkpoint with adapter from: {model_path}")
+        
+        # Apply freeze settings
+        from glide_finetune.utils.freeze_utils import apply_freeze_policy
+        apply_freeze_policy(
+            glide_model,
+            freeze_transformer=config.freeze_transformer,
+            freeze_diffusion=config.freeze_diffusion,
+        )
+        
+        glide_options = options
+    else:
+        # Original loading path without adapter
+        glide_model, glide_diffusion, glide_options = load_model(
+            glide_path=model_path or "",
+            use_fp16=False,  # FP16 conversion handled separately
+            freeze_transformer=config.freeze_transformer,
+            freeze_diffusion=config.freeze_diffusion,
+            activation_checkpointing=config.activation_checkpointing,
+            model_type=model_type,
+        )
+        
+        # Move to device if specified
+        if device is not None:
+            glide_model = glide_model.to(device)
 
     # Print model info
     total_params = sum(p.numel() for p in glide_model.parameters())
@@ -1382,7 +1468,18 @@ def create_webdataset_loader(
         dataloader = create_standard_webdataset_loader(config, model, urls)
 
     # Wrap with length estimation
-    return WebDataLoader(dataloader, num_tars)
+    # For WebDataset, we need to limit samples per epoch if specified
+    # Otherwise it will iterate through the entire dataset each "epoch"
+    if config.data.epoch_samples:
+        # Calculate samples per tar to match epoch_samples
+        samples_per_tar = config.data.epoch_samples // num_tars
+        logger.info(f"Using epoch_samples={config.data.epoch_samples:,} ({samples_per_tar} per tar)")
+    else:
+        # Default: iterate through entire dataset per epoch
+        samples_per_tar = 10000  # Standard LAION tar size
+        logger.info(f"No epoch_samples specified, using full dataset (~{num_tars * samples_per_tar:,} samples)")
+    
+    return WebDataLoader(dataloader, num_tars, samples_per_tar=samples_per_tar)
 
 
 def create_standard_webdataset_loader(
@@ -1417,8 +1514,8 @@ def create_standard_webdataset_loader(
         uncond_p=config.data.uncond_p,
         upscale_factor=config.model.upscale_factor,
         nsfw_filter=True,
-        similarity_threshold_upper=0.0,
-        similarity_threshold_lower=0.5,
+        similarity_threshold_upper=1.0,  # Maximum similarity to accept (was 0.0 - rejected everything!)
+        similarity_threshold_lower=0.25,  # Minimum similarity to accept
         words_to_skip=[],
         dataset_name=config.data.wds_dataset_name,
         trim_white_padding=config.data.trim_white_padding,
@@ -1501,7 +1598,7 @@ def create_distributed_webdataset_loader(
         DataLoader for distributed WebDataset
     """
     try:
-        from glide_finetune.wds_loader_distributed import distributed_wds_loader
+        from glide_finetune.loaders.wds_loader_distributed import distributed_wds_loader
 
         logger.info("Using distributed WebDataset loader")
 
@@ -1604,8 +1701,14 @@ def generate_samples(
     device: th.device,
     step: int,
     output_dir: Path,
+    model_config: ModelConfig | None = None,
 ) -> list[PIL.Image.Image]:
     """Generate sample images for evaluation.
+    
+    When CLIP adapter is enabled, generates three versions of each prompt:
+    1. Text-only conditioning
+    2. CLIP-only conditioning (empty text + CLIP embeddings)
+    3. Combined text + CLIP conditioning
 
     Args:
         model: GLIDE model
@@ -1622,51 +1725,120 @@ def generate_samples(
     """
     model.eval()
     sample_images = []
+    
+    # Check if model has CLIP adapter
+    has_clip_adapter = hasattr(model, 'clip_adapter') and model.clip_adapter is not None
+    
+    # Initialize CLIP computer if needed (use singleton to keep in memory)
+    clip_computer = None
+    if has_clip_adapter and model_config:
+        from glide_finetune.clip_compute import get_clip_computer
+        clip_computer = get_clip_computer(
+            clip_model_name=model_config.clip_model_name,
+            device=device
+        )
 
+    # Evaluation batch size for each mode (from config)
+    eval_batch_size = config.eval_batch_size
+    
     with th.no_grad():
         for prompt_idx, prompt in enumerate(prompts):
-            # Generate sample
-            samples = sample(
-                glide_model=model,
-                glide_options=options,
-                side_x=64,  # Base resolution
-                side_y=64,
-                prompt=prompt,
-                batch_size=1,
-                guidance_scale=config.test_guidance_scale,
-                device=device,
-                prediction_respacing=str(config.timestep_respacing)
-                if config.num_steps is None
-                else str(config.num_steps),
-                sampler=config.sampler,
-                num_steps=config.num_steps,
-                eta=config.eta,
-                use_swinir=config.use_swinir,
-                swinir_model_type=config.swinir_model_type,
-            )
+            if has_clip_adapter:
+                # Compute CLIP features for the prompt (replicated for batch)
+                clip_features = clip_computer.compute_text_features([prompt])
+                # Expand for batch size
+                clip_features_batch = clip_features.repeat(eval_batch_size, 1)
+                
+                # Generate three versions for comparison (8 samples each)
+                conditioning_modes = [
+                    ("text_only", prompt, None),
+                    ("clip_only", "", clip_features_batch),
+                    ("text_clip", prompt, clip_features_batch),
+                ]
+                
+                for mode_name, mode_prompt, mode_clip in conditioning_modes:
+                    # Generate batch of samples with specified conditioning
+                    samples = sample_with_conditioning(
+                        glide_model=model,
+                        glide_options=options,
+                        side_x=64,  # Base resolution
+                        side_y=64,
+                        prompt=mode_prompt,
+                        clip_embeddings=mode_clip,
+                        batch_size=eval_batch_size,
+                        guidance_scale=config.test_guidance_scale,
+                        device=device,
+                        prediction_respacing=str(config.timestep_respacing)
+                        if config.num_steps is None
+                        else str(config.num_steps),
+                        sampler=config.sampler,
+                        num_steps=config.num_steps,
+                        eta=config.eta,
+                        use_swinir=config.use_swinir,
+                        swinir_model_type=config.swinir_model_type,
+                    )
+                    
+                    # Convert each sample to PIL and save
+                    # Note: samples has shape [batch_size, channels, height, width]
+                    for sample_idx in range(min(eval_batch_size, samples.shape[0])):
+                        # Extract single sample and keep batch dimension for pred_to_pil
+                        single_sample = samples[sample_idx:sample_idx+1]
+                        sample_img = pred_to_pil(single_sample)
+                        sample_images.append(sample_img)
+                        
+                        # Save individual sample with mode and index in filename
+                        sample_path = output_dir / f"step{step:06d}_prompt{prompt_idx:03d}_{mode_name}_{sample_idx:02d}.png"
+                        sample_img.save(sample_path)
+            else:
+                # Standard generation without CLIP adapter
+                samples = sample(
+                    glide_model=model,
+                    glide_options=options,
+                    side_x=64,  # Base resolution
+                    side_y=64,
+                    prompt=prompt,
+                    batch_size=1,
+                    guidance_scale=config.test_guidance_scale,
+                    device=device,
+                    prediction_respacing=str(config.timestep_respacing)
+                    if config.num_steps is None
+                    else str(config.num_steps),
+                    sampler=config.sampler,
+                    num_steps=config.num_steps,
+                    eta=config.eta,
+                    use_swinir=config.use_swinir,
+                    swinir_model_type=config.swinir_model_type,
+                )
 
-            # Convert to PIL image
-            sample_img = pred_to_pil(samples)
-            sample_images.append(sample_img)
+                # Convert to PIL image
+                sample_img = pred_to_pil(samples)
+                sample_images.append(sample_img)
 
-            # Save individual sample
-            sample_path = output_dir / f"step{step:06d}_prompt{prompt_idx:03d}.png"
-            sample_img.save(sample_path)
+                # Save individual sample
+                sample_path = output_dir / f"step{step:06d}_prompt{prompt_idx:03d}.png"
+                sample_img.save(sample_path)
 
     model.train()
     return sample_images
 
 
 def create_sample_grid(
-    sample_images: list[PIL.Image.Image], grid_size: int, step: int, output_dir: Path
+    sample_images: list[PIL.Image.Image], grid_size: int, step: int, output_dir: Path,
+    has_clip_adapter: bool = False
 ) -> PIL.Image.Image | None:
     """Create and save sample grid.
+    
+    When CLIP adapter is enabled, images are arranged as:
+    - Row 1: Prompt 1 (text_only, clip_only, text_clip)
+    - Row 2: Prompt 2 (text_only, clip_only, text_clip)
+    - etc.
 
     Args:
         sample_images: List of sample images
         grid_size: Grid size (power of 2)
         step: Current training step
         output_dir: Directory to save grid
+        has_clip_adapter: Whether images include three-mode comparisons
 
     Returns:
         Grid image or None if no images
@@ -1674,21 +1846,64 @@ def create_sample_grid(
     if not sample_images:
         return None
 
-    # Calculate grid dimensions
-    grid_configs = {
-        1: (1, 1),
-        2: (1, 2),
-        4: (2, 2),
-        8: (2, 4),
-        16: (4, 4),
-        32: (4, 8),
-        64: (8, 8),
-        128: (8, 16),
-        256: (16, 16),
-    }
-    grid_rows, grid_cols = grid_configs.get(grid_size, (1, 1))
+    if has_clip_adapter:
+        # For CLIP adapter with 8 samples per mode, we have 24 images per prompt
+        # Arrange as 3 rows (one per mode) × 8 columns (samples)
+        # This creates a grid where:
+        # Row 1: 8 text_only samples
+        # Row 2: 8 clip_only samples  
+        # Row 3: 8 text_clip samples
+        num_prompts = len(sample_images) // 24  # 8 samples × 3 modes
+        if num_prompts == 1:
+            # For single prompt, show 3×8 grid
+            grid_rows = 3
+            grid_cols = 8
+        else:
+            # For multiple prompts, might need different layout
+            # Stack prompts vertically
+            grid_rows = num_prompts * 3
+            grid_cols = 8
+    else:
+        # Standard grid layout
+        grid_configs = {
+            1: (1, 1),
+            2: (1, 2),
+            4: (2, 2),
+            8: (2, 4),
+            16: (4, 4),
+            32: (4, 8),
+            64: (8, 8),
+            128: (8, 16),
+            256: (16, 16),
+        }
+        grid_rows, grid_cols = grid_configs.get(grid_size, (1, 1))
 
     if len(sample_images) > 1:
+        # Debug: Check image dimensions
+        logger.info(f"Creating grid with {len(sample_images)} images, grid size: {grid_rows}x{grid_cols}")
+        if sample_images:
+            img_size = sample_images[0].size
+            logger.info(f"Image size: {img_size}")
+            # Verify all images have the same size
+            for i, img in enumerate(sample_images):
+                if img.size != img_size:
+                    logger.warning(f"Image {i} has different size: {img.size} vs expected {img_size}")
+        
+        # Ensure we don't try to create a grid larger than the number of images
+        total_grid_cells = grid_rows * grid_cols
+        if len(sample_images) < total_grid_cells:
+            logger.warning(f"Not enough images ({len(sample_images)}) for grid size {grid_rows}x{grid_cols} ({total_grid_cells} cells)")
+            # Adjust grid size if needed
+            if has_clip_adapter and len(sample_images) == 24:
+                # For 24 images, use 3x8 grid
+                grid_rows, grid_cols = 3, 8
+            else:
+                # Fallback to square-ish grid
+                import math
+                grid_cols = math.ceil(math.sqrt(len(sample_images)))
+                grid_rows = math.ceil(len(sample_images) / grid_cols)
+            logger.info(f"Adjusted grid to {grid_rows}x{grid_cols}")
+        
         grid_img = create_image_grid(sample_images, rows=grid_rows, cols=grid_cols)
         grid_path = output_dir / f"step{step:06d}_grid.png"
         grid_img.save(grid_path)
@@ -1703,8 +1918,9 @@ def log_samples_to_wandb(
     grid_img: PIL.Image.Image | None,
     grid_size: int,
     step: int,
+    has_clip_adapter: bool = False,
 ) -> None:
-    """Log samples to Weights & Biases.
+    """Log samples to Weights & Biases using both gallery and table formats.
 
     Args:
         wandb_run: WandB run object
@@ -1713,20 +1929,90 @@ def log_samples_to_wandb(
         grid_img: Grid image
         grid_size: Grid size
         step: Current training step
+        has_clip_adapter: Whether images include three-mode comparisons
     """
     if wandb_run is None or not sample_images:
         return
 
-    # Create gallery images with captions
+    import wandb
+    
+    # Create both gallery images and a comparison table
     wandb_gallery_images = []
-    for img, prompt in zip(sample_images, prompts, strict=False):
-        wandb_gallery_images.append(wandb.Image(img, caption=prompt))
+    
+    if has_clip_adapter:
+        # Create a table for detailed comparison
+        columns = ["Step", "Prompt", "Conditioning_Mode", "Sample_Index", "Image"]
+        comparison_table = wandb.Table(columns=columns)
+        
+        # For CLIP adapter with 8 samples per mode
+        # We have 24 images per prompt (8 samples × 3 modes)
+        modes = ["text_only", "clip_only", "text_clip"]
+        samples_per_mode = 8
+        images_per_prompt = samples_per_mode * 3
+        
+        for i, img in enumerate(sample_images):
+            prompt_idx = i // images_per_prompt
+            within_prompt_idx = i % images_per_prompt
+            mode_idx = within_prompt_idx // samples_per_mode
+            sample_idx = within_prompt_idx % samples_per_mode
+            
+            # Get prompt (handle case where we might not have enough prompts)
+            prompt = prompts[prompt_idx] if prompt_idx < len(prompts) else f"Prompt {prompt_idx}"
+            mode_name = modes[mode_idx]
+            
+            # Add to table
+            comparison_table.add_data(
+                step,
+                prompt[:50] + "..." if len(prompt) > 50 else prompt,  # Truncate long prompts
+                mode_name,
+                sample_idx + 1,
+                wandb.Image(img)
+            )
+            
+            # Also add to gallery with caption
+            caption = f"{prompt} [{mode_name}] (sample {sample_idx + 1}/{samples_per_mode})"
+            wandb_gallery_images.append(wandb.Image(img, caption=caption))
+        
+        # Create mode comparison grids (one grid per mode showing all samples)
+        mode_grids = {}
+        for mode_idx, mode_name in enumerate(modes):
+            mode_images = []
+            for prompt_idx in range(len(prompts)):
+                start_idx = prompt_idx * images_per_prompt + mode_idx * samples_per_mode
+                end_idx = start_idx + samples_per_mode
+                mode_images.extend(sample_images[start_idx:end_idx] if start_idx < len(sample_images) else [])
+            
+            if mode_images:
+                # Create a grid for this mode
+                mode_grid = create_image_grid(mode_images, rows=len(prompts), cols=samples_per_mode)
+                mode_grids[f"samples/grid_{mode_name}"] = wandb.Image(
+                    mode_grid, 
+                    caption=f"{mode_name} - {len(prompts)} prompts × {samples_per_mode} samples"
+                )
+    else:
+        # Standard logging without CLIP adapter
+        columns = ["Step", "Prompt", "Image"]
+        comparison_table = wandb.Table(columns=columns)
+        
+        for img, prompt in zip(sample_images, prompts, strict=False):
+            comparison_table.add_data(
+                step,
+                prompt[:50] + "..." if len(prompt) > 50 else prompt,
+                wandb.Image(img)
+            )
+            wandb_gallery_images.append(wandb.Image(img, caption=prompt))
 
-    # Log data
+    # Prepare log data
     log_data = {
         "samples/gallery": wandb_gallery_images,
+        "samples/comparison_table": comparison_table,
     }
+    
+    # Add mode-specific grids if available
+    if has_clip_adapter and 'mode_grids' in locals():
+        log_data.update(mode_grids)
 
+    # Add overall grid if provided
     if grid_img is not None:
         grid_rows, grid_cols = {
             1: (1, 1),
@@ -1740,7 +2026,10 @@ def log_samples_to_wandb(
             256: (16, 16),
         }.get(grid_size, (1, 1))
 
-        log_data["samples/grid"] = wandb.Image(grid_img, caption=f"{grid_rows}x{grid_cols} Grid")
+        log_data["samples/grid_combined"] = wandb.Image(
+            grid_img, 
+            caption=f"Combined {grid_rows}x{grid_cols} Grid - Step {step}"
+        )
 
     wandb_run.log(log_data, step=step)
 
@@ -1785,6 +2074,21 @@ def setup_wandb_logging(config: TrainConfig, model: nn.Module) -> Any:
             "total_params": total_params,
             "trainable_params": trainable_params,
         }
+        
+        # Add CLIP adapter config if enabled
+        if config.model.use_clip_adapter:
+            wandb_config.update({
+                "clip_adapter/enabled": True,
+                "clip_adapter/model_name": config.model.clip_model_name,
+                "clip_adapter/hidden_dim": config.model.clip_adapter_hidden_dim,
+                "clip_adapter/gate_init": config.model.clip_adapter_gate_init,
+                "clip_adapter/adapter_only": config.model.clip_adapter_only,
+                "clip_adapter/adapter_lr": config.model.clip_adapter_lr,
+            })
+            
+            if hasattr(model, 'clip_adapter'):
+                adapter_params = sum(p.numel() for p in model.clip_adapter.parameters())
+                wandb_config["clip_adapter/params"] = adapter_params
 
         wandb_run = wandb.init(
             project=config.logging.project_name,
@@ -1851,7 +2155,7 @@ class SingleGPUStrategy:
     def setup_model(self, config: TrainConfig) -> tuple[nn.Module, Any, dict]:
         """Setup model for single GPU training."""
         model, diffusion, options = load_glide_model(config.model, device=self.device)
-        apply_model_modifications(model, config.model)
+        model = apply_model_modifications(model, config.model)
         model.train()
         return model, diffusion, options
 
@@ -1984,7 +2288,7 @@ class FP16Strategy:
         model, diffusion, options = load_glide_model(config.model, device=self.device)
 
         # Apply freeze/randomization policies BEFORE FP16 conversion
-        apply_model_modifications(model, config.model)
+        model = apply_model_modifications(model, config.model)
 
         # Apply FP16 conversion
         if config.fp16.use_fp16:
@@ -2186,14 +2490,14 @@ class MultiGPUStrategy:
             or config.model.randomize_diffusion
         ):
             if self.accelerator.is_main_process:
-                apply_model_modifications(model, config.model)
+                model = apply_model_modifications(model, config.model)
             else:
                 # Apply quietly on other processes
                 import contextlib
                 import io
 
                 with contextlib.redirect_stdout(io.StringIO()):
-                    apply_model_modifications(model, config.model)
+                    model = apply_model_modifications(model, config.model)
 
         return model, diffusion, options
 
@@ -2384,6 +2688,15 @@ def run_training(config: TrainConfig, strategy) -> None:
         # Setup wandb logging
         wandb_run = setup_wandb_logging(config, model)
 
+        # Preload CLIP model if using CLIP adapter (keeps it in GPU memory)
+        if config.model.use_clip_adapter:
+            from glide_finetune.clip_compute import get_clip_computer
+            clip_computer = get_clip_computer(
+                clip_model_name=config.model.clip_model_name,
+                device=strategy.device
+            )
+            logger.info(f"Preloaded CLIP model ({config.model.clip_model_name}) to GPU memory")
+        
         # Setup warmup scheduler if needed
         scheduler = None
         if config.training.warmup_steps > 0:
@@ -2502,6 +2815,33 @@ def run_training(config: TrainConfig, strategy) -> None:
                         if hasattr(scale_val, "item"):
                             scale_val = scale_val.item()
                         log_data["train/loss_scale"] = float(scale_val)
+                    
+                    # Add CLIP adapter metrics if available
+                    if config.model.use_clip_adapter and hasattr(model, 'clip_adapter'):
+                        adapter = model.clip_adapter
+                        # Get gate value
+                        gate_value = adapter.get_gate_value()
+                        log_data["clip_adapter/gate_value"] = float(gate_value)
+                        
+                        # Get adapter gradient norms if available
+                        adapter_grad_norm = 0.0
+                        gate_grad_norm = 0.0
+                        for name, param in adapter.named_parameters():
+                            if param.grad is not None:
+                                if 'gate' in name:
+                                    gate_grad_norm = param.grad.norm().item()
+                                else:
+                                    adapter_grad_norm += param.grad.norm().item() ** 2
+                        adapter_grad_norm = adapter_grad_norm ** 0.5
+                        
+                        if adapter_grad_norm > 0:
+                            log_data["clip_adapter/grad_norm"] = float(adapter_grad_norm)
+                        if gate_grad_norm > 0:
+                            log_data["clip_adapter/gate_grad_norm"] = float(gate_grad_norm)
+                        
+                        # Count adapter parameters
+                        adapter_params = sum(p.numel() for p in adapter.parameters() if p.requires_grad)
+                        log_data["clip_adapter/trainable_params"] = int(adapter_params)
 
                     if wandb_run:
                         wandb_run.log(log_data, step=global_step)
@@ -2533,10 +2873,12 @@ def run_training(config: TrainConfig, strategy) -> None:
                         device,
                         global_step,
                         output_dir,
+                        model_config=config.model,
                     )
 
                     # Create grid
-                    grid_img = create_sample_grid(sample_images, grid_size, global_step, output_dir)
+                    has_clip_adapter = hasattr(model, 'clip_adapter') and model.clip_adapter is not None
+                    grid_img = create_sample_grid(sample_images, grid_size, global_step, output_dir, has_clip_adapter)
 
                     # Log to wandb
                     log_samples_to_wandb(
@@ -2546,6 +2888,7 @@ def run_training(config: TrainConfig, strategy) -> None:
                         grid_img,
                         grid_size,
                         global_step,
+                        has_clip_adapter,
                     )
 
                     logger.info(f"Saved {len(sample_images)} samples to {output_dir}")

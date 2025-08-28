@@ -40,8 +40,8 @@ def glide_wds_loader(
     min_original_height: int = 256,
     min_original_width: int = 256,
     enable_upsample: bool = False,
-    similarity_threshold_upper: float = 0.0,
-    similarity_threshold_lower: float = 0.5,
+    similarity_threshold_upper: float = 1.0,  # Maximum similarity (inclusive)
+    similarity_threshold_lower: float = 0.25,  # Minimum similarity (inclusive)
     words_to_skip: list[str] | None = None,
     dataset_name: str = "laion",  # can be laion, alamy, synthetic, webdataset, generic, or custom
     upscale_factor: int = 4,
@@ -153,12 +153,49 @@ def glide_wds_loader(
         def filter_dataset_generic(item: dict[str, Any]) -> bool:
             # Only require the keys that are actually needed
             if enable_image and image_key not in item:
+                # Log detailed information about what keys are available
+                available_keys = list(item.keys())
+                logger.debug(f"Sample missing image key '{image_key}'. Available keys: {available_keys}")
                 return False
             if enable_text and caption_key not in item:
+                available_keys = list(item.keys())
+                logger.debug(f"Sample missing caption key '{caption_key}'. Available keys: {available_keys}")
                 return False
             # No metadata requirement for generic datasets
             return True
         filtered_dataset = dataset.select(filter_dataset_generic)
+        
+        # Check if all samples were filtered out
+        sample_count = 0
+        max_check = 100  # Check first 100 samples to see if any pass
+        for i, sample in enumerate(filtered_dataset):
+            sample_count += 1
+            if i >= max_check - 1:
+                break
+        
+        if sample_count == 0:
+            # Try to get one sample from unfiltered dataset to show available keys
+            try:
+                first_sample = next(iter(dataset))
+                available_keys = list(first_sample.keys())
+                error_msg = (
+                    f"All samples were filtered out! No samples have the required keys.\n"
+                    f"  Looking for image_key='{image_key}' and caption_key='{caption_key}'\n"
+                    f"  Available keys in dataset: {available_keys}\n"
+                    f"  Dataset: {dataset_name}\n"
+                    f"  Hint: Use --wds_image_key and --wds_caption_key to specify correct keys"
+                )
+            except Exception:
+                error_msg = (
+                    f"All samples were filtered out! No samples have the required keys.\n"
+                    f"  Looking for image_key='{image_key}' and caption_key='{caption_key}'\n"
+                    f"  Dataset: {dataset_name}\n"
+                    f"  Hint: Use --wds_image_key and --wds_caption_key to specify correct keys"
+                )
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+        
+        logger.info(f"WebDataset filter check passed - found valid samples with keys: image_key='{image_key}', caption_key='{caption_key}'")
     else:
         msg = f"Unknown dataset: {dataset_name}. Must be one of 'laion', 'alamy', 'synthetic', 'webdataset', 'generic', or 'custom'."
         raise ValueError(

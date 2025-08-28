@@ -6,7 +6,7 @@ from .clip_evaluator import ClipScorer as CLIPEvaluator
 from .dynamic_loss_scaler import DynamicLossScaler
 from .fp16_training import FP16TrainingStep, SelectiveFP16Converter
 from .fp16_util import convert_module_to_f16, convert_module_to_f32
-from .loader import TextImageDataset
+from .loaders.loader import TextImageDataset
 from .master_weight_manager import MasterWeightManager
 from .memory_conscious_evaluator import MemoryConstrainedClipEvaluator
 from .memory_manager import GPUMemoryMonitor, ModelMemoryManager, ModelStateManager
@@ -49,10 +49,10 @@ from .utils import (
     setup_logging,
     unfreeze_layers,
 )
-from .wds_loader import glide_wds_loader
-from .wds_loader_distributed import create_distributed_wds_dataloader, distributed_wds_loader
-from .wds_loader_optimized import create_optimized_dataloader, glide_wds_loader_optimized
-from .wds_resumable_loader import glide_wds_resumable_loader
+from .loaders.wds_loader import glide_wds_loader
+from .loaders.wds_loader_distributed import create_distributed_wds_dataloader, distributed_wds_loader
+from .loaders.wds_loader_optimized import create_optimized_dataloader, glide_wds_loader_optimized
+from .loaders.wds_resumable_loader import glide_wds_resumable_loader
 
 __version__ = "0.2.0"
 
