@@ -58,6 +58,9 @@ dependencies = [
     "urllib3>=1.26.0",
     "wandb>=0.15.0",
     "webdataset>=0.2.0",
+    "pandas>=2.3.2",
+    "pyarrow>=21.0.0",
+    "braceexpand>=0.1.7",
 ]
 
 [project.optional-dependencies]
