@@ -84,7 +84,7 @@ sample-glide = "glide_finetune.sample:main"
 eval-glide = "glide_finetune.clip_eval:main"
 
 [tool.uv.sources]
-glide-text2im = { git = "https://github.com/openai/glide-text2im.git" }
+glide-text2im = { path = "glide-text2im" }
 clip = { git = "https://github.com/openai/CLIP.git" }
 
 [dependency-groups]
