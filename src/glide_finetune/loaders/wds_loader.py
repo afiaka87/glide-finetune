@@ -71,13 +71,37 @@ def glide_wds_loader(
         # For other exceptions, reraise
         return False
 
-    dataset = wds.WebDataset(
-        urls,
-        cache_dir=cache_path,
-        cache_size=10**10,
-        handler=handle_duplicates,  # Use custom handler for duplicates
-        shardshuffle=False,  # Disable shard shuffling for consistent ordering
-    )
+    # For distributed training, we need to split shards properly
+    # Check if we're in a distributed environment
+    import torch.distributed as dist
+    
+    if dist.is_available() and dist.is_initialized():
+        # We're in distributed mode - need to split shards
+        world_size = dist.get_world_size()
+        rank = dist.get_rank()
+        
+        dataset = (
+            wds.WebDataset(
+                urls,
+                cache_dir=cache_path,
+                cache_size=10**10,
+                handler=handle_duplicates,  # Use custom handler for duplicates
+                shardshuffle=False,  # Disable shard shuffling for consistent ordering
+                nodesplitter=wds.split_by_node,  # Split shards across nodes
+            )
+            .split_by_worker  # Also split by worker within each process
+        )
+        
+        logger.info(f"WebDataset configured for distributed training: rank={rank}/{world_size}")
+    else:
+        # Single process mode
+        dataset = wds.WebDataset(
+            urls,
+            cache_dir=cache_path,
+            cache_size=10**10,
+            handler=handle_duplicates,  # Use custom handler for duplicates
+            shardshuffle=False,  # Disable shard shuffling for consistent ordering
+        )
 
     def filter_dataset_laion(item: dict[str, Any]) -> bool:
         if enable_text and caption_key not in item:
