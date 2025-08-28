@@ -121,7 +121,7 @@ class Text2ImUNet(UNetModel):
     def del_cache(self):
         self.cache = None
 
-    def forward(self, x, timesteps, tokens=None, mask=None):
+    def forward(self, x, timesteps, tokens=None, mask=None, clip_embeddings=None, **kwargs):
         hs = []
         emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
         if self.xf_width:
@@ -130,6 +130,14 @@ class Text2ImUNet(UNetModel):
             emb = emb + xf_proj.to(emb)
         else:
             xf_out = None
+        
+        # Inject CLIP features if adapter is present
+        if clip_embeddings is not None and hasattr(self, 'clip_adapter'):
+            # Apply CLIP adapter (it expects clip_emb first, then time_emb)
+            # Adapter runs in FP32 internally for stability  
+            clip_features = self.clip_adapter(clip_embeddings.float(), emb.float())
+            emb = emb + clip_features.to(emb.dtype)
+        
         h = x.type(self.dtype)
         for module in self.input_blocks:
             h = module(h, emb, xf_out)
