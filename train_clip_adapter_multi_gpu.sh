@@ -107,12 +107,17 @@ mkdir -p "$SAVE_DIRECTORY"
 ACCELERATE_CMD="uv run accelerate launch"
 
 # Add accelerate configuration
-if [ -n "$ACCELERATE_CONFIG" ]; then
+if [ -n "$ACCELERATE_CONFIG" ] && [ -f "$ACCELERATE_CONFIG" ]; then
+    # Use provided accelerate config file (must be an actual accelerate config, not clip_adapter_config.yaml)
     ACCELERATE_CMD="$ACCELERATE_CMD --config_file \"$ACCELERATE_CONFIG\""
 else
     # Use default multi-GPU configuration
     ACCELERATE_CMD="$ACCELERATE_CMD --num_processes $NUM_GPUS"
-    ACCELERATE_CMD="$ACCELERATE_CMD --multi_gpu"
+    
+    # Only add --multi_gpu if we have more than 1 GPU
+    if [ "$NUM_GPUS" -gt 1 ]; then
+        ACCELERATE_CMD="$ACCELERATE_CMD --multi_gpu"
+    fi
     
     if [ "$MIXED_PRECISION" != "no" ]; then
         ACCELERATE_CMD="$ACCELERATE_CMD --mixed_precision $MIXED_PRECISION"
