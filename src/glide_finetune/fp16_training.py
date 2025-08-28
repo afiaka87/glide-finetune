@@ -352,6 +352,13 @@ class SelectiveFP16Converter:
             nn.Embedding,
             nn.EmbeddingBag,
         ]
+        
+        # Add GLIDE-specific LayerNorm if available
+        try:
+            from glide_text2im.xf import LayerNorm as GlideLayerNorm
+            self.fp32_layer_types.append(GlideLayerNorm)
+        except ImportError:
+            pass
 
         # Add softmax layers if not aggressive
         if not aggressive:
@@ -399,31 +406,48 @@ class SelectiveFP16Converter:
         Returns:
             Tuple of (converted model, conversion statistics)
         """
-        # First convert entire model to FP16
-        model = model.half()
-
-        # Then selectively convert layers back to FP32
-        fp16_params = 0
-        fp32_params = 0
-        conversion_map = {}
-
-        for name, module in model.named_modules():
-            if not self.should_convert_layer(name, module):
-                # Convert back to FP32
-                module.float()
-
-                # Count parameters
-                for param in module.parameters(recurse=False):
-                    fp32_params += param.numel()
-                    param.data = param.data.float()
-
-                conversion_map[name] = "fp32"
-            else:
-                # Keep in FP16
-                for param in module.parameters(recurse=False):
+        # For GLIDE models, use their built-in conversion if available
+        if hasattr(model, 'convert_to_fp16'):
+            # Use GLIDE's built-in FP16 conversion which handles special layers
+            model.convert_to_fp16()
+            
+            # Count parameters for statistics
+            fp16_params = 0
+            fp32_params = 0
+            conversion_map = {}
+            
+            for name, param in model.named_parameters():
+                if param.dtype == torch.float16:
                     fp16_params += param.numel()
-
-                conversion_map[name] = "fp16"
+                    conversion_map[name] = "fp16"
+                else:
+                    fp32_params += param.numel()
+                    conversion_map[name] = "fp32"
+        else:
+            # For other models, selectively convert layers
+            fp16_params = 0
+            fp32_params = 0
+            conversion_map = {}
+            
+            for name, module in model.named_modules():
+                if self.should_convert_layer(name, module):
+                    # Convert to FP16
+                    module.half()
+                    
+                    # Count parameters
+                    for param in module.parameters(recurse=False):
+                        fp16_params += param.numel()
+                    
+                    conversion_map[name] = "fp16"
+                else:
+                    # Keep in FP32
+                    module.float()
+                    
+                    # Count parameters
+                    for param in module.parameters(recurse=False):
+                        fp32_params += param.numel()
+                    
+                    conversion_map[name] = "fp32"
 
         # Log conversion statistics
         total_params = fp16_params + fp32_params
