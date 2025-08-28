@@ -10,7 +10,7 @@ from the GLIDE codebase. The noise-aware CLIP is not suitable for our adapter ap
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, Tuple, Union
+from typing import Any, Optional, Tuple, Union
 import clip  # OpenAI CLIP, not the glide_text2im.clip module
 
 
