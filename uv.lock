@@ -870,7 +870,7 @@ requires-dist = [
     { name = "clip", git = "https://github.com/openai/CLIP.git" },
     { name = "einops", specifier = ">=0.6.0" },
     { name = "ftfy", specifier = ">=6.1.0" },
-    { name = "glide-text2im", git = "https://github.com/openai/glide-text2im.git" },
+    { name = "glide-text2im", directory = "glide-text2im" },
     { name = "ipdb", marker = "extra == 'dev'", specifier = ">=0.13.0" },
     { name = "ipython", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "matplotlib", specifier = ">=3.5.0" },
@@ -927,12 +927,23 @@ dev = [
 [[package]]
 name = "glide-text2im"
 version = "0.0.0"
-source = { git = "https://github.com/openai/glide-text2im.git#69b530740eb6cef69442d6180579ef5ba9ef063e" }
+source = { directory = "glide-text2im" }
 dependencies = [
     { name = "attrs" },
     { name = "filelock" },
     { name = "ftfy" },
-    { name = "numpy" },
+    { name = "pillow" },
+    { name = "regex" },
+    { name = "requests" },
+    { name = "torch" },
+    { name = "tqdm" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "attrs" },
+    { name = "filelock" },
+    { name = "ftfy" },
     { name = "pillow" },
     { name = "regex" },
     { name = "requests" },
