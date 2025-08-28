@@ -48,6 +48,7 @@ def glide_wds_loader(
     trim_white_padding: bool = False,
     white_thresh: int = 245,
     resampling_method: str = "bicubic",  # Resampling method for image resizing
+    disable_laion_filters: bool = False,  # Disable all LAION quality/NSFW/similarity filters
 ) -> Iterator[tuple[th.Tensor, th.Tensor, th.Tensor]]:
     if words_to_skip is None:
         words_to_skip = []
@@ -85,6 +86,10 @@ def glide_wds_loader(
             return False
         if enable_metadata and metadata_key not in item:
             return False
+
+        # If filters are disabled, accept all samples that have the required keys
+        if disable_laion_filters:
+            return True
 
         metadata = json.loads(item["json"].decode("utf-8"))
 
@@ -143,6 +148,8 @@ def glide_wds_loader(
         return True
 
     if dataset_name == "laion":
+        if disable_laion_filters:
+            logger.warning("⚠️  LAION filters DISABLED - accepting all samples with required keys!")
         filtered_dataset = dataset.select(filter_dataset_laion)
     elif dataset_name == "alamy":
         filtered_dataset = dataset.select(filter_dataset_alamy)

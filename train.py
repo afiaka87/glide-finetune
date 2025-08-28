@@ -257,6 +257,7 @@ class DataConfig:
     epoch_samples: int | None = None
     resampling_method: str = "bicubic"  # Options: bicubic, lanczos
     clip_features_path: str | None = None  # Path to precomputed CLIP features
+    disable_laion_filters: bool = False  # Disable all LAION quality/NSFW/similarity filters
 
 
 @dataclass(frozen=True)
@@ -534,6 +535,11 @@ def create_unified_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help="Path to precomputed CLIP features (NPY dir for COCO, Parquet for WebDataset)",
+    )
+    data_group.add_argument(
+        "--disable_laion_filters",
+        action="store_true",
+        help="Disable all LAION quality/NSFW/similarity filters (accept all samples)",
     )
 
     # Model arguments
@@ -959,6 +965,8 @@ def args_to_config(args: argparse.Namespace) -> TrainConfig:
             num_workers=args.num_workers,
             epoch_samples=args.epoch_samples,
             resampling_method=args.resampling_method,
+            clip_features_path=args.clip_features_path,
+            disable_laion_filters=args.disable_laion_filters,
         ),
         model=ModelConfig(
             model_path=args.model_path,
@@ -1521,6 +1529,7 @@ def create_standard_webdataset_loader(
         trim_white_padding=config.data.trim_white_padding,
         white_thresh=config.data.white_thresh,
         resampling_method=config.data.resampling_method,
+        disable_laion_filters=config.data.disable_laion_filters,
     )
 
     return DataLoader(
