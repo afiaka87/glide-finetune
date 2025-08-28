@@ -54,9 +54,6 @@ class CLIPFeatureComputer:
         )
         self.clip_model.eval()
         
-        # Log feature dimension for verification
-        logger.info(f"CLIP model loaded on {self.device}, feature dimension: {self.get_feature_dim()}")
-        
         # Get expected feature dimension
         with torch.no_grad():
             dummy_text = ["test"]
@@ -67,7 +64,17 @@ class CLIPFeatureComputer:
             )
             self.clip_dim = dummy_features.shape[-1]
         
-        logger.info(f"CLIP model loaded, feature dimension: {self.clip_dim}")
+        # Log feature dimension for verification (only on main process in distributed)
+        if not accelerator or accelerator.is_main_process:
+            logger.info(f"CLIP model loaded on {self.device}, feature dimension: {self.clip_dim}")
+    
+    def get_feature_dim(self) -> int:
+        """Get the dimension of CLIP features.
+        
+        Returns:
+            Feature dimension (typically 512 for ViT-B/32)
+        """
+        return self.clip_dim
     
     def compute_text_features(
         self, 
