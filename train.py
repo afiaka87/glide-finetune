@@ -2500,6 +2500,8 @@ class MultiGPUStrategy:
         self.accelerator: Accelerator | None = None
         self.checkpoint_manager: CheckpointManager | None = None
         self.clip_computer_manager: Any | None = None  # CLIPComputerManager instance
+        self.prepared_model: nn.Module | None = None
+        self.prepared_optimizer: th.optim.Optimizer | None = None
 
     def setup_accelerator(self, config: TrainConfig) -> Accelerator:
         """Setup Accelerator for distributed training."""
@@ -2643,6 +2645,34 @@ class MultiGPUStrategy:
     def setup_dataloader(self, config: TrainConfig, model: nn.Module) -> DataLoader:
         """Setup data loader for multi-GPU training."""
         return create_dataloader(config, model, distributed=True)
+    
+    def prepare_for_training(self, model: nn.Module, optimizer: th.optim.Optimizer, config: TrainConfig) -> tuple[nn.Module, th.optim.Optimizer]:
+        """Prepare model and optimizer for distributed training.
+        
+        Note: We do NOT prepare the dataloader when using WebDataset, 
+        as it handles distribution internally via resampled=True.
+        
+        Args:
+            model: Model to prepare
+            optimizer: Optimizer to prepare
+            config: Training configuration
+            
+        Returns:
+            Prepared (model, optimizer) tuple
+        """
+        if self.accelerator is None:
+            raise RuntimeError("Accelerator not initialized")
+        
+        # Prepare only model and optimizer, NOT dataloader for WebDataset
+        self.prepared_model, self.prepared_optimizer = self.accelerator.prepare(model, optimizer)
+        
+        if self.accelerator.is_main_process:
+            if config.data.use_webdataset:
+                logger.info("Using WebDataset with internal distribution (dataloader not wrapped)")
+            else:
+                logger.info("Model and optimizer prepared for distributed training")
+        
+        return self.prepared_model, self.prepared_optimizer
 
     def setup_checkpoint_manager(self, config: TrainConfig) -> CheckpointManager | None:
         """Setup checkpoint manager (only on main process)."""
@@ -2666,8 +2696,12 @@ class MultiGPUStrategy:
         """Perform multi-GPU training step."""
         if self.accelerator is None:
             raise RuntimeError("Accelerator not initialized")
+        
+        # Use prepared versions if available (after prepare_for_training is called)
+        actual_model = self.prepared_model if self.prepared_model is not None else model
+        actual_optimizer = self.prepared_optimizer if self.prepared_optimizer is not None else optimizer
 
-        with self.accelerator.accumulate(model):
+        with self.accelerator.accumulate(actual_model):
             # Unpack batch with CLIP feature support
             clip_features = None
             if config.model.train_upsample:
@@ -2706,7 +2740,7 @@ class MultiGPUStrategy:
                     device=self.accelerator.device
                 )
                 clip_features = clip_computer.compute_from_tokens(
-                    tokens, masks, tokenizer=model.tokenizer
+                    tokens, masks, tokenizer=actual_model.tokenizer
                 )
             
             # Build model kwargs
@@ -2719,14 +2753,14 @@ class MultiGPUStrategy:
             # Forward pass
             if config.model.train_upsample:
                 loss = diffusion.training_losses(
-                    model,
+                    actual_model,
                     high_res,
                     t=None,
                     model_kwargs=model_kwargs,
                 )["loss"].mean()
             else:
                 loss = diffusion.training_losses(
-                    model,
+                    actual_model,
                     images,
                     t=None,
                     model_kwargs=model_kwargs,
@@ -2737,16 +2771,16 @@ class MultiGPUStrategy:
 
             # Gradient clipping
             if config.training.grad_clip > 0:
-                self.accelerator.clip_grad_norm_(model.parameters(), config.training.grad_clip)
+                self.accelerator.clip_grad_norm_(actual_model.parameters(), config.training.grad_clip)
 
             # Optimizer step
-            optimizer.step()
-            optimizer.zero_grad()
+            actual_optimizer.step()
+            actual_optimizer.zero_grad()
 
         # Properly average loss across all processes
         avg_loss = self.accelerator.reduce(loss.detach(), reduction="mean").item()
 
-        return {"loss": avg_loss, "learning_rate": optimizer.param_groups[0]["lr"]}
+        return {"loss": avg_loss, "learning_rate": actual_optimizer.param_groups[0]["lr"]}
 
 
 def create_training_strategy(
@@ -2815,6 +2849,11 @@ def run_training(config: TrainConfig, strategy) -> None:
 
         logger.info("Setting up data loader...")
         dataloader = strategy.setup_dataloader(config, model)
+        
+        # For MultiGPUStrategy, prepare model and optimizer for distributed training
+        if isinstance(strategy, MultiGPUStrategy):
+            logger.info("Preparing model and optimizer for distributed training...")
+            model, optimizer = strategy.prepare_for_training(model, optimizer, config)
 
         # Setup checkpoint manager
         checkpoint_manager = strategy.setup_checkpoint_manager(config)

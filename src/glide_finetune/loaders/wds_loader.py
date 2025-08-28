@@ -72,36 +72,32 @@ def glide_wds_loader(
         return False
 
     # For distributed training, we need to split shards properly
-    # Check if we're in a distributed environment
-    import torch.distributed as dist
+    # WebDataset handles this via nodesplitter parameter
+    # Note: We don't check dist.is_initialized() here because DataLoader workers
+    # spawn fresh processes without the distributed context
     
-    if dist.is_available() and dist.is_initialized():
-        # We're in distributed mode - need to split shards
-        world_size = dist.get_world_size()
-        rank = dist.get_rank()
-        
-        dataset = (
-            wds.WebDataset(
-                urls,
-                cache_dir=cache_path,
-                cache_size=10**10,
-                handler=handle_duplicates,  # Use custom handler for duplicates
-                shardshuffle=False,  # Disable shard shuffling for consistent ordering
-                nodesplitter=wds.split_by_node,  # Split shards across nodes
-            )
-            .split_by_worker  # Also split by worker within each process
-        )
-        
-        logger.info(f"WebDataset configured for distributed training: rank={rank}/{world_size}")
-    else:
-        # Single process mode
-        dataset = wds.WebDataset(
-            urls,
-            cache_dir=cache_path,
-            cache_size=10**10,
-            handler=handle_duplicates,  # Use custom handler for duplicates
-            shardshuffle=False,  # Disable shard shuffling for consistent ordering
-        )
+    # Instead, we'll use resampled=True which handles distributed automatically
+    # and works correctly with Accelerate
+    dataset = wds.WebDataset(
+        urls,
+        cache_dir=cache_path,
+        cache_size=10**10,
+        handler=handle_duplicates,  # Use custom handler for duplicates
+        resampled=True,  # This enables proper distributed sampling
+        shardshuffle=True,  # Enable shard shuffling with resampled
+    )
+    
+    # Log if we detect we're in distributed mode (main process only)
+    try:
+        import torch.distributed as dist
+        if dist.is_available() and dist.is_initialized():
+            world_size = dist.get_world_size()
+            rank = dist.get_rank()
+            if rank == 0:  # Only log on main process
+                logger.info(f"WebDataset configured for distributed training: {world_size} processes")
+    except Exception:
+        # Not in distributed mode, that's fine
+        pass
 
     def filter_dataset_laion(item: dict[str, Any]) -> bool:
         if enable_text and caption_key not in item:

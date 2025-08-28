@@ -6,7 +6,7 @@ set -e
 # ============================================
 
 # Multi-GPU Configuration
-NUM_GPUS=4                        # Number of GPUs to use (set to "auto" to use all available)
+NUM_GPUS=1                        # Number of GPUs to use (set to "auto" to use all available)
 ACCELERATE_CONFIG=""              # Optional: Path to accelerate config file (leave empty for auto)
 MIXED_PRECISION="no"             # Mixed precision: "no", "fp16", "bf16"
 GRADIENT_CHECKPOINTING_STEPS=1   # Gradient checkpointing every N layers (1 = all layers)
