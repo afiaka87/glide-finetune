@@ -231,6 +231,49 @@ class ClipAdapter(nn.Module):
         )
 
 
+def integrate_clip_adapter_to_model(
+    model: nn.Module,
+    clip_model_name: str = "ViT-B/32",
+    hidden_dim: Optional[int] = None,
+    gate_init: float = -5.0,
+    device: Union[str, torch.device] = "cuda",
+) -> nn.Module:
+    """Integrate CLIP adapter into GLIDE model.
+    
+    Args:
+        model: GLIDE model to add adapter to
+        clip_model_name: Name of CLIP model for dimension discovery
+        hidden_dim: Hidden dimension for adapter (None for auto)
+        gate_init: Initial gate value
+        device: Device to load CLIP model on
+        
+    Returns:
+        Model with integrated CLIP adapter
+    """
+    # Load CLIP model for dimension discovery
+    clip_model, _ = load_openai_clip(clip_model_name, device=device)
+    
+    # Create adapter with runtime dimension discovery
+    adapter = ClipAdapter.from_model(
+        model, 
+        clip_model=clip_model,
+        hidden_dim=hidden_dim,
+        gate_init=gate_init,
+    )
+    
+    # Move adapter to same device as model
+    adapter = adapter.to(device)
+    
+    # Add adapter to model
+    model.clip_adapter = adapter
+    
+    # Clean up CLIP model (we only needed it for dimension discovery)
+    del clip_model
+    torch.cuda.empty_cache() if torch.cuda.is_available() else None
+    
+    return model
+
+
 def load_openai_clip(
     model_name: str = "ViT-B/32",
     device: Union[str, torch.device] = "cpu"
