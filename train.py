@@ -1940,19 +1940,26 @@ def log_samples_to_wandb(
     grid_size: int,
     step: int,
     has_clip_adapter: bool = False,
+    accelerator: Any = None,
 ) -> None:
     """Log samples to Weights & Biases using both gallery and table formats.
 
     Args:
-        wandb_run: WandB run object
+        wandb_run: WandB run object (None for accelerator-based logging)
         sample_images: List of sample images
         prompts: Corresponding prompts
         grid_img: Grid image
         grid_size: Grid size
         step: Current training step
         has_clip_adapter: Whether images include three-mode comparisons
+        accelerator: Optional Accelerator instance for distributed logging
     """
-    if wandb_run is None or not sample_images:
+    # Skip if no logging mechanism or no images
+    if (wandb_run is None and accelerator is None) or not sample_images:
+        return
+    
+    # Only log from main process in distributed training
+    if accelerator and not accelerator.is_main_process:
         return
 
     import wandb
@@ -2052,7 +2059,13 @@ def log_samples_to_wandb(
             caption=f"Combined {grid_rows}x{grid_cols} Grid - Step {step}"
         )
 
-    wandb_run.log(log_data, step=step)
+    # Log using appropriate method
+    if accelerator:
+        # Use accelerator's log method (automatically handles main process)
+        accelerator.log(log_data, step=step)
+    elif wandb_run:
+        # Direct wandb logging
+        wandb_run.log(log_data, step=step)
 
 
 def setup_wandb_logging(config: TrainConfig, model: nn.Module) -> Any:
@@ -2515,10 +2528,48 @@ class MultiGPUStrategy:
 
         # Initialize wandb tracking if enabled
         if self.accelerator.is_main_process and not config.logging.no_wandb:
+            # Create properly formatted config for wandb
+            wandb_config = {
+                "batch_size": config.data.batch_size,
+                "effective_batch_size": config.data.batch_size * config.training.gradient_accumulation_steps,
+                "gradient_accumulation_steps": config.training.gradient_accumulation_steps,
+                "learning_rate": config.training.learning_rate,
+                "adam_weight_decay": config.training.adam_weight_decay,
+                "num_epochs": config.training.num_epochs,
+                "use_fp16": config.fp16.use_fp16,
+                "use_bf16": config.fp16.use_bf16,
+                "fp16_mode": config.fp16.fp16_mode if config.fp16.use_fp16 else "none",
+                "uncond_p": config.data.uncond_p,
+                "train_upsample": config.model.train_upsample,
+                "freeze_transformer": config.model.freeze_transformer,
+                "freeze_diffusion": config.model.freeze_diffusion,
+                "use_webdataset": config.data.use_webdataset,
+                "seed": config.training.seed,
+                "multi_gpu": True,
+                "num_processes": self.accelerator.num_processes,
+            }
+            
+            # Add CLIP adapter config if enabled
+            if config.model.use_clip_adapter:
+                wandb_config.update({
+                    "clip_adapter/enabled": True,
+                    "clip_adapter/model_name": config.model.clip_model_name,
+                    "clip_adapter/hidden_dim": config.model.clip_adapter_hidden_dim,
+                    "clip_adapter/gate_init": config.model.clip_adapter_gate_init,
+                    "clip_adapter/adapter_only": config.model.clip_adapter_only,
+                    "clip_adapter/adapter_lr": config.model.clip_adapter_lr,
+                })
+            
             self.accelerator.init_trackers(
                 project_name=config.logging.project_name,
-                config=config.__dict__,
-                init_kwargs={"wandb": {"dir": config.logging.checkpoints_dir}},
+                config=wandb_config,
+                init_kwargs={
+                    "wandb": {
+                        "dir": config.logging.checkpoints_dir,
+                        "resume": "allow",
+                        "save_code": True,
+                    }
+                },
             )
 
         return self.accelerator
@@ -2769,7 +2820,16 @@ def run_training(config: TrainConfig, strategy) -> None:
         checkpoint_manager = strategy.setup_checkpoint_manager(config)
 
         # Setup wandb logging
-        wandb_run = setup_wandb_logging(config, model)
+        # For MultiGPUStrategy, wandb is handled through accelerate trackers
+        wandb_run = None
+        if isinstance(strategy, MultiGPUStrategy):
+            # WandB is initialized via accelerator.init_trackers in MultiGPUStrategy
+            # We'll get the tracker reference later for logging
+            if strategy.accelerator and strategy.accelerator.is_main_process:
+                logger.info("WandB tracking initialized via Accelerate")
+        else:
+            # Single GPU or FP16 strategies use direct wandb
+            wandb_run = setup_wandb_logging(config, model)
 
         # Preload CLIP model if using CLIP adapter (keeps it in GPU memory)
         if config.model.use_clip_adapter:
@@ -2929,14 +2989,14 @@ def run_training(config: TrainConfig, strategy) -> None:
                         adapter_params = sum(p.numel() for p in adapter.parameters() if p.requires_grad)
                         log_data["clip_adapter/trainable_params"] = int(adapter_params)
 
-                    # Only log to wandb from main process in multi-GPU
-                    if wandb_run:
-                        if hasattr(strategy, "accelerator") and strategy.accelerator:
-                            if strategy.accelerator.is_main_process:
-                                wandb_run.log(log_data, step=global_step)
-                        else:
-                            # Single GPU - always log
-                            wandb_run.log(log_data, step=global_step)
+                    # Log metrics to wandb/accelerate
+                    if isinstance(strategy, MultiGPUStrategy):
+                        # Use accelerator's log method which handles main process automatically
+                        if strategy.accelerator:
+                            strategy.accelerator.log(log_data, step=global_step)
+                    elif wandb_run:
+                        # Single GPU or FP16 - use direct wandb logging
+                        wandb_run.log(log_data, step=global_step)
 
                 # Console logging (controlled by log_frequency)
                 if global_step % config.logging.log_frequency == 0:
@@ -2982,7 +3042,8 @@ def run_training(config: TrainConfig, strategy) -> None:
                     has_clip_adapter = hasattr(model, 'clip_adapter') and model.clip_adapter is not None
                     grid_img = create_sample_grid(sample_images, grid_size, global_step, output_dir, has_clip_adapter)
 
-                    # Log to wandb
+                    # Log to wandb (pass accelerator for MultiGPU strategy)
+                    strategy_accelerator = getattr(strategy, 'accelerator', None) if isinstance(strategy, MultiGPUStrategy) else None
                     log_samples_to_wandb(
                         wandb_run,
                         sample_images,
@@ -2991,6 +3052,7 @@ def run_training(config: TrainConfig, strategy) -> None:
                         grid_size,
                         global_step,
                         has_clip_adapter,
+                        accelerator=strategy_accelerator,
                     )
 
                     logger.info(f"Saved {len(sample_images)} samples to {output_dir}")
@@ -3010,15 +3072,20 @@ def run_training(config: TrainConfig, strategy) -> None:
                 logger.info(f"  Average loss: {avg_loss:.6f} (±{std_loss:.6f})")
                 logger.info(f"  Total steps: {global_step:,}")
 
-                if wandb_run:
-                    wandb_run.log(
-                        {
-                            "epoch/avg_loss": avg_loss,
-                            "epoch/std_loss": std_loss,
-                            "epoch/num": epoch + 1,
-                        },
-                        step=global_step,
-                    )
+                # Log epoch summary
+                epoch_data = {
+                    "epoch/avg_loss": avg_loss,
+                    "epoch/std_loss": std_loss,
+                    "epoch/num": epoch + 1,
+                }
+                
+                if isinstance(strategy, MultiGPUStrategy):
+                    # Use accelerator's log method
+                    if strategy.accelerator:
+                        strategy.accelerator.log(epoch_data, step=global_step)
+                elif wandb_run:
+                    # Direct wandb logging
+                    wandb_run.log(epoch_data, step=global_step)
 
         # Final checkpoint
         if checkpoint_manager and not interrupt_handler.interrupted:
@@ -3053,7 +3120,12 @@ def run_training(config: TrainConfig, strategy) -> None:
 
     finally:
         # Cleanup
-        if wandb_run:
+        if isinstance(strategy, MultiGPUStrategy):
+            # For MultiGPU, use accelerator's end_training which handles tracker cleanup
+            if strategy.accelerator:
+                strategy.accelerator.end_training()
+        elif wandb_run:
+            # Direct wandb cleanup for single GPU/FP16
             wandb_run.finish()
 
 
