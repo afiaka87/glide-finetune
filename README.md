@@ -415,6 +415,33 @@ accelerate launch --num_processes 8 train_glide_multi_gpu.py \
   --gradient_accumulation_steps 2
 ```
 
+**Multi-GPU with CLIP Adapter (Efficient Adapter-Only Training):**
+```bash
+# Train only the CLIP adapter across multiple GPUs (<1M params)
+# Base model remains frozen - only adapter weights are synchronized
+accelerate launch --num_processes 4 train.py \
+  --data_dir "/path/to/data-*.tar" \
+  --use_webdataset \
+  --use_clip_adapter \
+  --clip_adapter_only \
+  --batch_size 16 \
+  --learning_rate 1e-4 \
+  --clip_adapter_lr 5e-4
+
+# CLIP adapter with custom configuration and DDP
+accelerate launch --config_file configs/accelerate_ddp.yaml train.py \
+  --data_dir "/path/to/data" \
+  --use_clip_adapter \
+  --clip_adapter_only \
+  --clip_adapter_hidden_dim 768 \
+  --clip_adapter_gate_init -5.0 \
+  --batch_size 32
+
+# Note: When using --clip_adapter_only, the base model (>300M params) is frozen
+# Only the adapter (<1M params) gradients are computed and synchronized
+# This dramatically reduces memory usage and communication overhead
+```
+
 **Supported Configurations:**
 
 | Configuration | Memory Efficiency | Speed | Use Case |

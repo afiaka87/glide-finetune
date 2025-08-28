@@ -1262,6 +1262,7 @@ def create_optimizer(
     config: TrainingConfig, 
     use_8bit: bool = False,
     model_config: ModelConfig | None = None,
+    accelerator: Any = None,  # NEW: Accept accelerator for DDP unwrapping
 ) -> th.optim.Optimizer:
     """Create optimizer with proper parameter groups.
 
@@ -1270,10 +1271,17 @@ def create_optimizer(
         config: Training configuration
         use_8bit: Whether to use 8-bit optimizer
         model_config: Model configuration (for adapter-only mode)
+        accelerator: Accelerator instance for DDP unwrapping
 
     Returns:
         Configured optimizer
     """
+    # Unwrap model if using accelerator (handles DDP wrapper)
+    if accelerator is not None:
+        unwrapped_model = accelerator.unwrap_model(model)
+    else:
+        unwrapped_model = model
+    
     # Check for adapter-only mode
     if model_config and model_config.clip_adapter_only:
         # Import adapter optimizer utilities
@@ -1283,8 +1291,8 @@ def create_optimizer(
             freeze_base_model,
         )
         
-        # Freeze base model first
-        freeze_base_model(model, skip_eval_mode=True)
+        # Note: freeze_base_model should already have been called in setup_model
+        # We don't call it again here to avoid issues with DDP wrapping
         
         # Create adapter-specific optimizer configuration
         adapter_config = AdapterOptimizerConfig(
@@ -1297,8 +1305,9 @@ def create_optimizer(
         )
         
         # Create adapter-only optimizer (returns optimizer and optional scheduler)
+        # Use unwrapped model to correctly identify adapter parameters
         optimizer, _scheduler = create_adapter_optimizer(
-            model, 
+            unwrapped_model,  # Use unwrapped model for correct parameter identification
             config=adapter_config,
             total_training_steps=None  # Will handle scheduler separately
         )
@@ -2159,6 +2168,7 @@ class SingleGPUStrategy:
     def __init__(self, device: th.device):
         self.device = device
         self.checkpoint_manager: CheckpointManager | None = None
+        self.clip_computer_manager: Any | None = None  # CLIPComputerManager instance
         self.scaler: GradScaler | None = None
 
     def setup_model(self, config: TrainConfig) -> tuple[nn.Module, Any, dict]:
@@ -2237,9 +2247,13 @@ class SingleGPUStrategy:
             clip_features = clip_features.to(self.device).float()
         elif config.model.use_clip_adapter and tokens is not None:
             # Compute CLIP features on-the-fly if adapter is enabled but features not provided
-            from glide_finetune.clip_compute import get_clip_computer
+            # Initialize CLIPComputerManager if not already done
+            if self.clip_computer_manager is None:
+                from glide_finetune.clip_compute import CLIPComputerManager
+                self.clip_computer_manager = CLIPComputerManager()
             
-            clip_computer = get_clip_computer(
+            # Get CLIP computer for this device
+            clip_computer = self.clip_computer_manager.get_computer(
                 clip_model_name=config.model.clip_model_name,
                 device=self.device
             )
@@ -2448,6 +2462,7 @@ class MultiGPUStrategy:
     def __init__(self):
         self.accelerator: Accelerator | None = None
         self.checkpoint_manager: CheckpointManager | None = None
+        self.clip_computer_manager: Any | None = None  # CLIPComputerManager instance
 
     def setup_accelerator(self, config: TrainConfig) -> Accelerator:
         """Setup Accelerator for distributed training."""
@@ -2485,14 +2500,44 @@ class MultiGPUStrategy:
         return self.accelerator
 
     def setup_model(self, config: TrainConfig) -> tuple[nn.Module, Any, dict]:
-        """Setup model for multi-GPU training."""
+        """Setup model for multi-GPU training with proper adapter attachment."""
         if self.accelerator is None:
             self.accelerator = self.setup_accelerator(config)
 
         model, diffusion, options = load_glide_model(config.model)
 
-        # Apply freeze/randomization policies (only print on main process)
-        if (
+        # CRITICAL: Attach CLIP adapter BEFORE DDP wrapping
+        if config.model.use_clip_adapter:
+            from glide_finetune.clip_adapter import integrate_clip_adapter_to_model
+            
+            if self.accelerator.is_main_process:
+                logger.info("Attaching CLIP adapter to model (pre-DDP)")
+            
+            model = integrate_clip_adapter_to_model(
+                model,
+                clip_model_name=config.model.clip_model_name,
+                hidden_dim=config.model.clip_adapter_hidden_dim,
+                gate_init=config.model.clip_adapter_gate_init,
+                device=self.accelerator.device,
+            )
+            
+            if self.accelerator.is_main_process:
+                logger.info("CLIP adapter attached successfully")
+
+        # Freeze base model if adapter-only mode (BEFORE optimizer creation)
+        if config.model.clip_adapter_only:
+            from glide_finetune.adapter_optimizer import freeze_base_model
+            
+            if self.accelerator.is_main_process:
+                logger.info("Freezing base model for adapter-only training")
+            
+            counts = freeze_base_model(model, skip_eval_mode=True)
+            
+            if self.accelerator.is_main_process:
+                logger.info(f"Froze {counts['frozen']:,} params, {counts['trainable']:,} adapter params trainable")
+
+        # Apply other freeze/randomization policies (only print on main process)
+        elif (
             config.model.freeze_transformer
             or config.model.freeze_diffusion
             or config.model.randomize_transformer
@@ -2516,7 +2561,8 @@ class MultiGPUStrategy:
             model,
             config.training, 
             config.training.use_8bit_adam,
-            model_config=config.model
+            model_config=config.model,
+            accelerator=self.accelerator  # Pass accelerator for DDP unwrapping
         )
 
     def setup_dataloader(self, config: TrainConfig, model: nn.Module) -> DataLoader:
@@ -2574,9 +2620,13 @@ class MultiGPUStrategy:
             
             # Compute CLIP features if needed
             if clip_features is None and config.model.use_clip_adapter and tokens is not None:
-                from glide_finetune.clip_compute import get_clip_computer
+                # Initialize CLIPComputerManager if not already done
+                if self.clip_computer_manager is None:
+                    from glide_finetune.clip_compute import CLIPComputerManager
+                    self.clip_computer_manager = CLIPComputerManager()
                 
-                clip_computer = get_clip_computer(
+                # Get CLIP computer for this device
+                clip_computer = self.clip_computer_manager.get_computer(
                     clip_model_name=config.model.clip_model_name,
                     device=self.accelerator.device
                 )
@@ -2852,15 +2902,28 @@ def run_training(config: TrainConfig, strategy) -> None:
                         adapter_params = sum(p.numel() for p in adapter.parameters() if p.requires_grad)
                         log_data["clip_adapter/trainable_params"] = int(adapter_params)
 
+                    # Only log to wandb from main process in multi-GPU
                     if wandb_run:
-                        wandb_run.log(log_data, step=global_step)
+                        if hasattr(strategy, "accelerator") and strategy.accelerator:
+                            if strategy.accelerator.is_main_process:
+                                wandb_run.log(log_data, step=global_step)
+                        else:
+                            # Single GPU - always log
+                            wandb_run.log(log_data, step=global_step)
 
                 # Console logging (controlled by log_frequency)
                 if global_step % config.logging.log_frequency == 0:
                     pass  # Console logging happens in the step function
 
-                # Generate samples
-                if global_step % config.logging.sample_frequency == 0 and global_step > 0:
+                # Generate samples (restrict to main process in multi-GPU)
+                should_sample = global_step % config.logging.sample_frequency == 0 and global_step > 0
+                is_main_process = True  # Default for single GPU
+                
+                # Check if we're in multi-GPU mode and not the main process
+                if hasattr(strategy, "accelerator") and strategy.accelerator:
+                    is_main_process = strategy.accelerator.is_main_process
+                
+                if should_sample and is_main_process:
                     logger.info(f"\nGenerating samples at step {global_step}...")
 
                     # Determine device for sampling

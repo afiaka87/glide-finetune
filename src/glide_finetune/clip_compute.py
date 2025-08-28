@@ -33,20 +33,23 @@ class CLIPFeatureComputer:
         Args:
             clip_model_name: Name of CLIP model to load
             device: Device to run CLIP model on
-            cache_features: Whether to cache computed features (not recommended for training)
+            cache_features: Whether to cache computed features (not recommended for distributed training)
         """
         self.clip_model_name = clip_model_name
         self.device = device if isinstance(device, torch.device) else torch.device(device)
         self.cache_features = cache_features
         self.feature_cache = {} if cache_features else None
         
-        # Load CLIP model
-        logger.info(f"Loading CLIP model: {clip_model_name}")
+        # Load CLIP model once on initialization
+        logger.info(f"Loading CLIP model: {clip_model_name} on {self.device}")
         self.clip_model, self.clip_preprocess = load_openai_clip(
             clip_model_name, 
             device=str(self.device)
         )
         self.clip_model.eval()
+        
+        # Log feature dimension for verification
+        logger.info(f"CLIP model loaded on {self.device}, feature dimension: {self.get_feature_dim()}")
         
         # Get expected feature dimension
         with torch.no_grad():
@@ -159,34 +162,73 @@ class CLIPFeatureComputer:
             del self.feature_cache
 
 
-# Global instance for reuse across training
-_clip_computer_instance = None
+class CLIPComputerManager:
+    """Manages CLIP computer instances per device without globals.
+    
+    This class provides a functional approach to managing CLIP models,
+    where each training strategy owns its manager instance.
+    """
+    
+    def __init__(self):
+        """Initialize the manager with an empty cache."""
+        self._computers: dict[str, CLIPFeatureComputer] = {}
+    
+    def get_computer(
+        self,
+        clip_model_name: str = "ViT-B/32",
+        device: str | torch.device = "cuda",
+        reset: bool = False,
+    ) -> CLIPFeatureComputer:
+        """Get or create a CLIP computer for the specified device.
+        
+        Args:
+            clip_model_name: Name of CLIP model to use
+            device: Device to run on
+            reset: If True, create a new instance even if one exists
+            
+        Returns:
+            CLIPFeatureComputer instance for this device
+        """
+        # Create unique key for this model/device combination
+        device_str = str(device)
+        key = f"{clip_model_name}_{device_str}"
+        
+        if reset and key in self._computers:
+            # Clean up old instance
+            old_instance = self._computers.pop(key)
+            del old_instance
+            if 'cuda' in device_str:
+                torch.cuda.empty_cache()
+        
+        if key not in self._computers:
+            # Create new instance for this device
+            self._computers[key] = CLIPFeatureComputer(
+                clip_model_name=clip_model_name,
+                device=device,
+                cache_features=False,  # Disable caching in distributed training
+            )
+            logger.info(f"Created CLIP computer for {key}")
+        
+        return self._computers[key]
+    
+    def cleanup(self):
+        """Clean up all CLIP computer instances."""
+        for computer in self._computers.values():
+            del computer
+        self._computers.clear()
+        torch.cuda.empty_cache()
 
+
+# Backward compatibility: create a default manager instance
+_default_manager = CLIPComputerManager()
 
 def get_clip_computer(
     clip_model_name: str = "ViT-B/32",
     device: str | torch.device = "cuda",
     reset: bool = False,
 ) -> CLIPFeatureComputer:
-    """Get or create a global CLIP feature computer instance.
+    """Backward-compatible function using default manager.
     
-    Args:
-        clip_model_name: Name of CLIP model to use
-        device: Device to run on
-        reset: If True, create a new instance even if one exists
-        
-    Returns:
-        CLIPFeatureComputer instance
+    For new code, prefer creating your own CLIPComputerManager instance.
     """
-    global _clip_computer_instance
-    
-    if reset or _clip_computer_instance is None:
-        if _clip_computer_instance is not None:
-            del _clip_computer_instance
-        _clip_computer_instance = CLIPFeatureComputer(
-            clip_model_name=clip_model_name,
-            device=device,
-            cache_features=False,  # Don't cache during training
-        )
-    
-    return _clip_computer_instance
+    return _default_manager.get_computer(clip_model_name, device, reset)

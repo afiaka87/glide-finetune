@@ -223,7 +223,7 @@ class MultiGPUStrategy:
         step: int,
         is_interrupted: bool = False,
     ) -> str | None:
-        """Save a checkpoint (only on main process).
+        """Save a checkpoint using accelerator.save_state for proper distributed saving.
         
         Args:
             model: Model to save.
@@ -235,12 +235,36 @@ class MultiGPUStrategy:
         Returns:
             Path to saved checkpoint, or None if not saved.
         """
-        if self.checkpoint_manager and self.accelerator and self.accelerator.is_main_process:
-            # Use accelerator to unwrap model for saving
-            unwrapped_model = self.accelerator.unwrap_model(model)
-            return self.checkpoint_manager.save_checkpoint(
-                unwrapped_model, optimizer, epoch, step, is_interrupted
-            )
+        if self.checkpoint_manager and self.accelerator:
+            # Build checkpoint path
+            checkpoint_dir = self.checkpoint_manager.checkpoints_dir
+            
+            if is_interrupted:
+                from datetime import datetime
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                save_path = checkpoint_dir / f"interrupted_{timestamp}"
+            else:
+                save_path = checkpoint_dir / f"checkpoint_{step:08d}"
+            
+            # Use accelerator.save_state which handles distributed coordination
+            # This automatically saves model, optimizer, RNG states, etc.
+            self.accelerator.save_state(str(save_path))
+            
+            # Save metadata alongside (only on main process)
+            if self.accelerator.is_main_process:
+                import json
+                metadata = {
+                    "epoch": epoch,
+                    "global_step": step,
+                    "interrupted": is_interrupted,
+                }
+                metadata_path = save_path / "metadata.json"
+                with metadata_path.open("w") as f:
+                    json.dump(metadata, f, indent=2)
+                
+                logger.info(f"💾 Saved checkpoint to {save_path}")
+                return str(save_path)
+        
         return None
 
     def should_save(self, step: int) -> bool:
@@ -256,10 +280,62 @@ class MultiGPUStrategy:
             return self.checkpoint_manager.should_save(step)
         return False
 
+    def load_checkpoint(
+        self,
+        checkpoint_path: str,
+        model: nn.Module | None = None,
+        optimizer: th.optim.Optimizer | None = None,
+    ) -> tuple[int, int]:
+        """Load a checkpoint using accelerator.load_state.
+        
+        Args:
+            checkpoint_path: Path to checkpoint directory.
+            model: Model (not used, kept for interface compatibility).
+            optimizer: Optimizer (not used, kept for interface compatibility).
+            
+        Returns:
+            Tuple of (epoch, global_step) from checkpoint metadata.
+        """
+        from pathlib import Path
+        import json
+        
+        checkpoint_dir = Path(checkpoint_path)
+        epoch = 0
+        global_step = 0
+        
+        if checkpoint_dir.exists() and checkpoint_dir.is_dir():
+            # Load state using accelerator (handles distributed loading)
+            self.accelerator.load_state(str(checkpoint_dir))
+            
+            # Load metadata
+            metadata_path = checkpoint_dir / "metadata.json"
+            if metadata_path.exists():
+                with metadata_path.open() as f:
+                    metadata = json.load(f)
+                    epoch = metadata.get("epoch", 0)
+                    global_step = metadata.get("global_step", 0)
+                    
+                logger.info(f"✓ Loaded checkpoint from {checkpoint_dir}")
+                logger.info(f"  Resuming from epoch {epoch}, step {global_step}")
+        else:
+            logger.warning(f"Checkpoint directory {checkpoint_dir} not found")
+            
+        return epoch, global_step
+    
     def cleanup_interrupted_files(self) -> None:
         """Clean up interrupted checkpoint files (only on main process)."""
         if self.checkpoint_manager and self.accelerator and self.accelerator.is_main_process:
+            # Clean up old-style interrupted files
             self.checkpoint_manager.cleanup_interrupted_files()
+            
+            # Also clean up new accelerator-style interrupted checkpoints
+            from pathlib import Path
+            checkpoint_dir = self.checkpoint_manager.checkpoints_dir
+            for interrupted_dir in checkpoint_dir.glob("interrupted_*"):
+                if interrupted_dir.is_dir():
+                    import shutil
+                    shutil.rmtree(interrupted_dir)
+                    logger.info(f"🧹 Cleaned up {interrupted_dir.name}")
 
     def prepare_components(
         self,

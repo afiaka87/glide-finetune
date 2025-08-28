@@ -128,8 +128,15 @@ def create_adapter_optimizer(
     if config is None:
         config = AdapterOptimizerConfig()
     
+    # Handle DDP wrapper if present
+    if hasattr(model, 'module'):
+        # Model is DDP-wrapped, access underlying module
+        unwrapped_model = model.module
+    else:
+        unwrapped_model = model
+    
     # Get the adapter module directly (more robust than string matching)
-    adapter = getattr(model, "clip_adapter", None)
+    adapter = getattr(unwrapped_model, "clip_adapter", None)
     if adapter is None:
         raise ValueError("No clip_adapter attribute found on model. Is the adapter integrated?")
     
@@ -332,13 +339,17 @@ def amp_safe_gradient_clip(
 
 def freeze_base_model(model: nn.Module, skip_eval_mode: bool = True) -> dict[str, int]:
     """
-    Freeze all non-adapter parameters in the model.
+    Freeze all non-adapter parameters in the model (DDP-aware).
     
     This ensures only the CLIP adapter is trainable, following the
     ControlNet/LoRA pattern of adapter-only training.
     
+    IMPORTANT: When using DDP/Accelerate, parameters with requires_grad=False
+    automatically skip gradient synchronization across processes, saving
+    significant communication overhead during distributed training.
+    
     Args:
-        model: The model to freeze
+        model: The model to freeze (may be DDP-wrapped)
         skip_eval_mode: If True, don't change train/eval mode (let caller control)
     
     Returns:
@@ -346,13 +357,20 @@ def freeze_base_model(model: nn.Module, skip_eval_mode: bool = True) -> dict[str
     """
     counts = {"frozen": 0, "trainable": 0, "adapter": 0}
     
-    # First, freeze everything
+    # Handle DDP wrapper if present
+    if hasattr(model, 'module'):
+        # Model is DDP-wrapped, access underlying module
+        unwrapped_model = model.module
+    else:
+        unwrapped_model = model
+    
+    # First, freeze everything on the actual model (use wrapped for parameters)
     for param in model.parameters():
         param.requires_grad = False
         counts["frozen"] += param.numel()
     
-    # Then unfreeze adapter if it exists
-    adapter = getattr(model, "clip_adapter", None)
+    # Then unfreeze adapter if it exists (access through unwrapped model)
+    adapter = getattr(unwrapped_model, "clip_adapter", None)
     if adapter is not None:
         for param in adapter.parameters():
             param.requires_grad = True
