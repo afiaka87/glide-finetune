@@ -139,6 +139,203 @@ def read_image(path: str, shape: tuple[int, int]) -> th.Tensor:
 
 
 @th.inference_mode()
+def sample_with_conditioning(
+    glide_model: nn.Module,
+    glide_options: dict[str, Any],
+    side_x: int,
+    side_y: int,
+    prompt: str = "",
+    clip_embeddings: th.Tensor | None = None,
+    batch_size: int = 1,
+    guidance_scale: float = 4,
+    device: str | th.device = "cpu",
+    prediction_respacing: str = "100",
+    upsample_enabled: bool = False,
+    image_to_upsample: str = "",
+    upsample_temp: float = 0.997,
+    sampler: str = "plms",
+    num_steps: int | None = None,
+    eta: float = 0.0,
+    use_swinir: bool = False,
+    swinir_model_type: str = "classical_sr_x4",
+) -> th.Tensor:
+    """Sample from GLIDE with optional CLIP conditioning.
+    
+    Args:
+        glide_model: GLIDE model
+        glide_options: Model options
+        side_x: Image width
+        side_y: Image height
+        prompt: Text prompt (can be empty for CLIP-only conditioning)
+        clip_embeddings: Optional CLIP embeddings for conditioning
+        batch_size: Batch size
+        guidance_scale: Classifier-free guidance scale
+        device: Device to run on
+        prediction_respacing: Timestep respacing
+        upsample_enabled: Whether to use upsampling
+        image_to_upsample: Path to image to upsample
+        upsample_temp: Temperature for upsampling
+        sampler: Sampling method
+        num_steps: Number of sampling steps
+        eta: DDIM eta parameter
+        use_swinir: Whether to use SwinIR
+        swinir_model_type: SwinIR model type
+        
+    Returns:
+        Generated image tensor
+    """
+    glide_model.del_cache()
+
+    # If num_steps is provided, override prediction_respacing
+    if num_steps is not None:
+        prediction_respacing = str(num_steps)
+
+    eval_diffusion = create_gaussian_diffusion(
+        steps=glide_options["diffusion_steps"],
+        noise_schedule=glide_options["noise_schedule"],
+        timestep_respacing=prediction_respacing,
+    )
+    
+    # Create the text tokens to feed to the model.
+    tokens = glide_model.tokenizer.encode(prompt) if prompt else []
+    tokens, mask = glide_model.tokenizer.padded_tokens_and_mask(tokens, glide_options["text_ctx"])
+
+    # Create the classifier-free guidance tokens (empty)
+    full_batch_size = batch_size * 2
+    uncond_tokens, uncond_mask = glide_model.tokenizer.padded_tokens_and_mask(
+        [], glide_options["text_ctx"]
+    )
+
+    # Pack the tokens together into model kwargs.
+    model_kwargs = {
+        "tokens": th.tensor([tokens] * batch_size + [uncond_tokens] * batch_size, device=device),
+        "mask": th.tensor(
+            [mask] * batch_size + [uncond_mask] * batch_size,
+            dtype=th.bool,
+            device=device,
+        ),
+    }
+    
+    # Add CLIP embeddings if provided
+    if clip_embeddings is not None:
+        # Duplicate for classifier-free guidance (conditioned and unconditioned)
+        clip_embeddings = clip_embeddings.to(device)
+        # For unconditioned, we use zero embeddings
+        uncond_clip = th.zeros_like(clip_embeddings)
+        model_kwargs["clip_embeddings"] = th.cat([clip_embeddings, uncond_clip], dim=0)
+
+    def cfg_model_fn(x_t, ts, **kwargs):
+        half = x_t[: len(x_t) // 2]
+        combined = th.cat([half, half], dim=0)
+        model_out = glide_model(combined, ts, **kwargs)
+        eps, rest = model_out[:, :3], model_out[:, 3:]
+        cond_eps, uncond_eps = th.split(eps, len(eps) // 2, dim=0)
+        beta = eval_diffusion.betas[
+            int(
+                ts.flatten()[0].item()
+                / glide_options["diffusion_steps"]
+                * len(eval_diffusion.betas)
+            )
+        ]
+        half_eps = uncond_eps + guidance_scale * (cond_eps - uncond_eps)
+        eps = th.cat([half_eps, half_eps], dim=0)
+        # Don't save intermediate predictions during sampling
+        return th.cat([eps, rest], dim=1)
+
+    # Continue with the rest of the original sample function...
+    # (The rest remains the same as the original sample function)
+    model_fn = cfg_model_fn  # so we use CFG for the base model.
+    if upsample_enabled:
+        assert image_to_upsample != "", "You must specify a path to an image to upsample."
+        low_res_samples = read_image(image_to_upsample, size=(side_x, side_y))
+        model_kwargs["low_res"] = low_res_samples
+        noise = th.randn((batch_size, 3, side_y, side_x), device=device) * upsample_temp
+        model_kwargs["noise"] = noise
+        model_fn = glide_model  # just use the base model, no need for CFG.
+
+    # Determine number of steps from prediction_respacing
+    try:
+        actual_num_steps = int(prediction_respacing)
+    except ValueError:
+        actual_num_steps = num_steps if num_steps is not None else 50  # Default fallback
+
+    # Choose sampling method (rest is identical to original sample function)
+    if sampler.lower() in ["euler", "euler_discrete"]:
+        # Add enhanced samplers to diffusion instance
+        enhance_glide_diffusion(eval_diffusion)
+        samples = eval_diffusion.euler_sample_loop(
+            model_fn,
+            (full_batch_size, 3, side_y, side_x),
+            device=device,
+            clip_denoised=True,
+            progress=True,
+            model_kwargs=model_kwargs,
+            eta=eta,
+            num_steps=actual_num_steps,
+        )[:batch_size]
+    elif sampler.lower() in ["euler_a", "euler_ancestral"]:
+        enhance_glide_diffusion(eval_diffusion)
+        samples = eval_diffusion.euler_ancestral_sample_loop(
+            model_fn,
+            (full_batch_size, 3, side_y, side_x),
+            device=device,
+            clip_denoised=True,
+            progress=True,
+            model_kwargs=model_kwargs,
+            eta=eta,
+            num_steps=actual_num_steps,
+        )[:batch_size]
+    elif sampler.lower() in ["dpm++", "dpmpp", "dpm_plus_plus"]:
+        enhance_glide_diffusion(eval_diffusion)
+        samples = eval_diffusion.dpm_solver_sample_loop(
+            model_fn,
+            (full_batch_size, 3, side_y, side_x),
+            device=device,
+            clip_denoised=True,
+            progress=True,
+            model_kwargs=model_kwargs,
+            eta=eta,
+            num_steps=actual_num_steps,
+        )[:batch_size]
+    elif sampler.lower() == "ddim":
+        samples = eval_diffusion.ddim_sample_loop(
+            model_fn,
+            (full_batch_size, 3, side_y, side_x),
+            device=device,
+            clip_denoised=True,
+            progress=True,
+            model_kwargs=model_kwargs,
+            eta=eta,
+        )[:batch_size]
+    elif sampler.lower() == "plms":
+        samples = eval_diffusion.plms_sample_loop(
+            model_fn,
+            (full_batch_size, 3, side_y, side_x),
+            device=device,
+            clip_denoised=True,
+            progress=True,
+            model_kwargs=model_kwargs,
+        )[:batch_size]
+    else:
+        # Default to p_sample_loop
+        samples = eval_diffusion.p_sample_loop(
+            model_fn,
+            (full_batch_size, 3, side_y, side_x),
+            device=device,
+            clip_denoised=True,
+            progress=True,
+            model_kwargs=model_kwargs,
+        )[:batch_size]
+
+    # Handle SwinIR upsampling if requested
+    if use_swinir and not upsample_enabled:
+        from glide_finetune.swinir.swinir_upsample import load_swinir_model, apply_swinir_sr
+        swinir_model = load_swinir_model(swinir_model_type, device=device)
+        samples = apply_swinir_sr(samples, swinir_model)
+
+    return samples
+
+
 def sample(
     glide_model: nn.Module,
     glide_options: dict[str, Any],
