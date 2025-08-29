@@ -30,6 +30,13 @@ class MultiGPUStrategy:
         """Initialize multi-GPU strategy."""
         self.accelerator: Accelerator | None = None
         self.checkpoint_manager: CheckpointManagerImpl | None = None
+    
+    @property
+    def device(self) -> th.device:
+        """Get the device from the accelerator."""
+        if self.accelerator is None:
+            return th.device("cuda" if th.cuda.is_available() else "cpu")
+        return self.accelerator.device
 
     def setup_accelerator(self, config: TrainConfig) -> Accelerator:
         """Setup Accelerator for distributed training.
