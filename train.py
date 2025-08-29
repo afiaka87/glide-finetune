@@ -40,7 +40,7 @@ Usage Examples:
                    --upscale_factor 4 --batch_size 2
 
 6. Training with evaluation prompts and SwinIR:
-   python train.py --data_dir ./data --eval_prompt_file captions_32.txt \\
+   python train.py --data_dir ./data --cond_prompt "A beautiful landscape" \\
                    --use_swinir --sampler dpm++ --num_steps 20
 
 7. Resume from checkpoint:
@@ -176,15 +176,16 @@ if os.environ.get("GLIDE_ENABLE_TF32"):
 class WebDataLoader:
     """DataLoader wrapper that provides length estimation for WebDatasets."""
 
-    def __init__(self, dataloader: DataLoader[Any], num_tars: int, samples_per_tar: int = 10000):
+    def __init__(self, dataloader: DataLoader[Any], num_tars: int, batch_size: int, samples_per_tar: int = 10000):
         self.dataloader = dataloader
         self.estimated_length = num_tars * samples_per_tar
+        self.batch_size = batch_size
 
     def __iter__(self):
         return iter(self.dataloader)
 
     def __len__(self):
-        return self.estimated_length // self.dataloader.batch_size
+        return self.estimated_length // self.batch_size
 
     def __getattr__(self, name):
         # Delegate all other attributes to the wrapped dataloader
@@ -339,11 +340,10 @@ class LoggingConfig:
 class SamplingConfig:
     """Sample generation configuration."""
 
-    test_prompt: str = "a beautiful sunset over mountains"
-    eval_prompt_file: str | None = None
+    test_prompt: str = "a beautiful sunset over mountains"  # deprecated, use cond_prompt
+    cond_prompt: str = "A majestic mountain landscape with a crystal clear lake reflecting the sunset, surrounded by pine trees"
     test_batch_size: int = 1
     test_guidance_scale: float = 4.0
-    eval_batch_size: int = 8
     sampler: str = "plms"
     num_steps: int | None = None
     eta: float = 0.0
@@ -820,11 +820,10 @@ def create_unified_parser() -> argparse.ArgumentParser:
         help="Default test prompt for sample generation",
     )
     sampling_group.add_argument(
-        "--eval_prompt_file",
-        "-eval_prompts",
+        "--cond_prompt",
         type=str,
-        default=None,
-        help="File containing evaluation prompts (one per line)",
+        default="A majestic mountain landscape with a crystal clear lake reflecting the sunset, surrounded by pine trees",
+        help="Conditional prompt for evaluation (bottom row of comparison grid)",
     )
     sampling_group.add_argument(
         "--test_batch_size",
@@ -839,12 +838,6 @@ def create_unified_parser() -> argparse.ArgumentParser:
         type=float,
         default=4.0,
         help="Guidance scale for sample generation",
-    )
-    sampling_group.add_argument(
-        "--eval_batch_size",
-        type=int,
-        default=8,
-        help="Number of samples to generate per conditioning mode during evaluation (total = 3x this for CLIP adapter)",
     )
     sampling_group.add_argument(
         "--sampler",
@@ -920,9 +913,6 @@ def validate_args(args: argparse.Namespace) -> None:
         msg = f"Resume checkpoint not found: {args.resume_ckpt}"
         raise ValueError(msg)
 
-    if args.eval_prompt_file and not Path(args.eval_prompt_file).exists():
-        msg = f"Evaluation prompt file not found: {args.eval_prompt_file}"
-        raise ValueError(msg)
 
     # WebDataset validation
     if args.use_optimized_loader and not args.use_webdataset:
@@ -1024,10 +1014,9 @@ def args_to_config(args: argparse.Namespace) -> TrainConfig:
         ),
         sampling=SamplingConfig(
             test_prompt=args.test_prompt,
-            eval_prompt_file=args.eval_prompt_file,
+            cond_prompt=args.cond_prompt,
             test_batch_size=args.test_batch_size,
             test_guidance_scale=args.test_guidance_scale,
-            eval_batch_size=args.eval_batch_size,
             sampler=args.sampler,
             num_steps=args.num_steps,
             eta=args.eta,
@@ -1135,7 +1124,7 @@ def apply_model_modifications(model: nn.Module, config: ModelConfig) -> nn.Modul
 
 
 def load_glide_model(
-    config: ModelConfig, use_fp16: bool = False, device: th.device | None = None
+    config: ModelConfig, use_fp16: bool = False, device: th.device | None = None, accelerator: Any = None
 ) -> tuple[nn.Module, Any, dict]:
     """Load GLIDE model with optional checkpoint resumption.
 
@@ -1143,6 +1132,7 @@ def load_glide_model(
         config: Model configuration
         use_fp16: Whether to use FP16 (handled separately now)
         device: Device to load model on
+        accelerator: Optional Accelerator instance for distributed downloading
 
     Returns:
         Tuple of (model, diffusion, options)
@@ -1192,12 +1182,35 @@ def load_glide_model(
         if config.activation_checkpointing:
             glide_model.use_checkpoint = True
         
-        # Load base weights first (OpenAI checkpoint)
+        # Load base weights first (OpenAI checkpoint) with synchronization for multi-GPU
         if not model_path:
-            glide_model.load_state_dict(load_checkpoint(model_type, "cpu"))
+            # Handle distributed downloading properly
+            if accelerator is not None:
+                if accelerator.is_main_process:
+                    # Main process downloads the weights
+                    weights = load_checkpoint(model_type, "cpu")
+                    glide_model.load_state_dict(weights)
+                # All processes wait for main to finish
+                accelerator.wait_for_everyone()
+                if not accelerator.is_main_process:
+                    # Other processes load from cache (already downloaded)
+                    weights = load_checkpoint(model_type, "cpu")
+                    glide_model.load_state_dict(weights)
+            else:
+                # Single process - load normally
+                glide_model.load_state_dict(load_checkpoint(model_type, "cpu"))
         else:
             # Load OpenAI base weights first if we have a custom checkpoint with adapter
-            glide_model.load_state_dict(load_checkpoint(model_type, "cpu"))
+            if accelerator is not None:
+                if accelerator.is_main_process:
+                    weights = load_checkpoint(model_type, "cpu")
+                    glide_model.load_state_dict(weights)
+                accelerator.wait_for_everyone()
+                if not accelerator.is_main_process:
+                    weights = load_checkpoint(model_type, "cpu")
+                    glide_model.load_state_dict(weights)
+            else:
+                glide_model.load_state_dict(load_checkpoint(model_type, "cpu"))
         
         # Move to device before adding adapter
         if device is not None:
@@ -1239,6 +1252,7 @@ def load_glide_model(
             freeze_diffusion=config.freeze_diffusion,
             activation_checkpointing=config.activation_checkpointing,
             model_type=model_type,
+            accelerator=accelerator,
         )
         
         # Move to device if specified
@@ -1496,7 +1510,7 @@ def create_webdataset_loader(
         samples_per_tar = 10000  # Standard LAION tar size
         logger.info(f"No epoch_samples specified, using full dataset (~{num_tars * samples_per_tar:,} samples)")
     
-    return WebDataLoader(dataloader, num_tars, samples_per_tar=samples_per_tar)
+    return WebDataLoader(dataloader, num_tars, batch_size=config.data.batch_size, samples_per_tar=samples_per_tar)
 
 
 def create_standard_webdataset_loader(
@@ -1619,6 +1633,8 @@ def create_distributed_webdataset_loader(
         from glide_finetune.loaders.wds_loader_distributed import distributed_wds_loader
 
         logger.info("Using distributed WebDataset loader")
+        
+        import os
 
         # Note: This assumes the distributed loader exists - if not, fall back
         loader = distributed_wds_loader(
@@ -1634,9 +1650,9 @@ def create_distributed_webdataset_loader(
             wds_dataset_name=config.data.wds_dataset_name,
             enable_upsample=config.model.train_upsample,
             upscale_factor=config.model.upscale_factor,
-            # Distributed parameters will be set by Accelerate
-            world_size=1,  # Placeholder, set by Accelerate
-            rank=0,  # Placeholder, set by Accelerate
+            # Get distributed parameters from environment
+            world_size=int(os.environ.get("WORLD_SIZE", 1)),
+            rank=int(os.environ.get("RANK", 0)),
             num_workers=config.data.num_workers,
             seed=config.training.seed or 0,
             epoch_samples=config.data.epoch_samples,
@@ -1655,58 +1671,19 @@ def create_distributed_webdataset_loader(
         return create_standard_webdataset_loader(config, model, urls)
 
 
-def load_evaluation_prompts(
-    eval_prompt_file: str | None, default_prompt: str
-) -> tuple[list[str], int]:
-    """Load evaluation prompts from file or use default.
+def load_evaluation_prompts(cond_prompt: str) -> tuple[list[str], int]:
+    """Return the conditional prompt for evaluation.
+    
+    Simplified to use a single conditional prompt for clean comparison.
 
     Args:
-        eval_prompt_file: Path to file containing prompts (one per line)
-        default_prompt: Default prompt if no file provided
+        cond_prompt: The conditional prompt to use for evaluation
 
     Returns:
-        Tuple of (prompts_list, grid_size)
+        Tuple of ([cond_prompt], 6) for fixed grid size
     """
-    if not eval_prompt_file or not Path(eval_prompt_file).exists():
-        if eval_prompt_file:
-            logger.info(
-                f"Warning: Evaluation prompt file {eval_prompt_file} not found. Using default prompt."
-            )
-        return [default_prompt], 1
-
-    with open(eval_prompt_file) as f:
-        lines = [line.strip() for line in f.readlines() if line.strip()]
-
-    # Support power-of-2 grid sizes: 1, 2, 4, 8, 16, 32, 64, 128, 256
-    valid_sizes = [1, 2, 4, 8, 16, 32, 64, 128, 256]
-    num_prompts = len(lines)
-
-    # Find the appropriate grid size
-    target_size = 8  # Default
-    for size in valid_sizes:
-        if num_prompts <= size:
-            target_size = size
-            break
-    else:
-        # More than 256 prompts, truncate to 256
-        target_size = 256
-        logger.info(
-            f"Warning: {num_prompts} prompts found in {eval_prompt_file}, truncating to {target_size} for visualization."
-        )
-        lines = lines[:target_size]
-        num_prompts = target_size
-
-    # Pad if necessary to reach target size
-    if num_prompts < target_size:
-        logger.info(
-            f"Info: {num_prompts} prompts found in {eval_prompt_file}, padding to {target_size} for grid visualization."
-        )
-        while len(lines) < target_size:
-            lines.append(lines[-1] if lines else default_prompt)
-    else:
-        logger.info(f"Loaded {num_prompts} evaluation prompts from {eval_prompt_file}")
-
-    return lines[:target_size], target_size
+    # Return single prompt and fixed grid size of 6 (for 3x2 grid)
+    return [cond_prompt], 6
 
 
 # Sample generation utilities
@@ -1722,25 +1699,28 @@ def generate_samples(
     model_config: ModelConfig | None = None,
     accelerator: Any = None,
 ) -> list[PIL.Image.Image]:
-    """Generate sample images for evaluation.
+    """Generate sample images for evaluation with deterministic sampling.
     
-    When CLIP adapter is enabled, generates three versions of each prompt:
-    1. Text-only conditioning
-    2. CLIP-only conditioning (empty text + CLIP embeddings)
-    3. Combined text + CLIP conditioning
+    When CLIP adapter is enabled, generates exactly 6 images in a 3x2 grid:
+    - Row 1: Unconditional (guidance_scale=1.0) - text_only, clip_only, clip_text
+    - Row 2: Conditional (normal guidance) - text_only, clip_only, clip_text
+    
+    Uses fixed random seed for reproducible comparisons.
 
     Args:
         model: GLIDE model
         diffusion: Diffusion process
         options: GLIDE options
-        prompts: List of prompts to generate
+        prompts: List of prompts (only first is used for test prompt)
         config: Sampling configuration
         device: Device to generate on
         step: Current training step
         output_dir: Directory to save samples
+        model_config: Model configuration for CLIP settings
+        accelerator: Optional accelerator for distributed training
 
     Returns:
-        List of generated PIL images
+        List of exactly 6 PIL images for comparison grid
     """
     model.eval()
     sample_images = []
@@ -1748,78 +1728,58 @@ def generate_samples(
     # Check if model has CLIP adapter
     has_clip_adapter = hasattr(model, 'clip_adapter') and model.clip_adapter is not None
     
-    # Initialize CLIP computer if needed (use singleton to keep in memory)
+    # Save current RNG state for restoration later
+    cpu_rng_state = th.get_rng_state()
+    cuda_rng_state = th.cuda.get_rng_state() if th.cuda.is_available() else None
+    
+    # Set deterministic seed for evaluation (based on step for variety across checkpoints)
+    eval_seed = 42 + (step // 1000)  # Change seed every 1000 steps for variety
+    th.manual_seed(eval_seed)
+    if th.cuda.is_available():
+        th.cuda.manual_seed(eval_seed)
+    
+    # Initialize CLIP computer if needed
     clip_computer = None
     if has_clip_adapter and model_config:
         from glide_finetune.clip_compute import get_clip_computer
-        # Pass accelerator for distributed sync
         clip_computer = get_clip_computer(
             clip_model_name=model_config.clip_model_name,
             device=device,
             accelerator=accelerator
         )
-
-    # Evaluation batch size for each mode (from config)
-    eval_batch_size = config.eval_batch_size
+    
+    # Use test prompt from prompts list or default
+    test_prompt = prompts[0] if prompts else "A majestic mountain landscape with a crystal clear lake reflecting the sunset, surrounded by pine trees"
     
     with th.no_grad():
-        for prompt_idx, prompt in enumerate(prompts):
-            if has_clip_adapter:
-                # Compute CLIP features for the prompt (replicated for batch)
-                clip_features = clip_computer.compute_text_features([prompt])
-                # Expand for batch size
-                clip_features_batch = clip_features.repeat(eval_batch_size, 1)
-                
-                # Generate three versions for comparison (8 samples each)
-                conditioning_modes = [
-                    ("text_only", prompt, None),
-                    ("clip_only", "", clip_features_batch),
-                    ("text_clip", prompt, clip_features_batch),
-                ]
-                
-                for mode_name, mode_prompt, mode_clip in conditioning_modes:
-                    # Generate batch of samples with specified conditioning
-                    samples = sample_with_conditioning(
-                        glide_model=model,
-                        glide_options=options,
-                        side_x=64,  # Base resolution
-                        side_y=64,
-                        prompt=mode_prompt,
-                        clip_embeddings=mode_clip,
-                        batch_size=eval_batch_size,
-                        guidance_scale=config.test_guidance_scale,
-                        device=device,
-                        prediction_respacing=str(config.timestep_respacing)
-                        if config.num_steps is None
-                        else str(config.num_steps),
-                        sampler=config.sampler,
-                        num_steps=config.num_steps,
-                        eta=config.eta,
-                        use_swinir=config.use_swinir,
-                        swinir_model_type=config.swinir_model_type,
-                    )
-                    
-                    # Convert each sample to PIL and save
-                    # Note: samples has shape [batch_size, channels, height, width]
-                    for sample_idx in range(min(eval_batch_size, samples.shape[0])):
-                        # Extract single sample and keep batch dimension for pred_to_pil
-                        single_sample = samples[sample_idx:sample_idx+1]
-                        sample_img = pred_to_pil(single_sample)
-                        sample_images.append(sample_img)
-                        
-                        # Save individual sample with mode and index in filename
-                        sample_path = output_dir / f"step{step:06d}_prompt{prompt_idx:03d}_{mode_name}_{sample_idx:02d}.png"
-                        sample_img.save(sample_path)
-            else:
-                # Standard generation without CLIP adapter
-                samples = sample(
+        if has_clip_adapter:
+            # Compute CLIP features for the test prompt
+            clip_features = clip_computer.compute_text_features([test_prompt])
+            
+            # Generate 6 images: 3 unconditional, 3 conditional
+            # Unconditional uses guidance_scale=0 (pure unconditional, no CFG), conditional uses normal guidance
+            generation_configs = [
+                # Row 1: Unconditional (guidance_scale=0 for pure unconditional output)
+                ("uncond_text", "", None, 0.0),
+                ("uncond_clip", "", clip_features, 0.0),
+                ("uncond_both", "", clip_features, 0.0),  # Both with empty text
+                # Row 2: Conditional (normal guidance_scale)
+                ("cond_text", test_prompt, None, config.test_guidance_scale),
+                ("cond_clip", "", clip_features, config.test_guidance_scale),
+                ("cond_both", test_prompt, clip_features, config.test_guidance_scale),
+            ]
+            
+            for mode_name, mode_prompt, mode_clip, guidance_scale in generation_configs:
+                # Generate single sample with specified conditioning
+                samples = sample_with_conditioning(
                     glide_model=model,
                     glide_options=options,
                     side_x=64,  # Base resolution
                     side_y=64,
-                    prompt=prompt,
-                    batch_size=1,
-                    guidance_scale=config.test_guidance_scale,
+                    prompt=mode_prompt,
+                    clip_embeddings=mode_clip,
+                    batch_size=1,  # Always batch_size=1 for clarity
+                    guidance_scale=guidance_scale,
                     device=device,
                     prediction_respacing=str(config.timestep_respacing)
                     if config.num_steps is None
@@ -1830,15 +1790,51 @@ def generate_samples(
                     use_swinir=config.use_swinir,
                     swinir_model_type=config.swinir_model_type,
                 )
-
-                # Convert to PIL image
+                
+                # Convert to PIL and save
                 sample_img = pred_to_pil(samples)
                 sample_images.append(sample_img)
-
-                # Save individual sample
-                sample_path = output_dir / f"step{step:06d}_prompt{prompt_idx:03d}.png"
+                
+                # Save individual sample with descriptive filename
+                sample_path = output_dir / f"step{step:06d}_{mode_name}.png"
                 sample_img.save(sample_path)
-
+        else:
+            # Without CLIP adapter, generate 2 images: unconditional and conditional
+            generation_configs = [
+                ("uncond", "", 0.0),  # guidance_scale=0 for pure unconditional
+                ("cond", test_prompt, config.test_guidance_scale),
+            ]
+            
+            for mode_name, prompt, guidance_scale in generation_configs:
+                samples = sample(
+                    glide_model=model,
+                    glide_options=options,
+                    side_x=64,  # Base resolution
+                    side_y=64,
+                    prompt=prompt,
+                    batch_size=1,
+                    guidance_scale=guidance_scale,
+                    device=device,
+                    prediction_respacing=str(config.timestep_respacing)
+                    if config.num_steps is None
+                    else str(config.num_steps),
+                    sampler=config.sampler,
+                    num_steps=config.num_steps,
+                    eta=config.eta,
+                    use_swinir=config.use_swinir,
+                    swinir_model_type=config.swinir_model_type,
+                )
+                
+                sample_img = pred_to_pil(samples)
+                sample_images.append(sample_img)
+                sample_path = output_dir / f"step{step:06d}_{mode_name}.png"
+                sample_img.save(sample_path)
+    
+    # Restore original RNG state
+    th.set_rng_state(cpu_rng_state)
+    if cuda_rng_state is not None:
+        th.cuda.set_rng_state(cuda_rng_state)
+    
     model.train()
     return sample_images
 
@@ -1847,16 +1843,20 @@ def create_sample_grid(
     sample_images: list[PIL.Image.Image], grid_size: int, step: int, output_dir: Path,
     has_clip_adapter: bool = False
 ) -> PIL.Image.Image | None:
-    """Create and save sample grid.
+    """Create and save sample grid for evaluation.
     
-    When CLIP adapter is enabled, images are arranged as:
-    - Row 1: Prompt 1 (text_only, clip_only, text_clip)
-    - Row 2: Prompt 2 (text_only, clip_only, text_clip)
-    - etc.
+    With CLIP adapter: 3x2 grid
+    - Columns: text_only | clip_only | text+clip
+    - Row 1: Unconditional (guidance=0)
+    - Row 2: Conditional (normal guidance)
+    
+    Without CLIP adapter: 1x2 grid
+    - Row 1: Unconditional
+    - Row 2: Conditional
 
     Args:
         sample_images: List of sample images
-        grid_size: Grid size (power of 2)
+        grid_size: Grid size (ignored, kept for compatibility)
         step: Current training step
         output_dir: Directory to save grid
         has_clip_adapter: Whether images include three-mode comparisons
@@ -1868,67 +1868,39 @@ def create_sample_grid(
         return None
 
     if has_clip_adapter:
-        # For CLIP adapter with 8 samples per mode, we have 24 images per prompt
-        # Arrange as 3 rows (one per mode) × 8 columns (samples)
-        # This creates a grid where:
-        # Row 1: 8 text_only samples
-        # Row 2: 8 clip_only samples  
-        # Row 3: 8 text_clip samples
-        num_prompts = len(sample_images) // 24  # 8 samples × 3 modes
-        if num_prompts == 1:
-            # For single prompt, show 3×8 grid
-            grid_rows = 3
-            grid_cols = 8
-        else:
-            # For multiple prompts, might need different layout
-            # Stack prompts vertically
-            grid_rows = num_prompts * 3
-            grid_cols = 8
+        # Fixed 3x2 grid for CLIP adapter evaluation
+        # 3 columns (text, clip, both) x 2 rows (uncond, cond)
+        expected_images = 6
+        grid_rows = 2
+        grid_cols = 3
+        
+        if len(sample_images) != expected_images:
+            logger.warning(f"Expected {expected_images} images for CLIP adapter grid, got {len(sample_images)}")
     else:
-        # Standard grid layout
-        grid_configs = {
-            1: (1, 1),
-            2: (1, 2),
-            4: (2, 2),
-            8: (2, 4),
-            16: (4, 4),
-            32: (4, 8),
-            64: (8, 8),
-            128: (8, 16),
-            256: (16, 16),
-        }
-        grid_rows, grid_cols = grid_configs.get(grid_size, (1, 1))
+        # Fixed 1x2 grid for non-CLIP evaluation
+        expected_images = 2
+        grid_rows = 2
+        grid_cols = 1
+        
+        if len(sample_images) != expected_images:
+            logger.warning(f"Expected {expected_images} images for standard grid, got {len(sample_images)}")
 
+    # Create the grid
     if len(sample_images) > 1:
-        # Debug: Check image dimensions
-        logger.info(f"Creating grid with {len(sample_images)} images, grid size: {grid_rows}x{grid_cols}")
+        logger.info(f"Creating {grid_cols}x{grid_rows} evaluation grid with {len(sample_images)} images")
+        
+        # Ensure all images have the same size
         if sample_images:
             img_size = sample_images[0].size
-            logger.info(f"Image size: {img_size}")
-            # Verify all images have the same size
             for i, img in enumerate(sample_images):
                 if img.size != img_size:
                     logger.warning(f"Image {i} has different size: {img.size} vs expected {img_size}")
-        
-        # Ensure we don't try to create a grid larger than the number of images
-        total_grid_cells = grid_rows * grid_cols
-        if len(sample_images) < total_grid_cells:
-            logger.warning(f"Not enough images ({len(sample_images)}) for grid size {grid_rows}x{grid_cols} ({total_grid_cells} cells)")
-            # Adjust grid size if needed
-            if has_clip_adapter and len(sample_images) == 24:
-                # For 24 images, use 3x8 grid
-                grid_rows, grid_cols = 3, 8
-            else:
-                # Fallback to square-ish grid
-                import math
-                grid_cols = math.ceil(math.sqrt(len(sample_images)))
-                grid_rows = math.ceil(len(sample_images) / grid_cols)
-            logger.info(f"Adjusted grid to {grid_rows}x{grid_cols}")
         
         grid_img = create_image_grid(sample_images, rows=grid_rows, cols=grid_cols)
         grid_path = output_dir / f"step{step:06d}_grid.png"
         grid_img.save(grid_path)
         return grid_img
+    
     return sample_images[0] if sample_images else None
 
 
@@ -1942,14 +1914,14 @@ def log_samples_to_wandb(
     has_clip_adapter: bool = False,
     accelerator: Any = None,
 ) -> None:
-    """Log samples to Weights & Biases using both gallery and table formats.
+    """Log samples to Weights & Biases with clean comparison grid.
 
     Args:
         wandb_run: WandB run object (None for accelerator-based logging)
-        sample_images: List of sample images
-        prompts: Corresponding prompts
-        grid_img: Grid image
-        grid_size: Grid size
+        sample_images: List of sample images (6 for CLIP adapter, 2 without)
+        prompts: List containing test prompt
+        grid_img: Grid image (3x2 or 1x2)
+        grid_size: Grid size (ignored, kept for compatibility)
         step: Current training step
         has_clip_adapter: Whether images include three-mode comparisons
         accelerator: Optional Accelerator instance for distributed logging
@@ -1964,99 +1936,75 @@ def log_samples_to_wandb(
 
     import wandb
     
-    # Create both gallery images and a comparison table
-    wandb_gallery_images = []
+    # Get test prompt
+    test_prompt = prompts[0] if prompts else "Test prompt"
     
     if has_clip_adapter:
-        # Create a table for detailed comparison
-        columns = ["Step", "Prompt", "Conditioning_Mode", "Sample_Index", "Image"]
+        # For CLIP adapter: 6 images in specific order
+        # Order: uncond_text, uncond_clip, uncond_both, cond_text, cond_clip, cond_both
+        labels = [
+            "Unconditional (Text Only)",
+            "Unconditional (CLIP Only)", 
+            "Unconditional (Text+CLIP)",
+            "Conditional (Text Only)",
+            "Conditional (CLIP Only)",
+            "Conditional (Text+CLIP)"
+        ]
+        
+        # Create comparison table
+        columns = ["Step", "Conditioning", "Mode", "Guidance", "Image"]
         comparison_table = wandb.Table(columns=columns)
         
-        # For CLIP adapter with 8 samples per mode
-        # We have 24 images per prompt (8 samples × 3 modes)
-        modes = ["text_only", "clip_only", "text_clip"]
-        samples_per_mode = 8
-        images_per_prompt = samples_per_mode * 3
-        
-        for i, img in enumerate(sample_images):
-            prompt_idx = i // images_per_prompt
-            within_prompt_idx = i % images_per_prompt
-            mode_idx = within_prompt_idx // samples_per_mode
-            sample_idx = within_prompt_idx % samples_per_mode
+        for i, (img, label) in enumerate(zip(sample_images, labels)):
+            is_unconditional = i < 3
+            mode = ["Text", "CLIP", "Text+CLIP"][i % 3]
+            guidance = "0.0 (uncond)" if is_unconditional else "config"
             
-            # Get prompt (handle case where we might not have enough prompts)
-            prompt = prompts[prompt_idx] if prompt_idx < len(prompts) else f"Prompt {prompt_idx}"
-            mode_name = modes[mode_idx]
-            
-            # Add to table
             comparison_table.add_data(
                 step,
-                prompt[:50] + "..." if len(prompt) > 50 else prompt,  # Truncate long prompts
-                mode_name,
-                sample_idx + 1,
+                "Unconditional" if is_unconditional else f"'{test_prompt[:30]}...'",
+                mode,
+                guidance,
                 wandb.Image(img)
             )
-            
-            # Also add to gallery with caption
-            caption = f"{prompt} [{mode_name}] (sample {sample_idx + 1}/{samples_per_mode})"
-            wandb_gallery_images.append(wandb.Image(img, caption=caption))
-        
-        # Create mode comparison grids (one grid per mode showing all samples)
-        mode_grids = {}
-        for mode_idx, mode_name in enumerate(modes):
-            mode_images = []
-            for prompt_idx in range(len(prompts)):
-                start_idx = prompt_idx * images_per_prompt + mode_idx * samples_per_mode
-                end_idx = start_idx + samples_per_mode
-                mode_images.extend(sample_images[start_idx:end_idx] if start_idx < len(sample_images) else [])
-            
-            if mode_images:
-                # Create a grid for this mode
-                mode_grid = create_image_grid(mode_images, rows=len(prompts), cols=samples_per_mode)
-                mode_grids[f"samples/grid_{mode_name}"] = wandb.Image(
-                    mode_grid, 
-                    caption=f"{mode_name} - {len(prompts)} prompts × {samples_per_mode} samples"
-                )
     else:
-        # Standard logging without CLIP adapter
-        columns = ["Step", "Prompt", "Image"]
+        # Without CLIP adapter: 2 images (uncond, cond)
+        labels = ["Unconditional", "Conditional"]
+        
+        columns = ["Step", "Type", "Prompt", "Guidance", "Image"]
         comparison_table = wandb.Table(columns=columns)
         
-        for img, prompt in zip(sample_images, prompts, strict=False):
+        for i, (img, label) in enumerate(zip(sample_images, labels)):
             comparison_table.add_data(
                 step,
-                prompt[:50] + "..." if len(prompt) > 50 else prompt,
+                label,
+                "" if i == 0 else test_prompt[:50],
+                "0.0" if i == 0 else "config",
                 wandb.Image(img)
             )
-            wandb_gallery_images.append(wandb.Image(img, caption=prompt))
 
     # Prepare log data
     log_data = {
-        "samples/gallery": wandb_gallery_images,
         "samples/comparison_table": comparison_table,
     }
-    
-    # Add mode-specific grids if available
-    if has_clip_adapter and 'mode_grids' in locals():
-        log_data.update(mode_grids)
 
     # Add overall grid if provided
     if grid_img is not None:
-        grid_rows, grid_cols = {
-            1: (1, 1),
-            2: (1, 2),
-            4: (2, 2),
-            8: (2, 4),
-            16: (4, 4),
-            32: (4, 8),
-            64: (8, 8),
-            128: (8, 16),
-            256: (16, 16),
-        }.get(grid_size, (1, 1))
-
-        log_data["samples/grid_combined"] = wandb.Image(
-            grid_img, 
-            caption=f"Combined {grid_rows}x{grid_cols} Grid - Step {step}"
+        if has_clip_adapter:
+            caption = (
+                f"Evaluation Grid (Step {step})\n"
+                f"Top row: Unconditional (guidance=0)\n"
+                f"Bottom row: Conditional with '{test_prompt[:50]}...'\n"
+                f"Columns: Text | CLIP | Text+CLIP"
+            )
+        else:
+            caption = (
+                f"Evaluation Grid (Step {step})\n"
+                f"Top: Unconditional (guidance=0)\n"
+                f"Bottom: Conditional with '{test_prompt[:50]}...'"
+            )
+        
+        log_data["samples/evaluation_grid"] = wandb.Image(grid_img, caption=caption
         )
 
     # Log using appropriate method
@@ -2068,18 +2016,30 @@ def log_samples_to_wandb(
         wandb_run.log(log_data, step=step)
 
 
-def setup_wandb_logging(config: TrainConfig, model: nn.Module) -> Any:
+def setup_wandb_logging(config: TrainConfig, model: nn.Module, accelerator: Any = None) -> Any:
     """Setup Weights & Biases logging.
 
     Args:
         config: Complete training configuration
         model: Model for parameter counting
+        accelerator: Optional accelerator instance for distributed training
 
     Returns:
         WandB run object or None if disabled
     """
     if config.logging.no_wandb:
         return None
+
+    # Skip WandB initialization for non-main processes
+    if accelerator is not None and not accelerator.is_main_process:
+        return None
+
+    # Also check environment variable for safety
+    import os
+    if "LOCAL_RANK" in os.environ:
+        local_rank = int(os.environ["LOCAL_RANK"])
+        if local_rank != 0:
+            return None
 
     try:
         # Calculate model statistics
@@ -2124,6 +2084,12 @@ def setup_wandb_logging(config: TrainConfig, model: nn.Module) -> Any:
                 adapter_params = sum(p.numel() for p in model.clip_adapter.parameters())
                 wandb_config["clip_adapter/params"] = adapter_params
 
+        # Set wandb to offline mode if not logged in to prevent login prompts
+        import os
+        if not os.environ.get("WANDB_API_KEY"):
+            os.environ["WANDB_MODE"] = "offline"
+            logger.info("WandB API key not found, running in offline mode")
+        
         wandb_run = wandb.init(
             project=config.logging.project_name,
             config=wandb_config,
@@ -2581,7 +2547,7 @@ class MultiGPUStrategy:
         if self.accelerator is None:
             self.accelerator = self.setup_accelerator(config)
 
-        model, diffusion, options = load_glide_model(config.model)
+        model, diffusion, options = load_glide_model(config.model, accelerator=self.accelerator)
 
         # CRITICAL: Attach CLIP adapter BEFORE DDP wrapping
         if config.model.use_clip_adapter:
@@ -2727,6 +2693,26 @@ class MultiGPUStrategy:
                 else:
                     raise ValueError(f"Unexpected batch format with {len(batch)} elements")
             
+            # Move batch data to device (accelerator doesn't do this automatically)
+            if config.model.train_upsample:
+                low_res = low_res.to(self.device).float()
+                high_res = high_res.to(self.device).float()
+            else:
+                images = images.to(self.device).float()
+            
+            if tokens is not None:
+                tokens = tokens.to(self.device)
+                masks = masks.to(self.device) if masks is not None else None
+                
+                # Apply unconditional training
+                if config.data.uncond_p > 0:
+                    mask = th.rand(tokens.shape[0], device=self.device) < config.data.uncond_p
+                    tokens = tokens.clone()
+                    tokens[mask] = 0
+            
+            if clip_features is not None:
+                clip_features = clip_features.to(self.device).float()
+            
             # Compute CLIP features if needed
             if clip_features is None and config.model.use_clip_adapter and tokens is not None:
                 # Initialize CLIPComputerManager if not already done
@@ -2737,10 +2723,13 @@ class MultiGPUStrategy:
                 # Get CLIP computer for this device
                 clip_computer = self.clip_computer_manager.get_computer(
                     clip_model_name=config.model.clip_model_name,
-                    device=self.accelerator.device
+                    device=self.accelerator.device,
+                    accelerator=self.accelerator
                 )
+                # Access tokenizer from the underlying module (DDP wraps the model)
+                base_model = actual_model.module if hasattr(actual_model, 'module') else actual_model
                 clip_features = clip_computer.compute_from_tokens(
-                    tokens, masks, tokenizer=actual_model.tokenizer
+                    tokens, masks, tokenizer=base_model.tokenizer
                 )
             
             # Build model kwargs
@@ -2752,19 +2741,31 @@ class MultiGPUStrategy:
             
             # Forward pass
             if config.model.train_upsample:
-                loss = diffusion.training_losses(
-                    actual_model,
-                    high_res,
-                    t=None,
-                    model_kwargs=model_kwargs,
-                )["loss"].mean()
+                # Upsampler training
+                timesteps = th.randint(0, len(diffusion.betas) - 1, (high_res.shape[0],), device=self.device)
+                noise = th.randn_like(high_res, device=self.device)
+                # Keep timesteps on GPU - diffusion will place internal tensors on same device
+                x_t = diffusion.q_sample(high_res, timesteps, noise=noise)
+                
+                model_output = actual_model(x_t, timesteps, **model_kwargs)
+                
+                # Compute loss
+                _, channels = x_t.shape[:2]
+                epsilon, _ = th.split(model_output, channels, dim=1)
+                loss = th.nn.functional.mse_loss(epsilon, noise.detach())
             else:
-                loss = diffusion.training_losses(
-                    actual_model,
-                    images,
-                    t=None,
-                    model_kwargs=model_kwargs,
-                )["loss"].mean()
+                # Base model training
+                timesteps = th.randint(0, len(diffusion.betas) - 1, (images.shape[0],), device=self.device)
+                noise = th.randn_like(images, device=self.device)
+                # Keep timesteps on GPU - diffusion will place internal tensors on same device
+                x_t = diffusion.q_sample(images, timesteps, noise=noise)
+                
+                model_output = actual_model(x_t, timesteps, **model_kwargs)
+                
+                # Compute loss
+                _, channels = x_t.shape[:2]
+                epsilon, _ = th.split(model_output, channels, dim=1)
+                loss = th.nn.functional.mse_loss(epsilon, noise.detach())
 
             # Backward pass
             self.accelerator.backward(loss)
@@ -2817,6 +2818,12 @@ def determine_training_mode(config: TrainConfig) -> str:
     Returns:
         Training mode string: "multi_gpu", "fp16", or "single_gpu"
     """
+    # Auto-detect if running under accelerate launch
+    import os
+    if "LOCAL_RANK" in os.environ or "WORLD_SIZE" in os.environ:
+        # Running under accelerate launch or torchrun
+        return "multi_gpu"
+    
     if config.multi_gpu.use_distributed or config.multi_gpu.use_accelerate:
         return "multi_gpu"
     if config.fp16.use_fp16 or config.fp16.use_bf16:
@@ -2868,7 +2875,9 @@ def run_training(config: TrainConfig, strategy) -> None:
                 logger.info("WandB tracking initialized via Accelerate")
         else:
             # Single GPU or FP16 strategies use direct wandb
-            wandb_run = setup_wandb_logging(config, model)
+            # Pass accelerator if available from strategy
+            strategy_accelerator = getattr(strategy, 'accelerator', None)
+            wandb_run = setup_wandb_logging(config, model, accelerator=strategy_accelerator)
 
         # Preload CLIP model if using CLIP adapter (keeps it in GPU memory)
         if config.model.use_clip_adapter:
@@ -2895,7 +2904,7 @@ def run_training(config: TrainConfig, strategy) -> None:
 
         # Load evaluation prompts
         eval_prompts, grid_size = load_evaluation_prompts(
-            config.sampling.eval_prompt_file, config.sampling.test_prompt
+            config.sampling.cond_prompt
         )
 
         # Create output directory
