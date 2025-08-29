@@ -204,7 +204,7 @@ class ModelEvaluator:
         # Load base GLIDE model
         if self.config.base_glide_path:
             logger.info(f"Loading base GLIDE from {self.config.base_glide_path}")
-            self.base_glide = self._load_glide_model(
+            self.base_glide, self._base_glide_precompiled = self._load_glide_model(
                 self.config.base_glide_path, 
                 has_clip_adapter=False
             )
@@ -214,16 +214,18 @@ class ModelEvaluator:
                 use_fp16=self.config.use_fp16,
                 model_type="base"
             )
+            self._base_glide_precompiled = False
         
         # Load GLIDE with CLIP adapter
         if self.config.glide_clip_adapter_path:
             logger.info(f"Loading GLIDE with CLIP adapter from {self.config.glide_clip_adapter_path}")
-            self.glide_with_adapter = self._load_glide_model(
+            self.glide_with_adapter, self._adapter_model_precompiled = self._load_glide_model(
                 self.config.glide_clip_adapter_path,
                 has_clip_adapter=True
             )
         else:
             logger.warning("No GLIDE-CLIP adapter path provided, skipping adapter evaluation")
+            self._adapter_model_precompiled = False
         
         # Initialize CLIP evaluator for metrics (not for generation)
         logger.info(f"Initializing CLIP evaluator model: {self.config.clip_model_name}")
@@ -247,6 +249,19 @@ class ModelEvaluator:
         if self.glide_with_adapter:
             self.glide_with_adapter = self.glide_with_adapter.to(self.device)
         
+        # Compile models for faster inference if not already compiled
+        # Skip compilation if models were pre-compiled (loaded from _compiled.pt files)
+        if not getattr(self, '_base_glide_precompiled', False):
+            self.base_glide = self._compile_model_if_needed(self.base_glide, "base GLIDE")
+        else:
+            logger.info("Skipping compilation for base GLIDE (using pre-compiled model)")
+            
+        if self.glide_with_adapter:
+            if not getattr(self, '_adapter_model_precompiled', False):
+                self.glide_with_adapter = self._compile_model_if_needed(self.glide_with_adapter, "GLIDE+adapter")
+            else:
+                logger.info("Skipping compilation for GLIDE+adapter (using pre-compiled model)")
+        
         # If we haven't loaded diffusion yet, create it
         if self.diffusion is None:
             _, self.diffusion, self.options = load_model(
@@ -260,10 +275,18 @@ class ModelEvaluator:
         self, 
         checkpoint_path: str, 
         has_clip_adapter: bool = False
-    ) -> nn.Module:
+    ) -> Tuple[nn.Module, bool]:
         """Load a GLIDE model from checkpoint."""
         # Load checkpoint to check if it has adapter weights
         checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        
+        # Check if this is a pre-compiled model
+        is_precompiled = checkpoint.get("compiled", False)
+        if is_precompiled:
+            logger.info(f"Loading pre-compiled model from: {checkpoint_path}")
+            compilation_metadata = checkpoint.get("compilation_metadata", {})
+            logger.info(f"  Compilation mode: {compilation_metadata.get('mode', 'unknown')}")
+            logger.info(f"  Backend: {compilation_metadata.get('backend', 'unknown')}")
         
         # Handle different checkpoint formats
         if "model_state_dict" in checkpoint:
@@ -339,7 +362,45 @@ class ModelEvaluator:
             else:
                 logger.info("CLIP adapter successfully integrated into model")
         
-        return model
+        # Return model and whether it was pre-compiled
+        return model, is_precompiled
+    
+    def _compile_model_if_needed(self, model: nn.Module, model_name: str) -> nn.Module:
+        """Compile model with torch.compile if not already compiled.
+        
+        Args:
+            model: The model to potentially compile
+            model_name: Name for logging
+            
+        Returns:
+            Compiled model or original if already compiled
+        """
+        # Check if model is already compiled
+        # torch.compile wraps the model in a different class
+        if hasattr(model, '_orig_mod'):
+            logger.info(f"{model_name} is already compiled, skipping compilation")
+            return model
+        
+        # Check if torch.compile is available (requires PyTorch 2.0+)
+        if not hasattr(torch, 'compile'):
+            logger.warning(f"torch.compile not available (requires PyTorch 2.0+), skipping compilation for {model_name}")
+            return model
+        
+        logger.info(f"Compiling {model_name} with torch.compile for faster inference...")
+        try:
+            # Compile with mode='reduce-overhead' for best inference speed
+            # Use fullgraph=False to handle dynamic shapes better
+            compiled_model = torch.compile(
+                model,
+                mode='reduce-overhead',
+                fullgraph=False,
+                backend='inductor'
+            )
+            logger.info(f"Successfully compiled {model_name}")
+            return compiled_model
+        except Exception as e:
+            logger.warning(f"Failed to compile {model_name}: {e}. Using uncompiled model.")
+            return model
     
     def generate_samples_batch(
         self,
@@ -347,66 +408,81 @@ class ModelEvaluator:
         prompts: List[str],
         use_clip_conditioning: bool = False,
         seed_offset: int = 0,
+        samples_per_prompt: int = 8,
     ) -> Dict[str, List[Image.Image]]:
-        """Generate one sample for each prompt in a single batch for efficiency.
+        """Generate multiple samples for each prompt using prompt-wise batching.
+        
+        This implementation generates multiple samples per prompt by repeatedly
+        processing the same prompt with different noise seeds, which is more
+        efficient than processing each sample individually.
+        
+        Args:
+            model: The model to use for generation
+            prompts: List of prompts to generate for
+            use_clip_conditioning: Whether to use CLIP conditioning
+            seed_offset: Offset for random seed
+            samples_per_prompt: Number of samples to generate per prompt
         
         Returns:
-            Dictionary mapping prompt to list containing single generated image
+            Dictionary mapping prompts to lists of generated images
         """
-        # Set seed for reproducibility
-        torch.manual_seed(self.config.seed + seed_offset)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed(self.config.seed + seed_offset)
+        # Initialize results dictionary
+        results = {prompt: [] for prompt in prompts}
         
         # Check if model has CLIP adapter for conditioning
         has_clip_adapter = hasattr(model, 'clip_adapter') and model.clip_adapter is not None
         
-        results = {}
-        
-        # Process prompts in batches
-        batch_size = min(self.config.batch_size, 8)  # Max 8 prompts at once
-        for i in range(0, len(prompts), batch_size):
-            batch_prompts = prompts[i:i+batch_size]
-            current_batch_size = len(batch_prompts)
-            
-            if use_clip_conditioning and has_clip_adapter and self.clip_adapter_encoder:
-                # Get CLIP embeddings for all prompts in batch using the adapter's CLIP model
-                clip_embeddings = self.clip_adapter_encoder.compute_text_features(batch_prompts)
-                
-                # Generate with CLIP conditioning - use special batched version
-                batch_samples = self._sample_batch_with_conditioning(
-                    glide_model=model,
-                    glide_options=self.options,
-                    prompts=batch_prompts,
-                    clip_embeddings=clip_embeddings,
-                    guidance_scale=self.config.guidance_scale,
-                    device=self.device,
-                    prediction_respacing=str(self.config.num_steps),
-                    sampler=self.config.sampler,
-                    eta=self.config.eta,
-                )
-            else:
-                # Generate with text-only conditioning
-                batch_samples = self._sample_batch(
-                    glide_model=model,
-                    glide_options=self.options,
-                    prompts=batch_prompts,
-                    guidance_scale=self.config.guidance_scale,
-                    device=self.device,
-                    prediction_respacing=str(self.config.num_steps),
-                    sampler=self.config.sampler,
-                    eta=self.config.eta,
-                )
-            
-            # Convert to PIL images and store results
-            for j, prompt in enumerate(batch_prompts):
-                img_tensor = batch_samples[j:j+1]
-                img = self._tensor_to_pil(img_tensor)
-                results[prompt] = [img]  # Single image per prompt
-            
-            # Clear cache to prevent OOM
+        # Generate multiple samples per prompt by running generation multiple times
+        for sample_idx in range(samples_per_prompt):
+            # Set unique seed for this sample batch
+            torch.manual_seed(self.config.seed + seed_offset + sample_idx * 1000)
             if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+                torch.cuda.manual_seed(self.config.seed + seed_offset + sample_idx * 1000)
+            
+            # Process prompts in batches for this sample
+            batch_size = min(self.config.batch_size, 8)  # Max 8 prompts at once
+            for i in range(0, len(prompts), batch_size):
+                batch_prompts = prompts[i:i+batch_size]
+                current_batch_size = len(batch_prompts)
+            
+                if use_clip_conditioning and has_clip_adapter and self.clip_adapter_encoder:
+                    # Get CLIP embeddings for all prompts in batch using the adapter's CLIP model
+                    clip_embeddings = self.clip_adapter_encoder.compute_text_features(batch_prompts)
+                    
+                    # Generate with CLIP conditioning - use special batched version
+                    batch_samples = self._sample_batch_with_conditioning(
+                        glide_model=model,
+                        glide_options=self.options,
+                        prompts=batch_prompts,
+                        clip_embeddings=clip_embeddings,
+                        guidance_scale=self.config.guidance_scale,
+                        device=self.device,
+                        prediction_respacing=str(self.config.num_steps),
+                        sampler=self.config.sampler,
+                        eta=self.config.eta,
+                    )
+                else:
+                    # Generate with text-only conditioning
+                    batch_samples = self._sample_batch(
+                        glide_model=model,
+                        glide_options=self.options,
+                        prompts=batch_prompts,
+                        guidance_scale=self.config.guidance_scale,
+                        device=self.device,
+                        prediction_respacing=str(self.config.num_steps),
+                        sampler=self.config.sampler,
+                        eta=self.config.eta,
+                    )
+                
+                # Convert to PIL images and append to results
+                for j, prompt in enumerate(batch_prompts):
+                    img_tensor = batch_samples[j:j+1]
+                    img = self._tensor_to_pil(img_tensor)
+                    results[prompt].append(img)  # Append to list for this prompt
+                
+                # Clear cache to prevent OOM
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
         
         return results
     
@@ -927,22 +1003,25 @@ class ModelEvaluator:
             prompts = prompts[:self.config.max_prompts_per_category]
         
         # Generate all samples for this category in batches
-        logger.info(f"  Generating base GLIDE samples for {len(prompts)} prompts...")
+        # Using prompt-wise batching: generate 8 samples per prompt efficiently
+        logger.info(f"  Generating base GLIDE samples for {len(prompts)} prompts (8 samples each)...")
         base_results = self.generate_samples_batch(
             self.base_glide,
             prompts,
             use_clip_conditioning=False,
             seed_offset=0,
+            samples_per_prompt=8,  # Generate 8 samples per prompt for grid
         )
         
         adapter_results = {}
         if self.glide_with_adapter:
-            logger.info(f"  Generating GLIDE+adapter samples for {len(prompts)} prompts...")
+            logger.info(f"  Generating GLIDE+adapter samples for {len(prompts)} prompts (8 samples each)...")
             adapter_results = self.generate_samples_batch(
                 self.glide_with_adapter,
                 prompts,
                 use_clip_conditioning=True,
                 seed_offset=1000,  # Different seed for variety
+                samples_per_prompt=8,  # Generate 8 samples per prompt for grid
             )
         
         # Process results for each prompt
@@ -958,10 +1037,10 @@ class ModelEvaluator:
             # Calculate base model metrics
             base_samples = prompt_results["base_glide_samples"]
             if base_samples:
-                # For single sample per prompt, diversity is N/A
+                # Calculate metrics for multiple samples
                 prompt_results["base_glide_metrics"] = {
                     "clip_score": self.calculate_clip_score(base_samples, prompt),
-                    "diversity": 0.0,  # Single sample, no diversity
+                    "diversity": self.calculate_diversity_score(base_samples) if len(base_samples) > 1 else 0.0,
                     "num_samples": len(base_samples),
                 }
             
@@ -970,7 +1049,7 @@ class ModelEvaluator:
             if adapter_samples:
                 prompt_results["glide_adapter_metrics"] = {
                     "clip_score": self.calculate_clip_score(adapter_samples, prompt),
-                    "diversity": 0.0,  # Single sample, no diversity
+                    "diversity": self.calculate_diversity_score(adapter_samples) if len(adapter_samples) > 1 else 0.0,
                     "num_samples": len(adapter_samples),
                 }
             
