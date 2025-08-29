@@ -50,7 +50,8 @@ def apply_model_modifications(model: nn.Module, config: ModelConfig) -> None:
 
 
 def load_glide_model(
-    config: ModelConfig, use_fp16: bool = False, device: th.device | None = None
+    config: ModelConfig, use_fp16: bool = False, device: th.device | None = None,
+    accelerator: Any = None
 ) -> tuple[nn.Module, Any, dict[str, Any]]:
     """Load GLIDE model with optional checkpoint resumption.
 
@@ -58,6 +59,7 @@ def load_glide_model(
         config: Model configuration.
         use_fp16: Whether to use FP16 (handled separately now).
         device: Device to load model on.
+        accelerator: Optional Accelerator instance for distributed downloading.
 
     Returns:
         Tuple of (model, diffusion, options).
@@ -85,6 +87,7 @@ def load_glide_model(
         freeze_diffusion=config.freeze_diffusion,
         activation_checkpointing=config.activation_checkpointing,
         model_type=model_type,
+        accelerator=accelerator,
     )
 
     # Move to device if specified
@@ -346,9 +349,10 @@ def create_distributed_webdataset_loader(
     """
     logger.info("Using distributed WebDataset loader")
 
-    # Get distributed info from config
-    world_size = config.multi_gpu.world_size
-    rank = config.multi_gpu.rank
+    # Get distributed info from environment variables
+    import os
+    world_size = int(os.environ.get("WORLD_SIZE", 1))
+    rank = int(os.environ.get("RANK", 0))
 
     return create_distributed_wds_dataloader(
         urls=urls,
