@@ -2115,30 +2115,64 @@ def setup_wandb_logging(config: TrainConfig, model: nn.Module, accelerator: Any 
 class InterruptHandler:
     """Handle interrupts and emergency checkpoint saving."""
 
-    def __init__(self):
+    def __init__(self, timeout_seconds: int = 10):
         self.interrupted = False
+        self.force_exit = False
+        self.interrupt_count = 0
+        self.first_interrupt_time = None
+        self.timeout_seconds = timeout_seconds
         self.original_sigint = signal.signal(signal.SIGINT, self.handle_sigint)
+        self.original_sigterm = signal.signal(signal.SIGTERM, self.handle_sigterm)
 
     def handle_sigint(self, signum, frame):
         """Handle CTRL-C interrupt."""
-        if self.interrupted:
-            # Second interrupt - force exit
+        import time
+        
+        self.interrupt_count += 1
+        current_time = time.time()
+        
+        if self.interrupt_count == 1:
+            # First interrupt - request graceful shutdown
+            self.interrupted = True
+            self.first_interrupt_time = current_time
+            logger.info("\n\n⚠️  Training interrupted! Attempting to save checkpoint...")
+            logger.info(f"Press CTRL-C again to force exit, or wait {self.timeout_seconds}s for auto force-exit")
+            
+            # Start a timer thread for auto force-exit
+            import threading
+            def timeout_exit():
+                time.sleep(self.timeout_seconds)
+                if self.interrupted and not self.force_exit:
+                    logger.info(f"\n⚠️  Timeout reached ({self.timeout_seconds}s). Force exiting...")
+                    os._exit(1)
+            threading.Thread(target=timeout_exit, daemon=True).start()
+            
+        elif self.interrupt_count == 2:
+            # Second interrupt - force exit immediately
+            self.force_exit = True
             logger.info("\n\n⚠️  Force exit requested. Exiting immediately...")
-            signal.signal(signal.SIGINT, self.original_sigint)
-            sys.exit(1)
+            # Use os._exit for immediate termination (bypasses cleanup)
+            os._exit(1)
+        else:
+            # Third+ interrupt - really force exit
+            os._exit(1)
 
+    def handle_sigterm(self, signum, frame):
+        """Handle SIGTERM for clean shutdown."""
         self.interrupted = True
-        logger.info("\n\n⚠️  Training interrupted!")
-        logger.info("Press CTRL-C again to force exit, or wait for checkpoint save...")
+        logger.info("\n⚠️  SIGTERM received. Attempting graceful shutdown...")
 
     def reset(self):
         """Reset interrupt flag after handling."""
         self.interrupted = False
+        self.interrupt_count = 0
+        self.first_interrupt_time = None
 
     def __del__(self):
-        """Restore original signal handler."""
+        """Restore original signal handlers."""
         try:
             signal.signal(signal.SIGINT, self.original_sigint)
+            signal.signal(signal.SIGTERM, self.original_sigterm)
         except (ValueError, OSError):
             pass  # Ignore errors during cleanup
 
@@ -2940,11 +2974,30 @@ def run_training(config: TrainConfig, strategy) -> None:
 
         for epoch in range(start_epoch, config.training.num_epochs):
             if interrupt_handler.interrupted:
-                logger.info("Training interrupted, saving checkpoint...")
+                logger.info("Training interrupted, attempting to save checkpoint...")
                 if checkpoint_manager:
-                    checkpoint_manager.save_checkpoint(
-                        model, optimizer, epoch, global_step, is_interrupted=True
-                    )
+                    # Try to save checkpoint with a timeout
+                    import threading
+                    save_completed = threading.Event()
+                    
+                    def save_with_timeout():
+                        try:
+                            checkpoint_manager.save_checkpoint(
+                                model, optimizer, epoch, global_step, is_interrupted=True
+                            )
+                            save_completed.set()
+                        except Exception as e:
+                            logger.error(f"Failed to save checkpoint: {e}")
+                    
+                    save_thread = threading.Thread(target=save_with_timeout)
+                    save_thread.daemon = True
+                    save_thread.start()
+                    
+                    # Wait up to 5 seconds for checkpoint save
+                    if save_completed.wait(timeout=5.0):
+                        logger.info("Checkpoint saved successfully")
+                    else:
+                        logger.warning("Checkpoint save timed out, exiting anyway")
                 break
 
             logger.info(f"\nEpoch {epoch + 1}/{config.training.num_epochs}")
@@ -2955,6 +3008,7 @@ def run_training(config: TrainConfig, strategy) -> None:
 
             for batch_idx, batch in enumerate(progress_bar):
                 if interrupt_handler.interrupted:
+                    progress_bar.close()  # Clean close of progress bar
                     break
 
                 # Training step
