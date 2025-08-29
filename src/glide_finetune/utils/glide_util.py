@@ -99,9 +99,23 @@ def load_model(
         weights = th.load(glide_path, map_location="cpu", weights_only=False)
         glide_model.load_state_dict(weights)
     else:  # use default checkpoint from openai
-        glide_model.load_state_dict(
-            load_checkpoint(model_type, "cpu")
-        )  # always load to cpu, saves memory
+        # Handle distributed downloading properly
+        if accelerator is not None:
+            if accelerator.is_main_process:
+                # Main process downloads the weights
+                weights = load_checkpoint(model_type, "cpu")
+                glide_model.load_state_dict(weights)
+            # All processes wait for main to finish
+            accelerator.wait_for_everyone()
+            if not accelerator.is_main_process:
+                # Other processes load from cache (already downloaded)
+                weights = load_checkpoint(model_type, "cpu")
+                glide_model.load_state_dict(weights)
+        else:
+            # Single process - load normally
+            glide_model.load_state_dict(
+                load_checkpoint(model_type, "cpu")
+            )  # always load to cpu, saves memory
     if use_fp16:
         glide_model.convert_to_fp16()
         logger.info("Converted to fp16, likely gradients will explode")
@@ -200,51 +214,72 @@ def sample_with_conditioning(
     tokens = glide_model.tokenizer.encode(prompt) if prompt else []
     tokens, mask = glide_model.tokenizer.padded_tokens_and_mask(tokens, glide_options["text_ctx"])
 
-    # Create the classifier-free guidance tokens (empty)
-    full_batch_size = batch_size * 2
-    uncond_tokens, uncond_mask = glide_model.tokenizer.padded_tokens_and_mask(
-        [], glide_options["text_ctx"]
-    )
+    # For true unconditional generation (guidance_scale <= 0), skip CFG entirely
+    if guidance_scale <= 0:
+        # Only compute unconditional output
+        full_batch_size = batch_size
+        uncond_tokens, uncond_mask = glide_model.tokenizer.padded_tokens_and_mask(
+            [], glide_options["text_ctx"]
+        )
+        
+        model_kwargs = {
+            "tokens": th.tensor([uncond_tokens] * batch_size, device=device),
+            "mask": th.tensor([uncond_mask] * batch_size, dtype=th.bool, device=device),
+        }
+        
+        # Add zero CLIP embeddings for unconditional
+        if clip_embeddings is not None:
+            clip_embeddings = clip_embeddings.to(device)
+            uncond_clip = th.zeros_like(clip_embeddings)
+            model_kwargs["clip_embeddings"] = uncond_clip
+        
+        # Use model directly without CFG
+        model_fn = glide_model
+    else:
+        # Standard CFG setup for guided generation
+        full_batch_size = batch_size * 2
+        uncond_tokens, uncond_mask = glide_model.tokenizer.padded_tokens_and_mask(
+            [], glide_options["text_ctx"]
+        )
 
-    # Pack the tokens together into model kwargs.
-    model_kwargs = {
-        "tokens": th.tensor([tokens] * batch_size + [uncond_tokens] * batch_size, device=device),
-        "mask": th.tensor(
-            [mask] * batch_size + [uncond_mask] * batch_size,
-            dtype=th.bool,
-            device=device,
-        ),
-    }
-    
-    # Add CLIP embeddings if provided
-    if clip_embeddings is not None:
-        # Duplicate for classifier-free guidance (conditioned and unconditioned)
-        clip_embeddings = clip_embeddings.to(device)
-        # For unconditioned, we use zero embeddings
-        uncond_clip = th.zeros_like(clip_embeddings)
-        model_kwargs["clip_embeddings"] = th.cat([clip_embeddings, uncond_clip], dim=0)
+        # Pack the tokens together into model kwargs.
+        model_kwargs = {
+            "tokens": th.tensor([tokens] * batch_size + [uncond_tokens] * batch_size, device=device),
+            "mask": th.tensor(
+                [mask] * batch_size + [uncond_mask] * batch_size,
+                dtype=th.bool,
+                device=device,
+            ),
+        }
+        
+        # Add CLIP embeddings if provided
+        if clip_embeddings is not None:
+            # Duplicate for classifier-free guidance (conditioned and unconditioned)
+            clip_embeddings = clip_embeddings.to(device)
+            # For unconditioned, we use zero embeddings
+            uncond_clip = th.zeros_like(clip_embeddings)
+            model_kwargs["clip_embeddings"] = th.cat([clip_embeddings, uncond_clip], dim=0)
 
-    def cfg_model_fn(x_t, ts, **kwargs):
-        half = x_t[: len(x_t) // 2]
-        combined = th.cat([half, half], dim=0)
-        model_out = glide_model(combined, ts, **kwargs)
-        eps, rest = model_out[:, :3], model_out[:, 3:]
-        cond_eps, uncond_eps = th.split(eps, len(eps) // 2, dim=0)
-        beta = eval_diffusion.betas[
-            int(
-                ts.flatten()[0].item()
-                / glide_options["diffusion_steps"]
-                * len(eval_diffusion.betas)
-            )
-        ]
-        half_eps = uncond_eps + guidance_scale * (cond_eps - uncond_eps)
-        eps = th.cat([half_eps, half_eps], dim=0)
-        # Don't save intermediate predictions during sampling
-        return th.cat([eps, rest], dim=1)
+        def cfg_model_fn(x_t, ts, **kwargs):
+            half = x_t[: len(x_t) // 2]
+            combined = th.cat([half, half], dim=0)
+            model_out = glide_model(combined, ts, **kwargs)
+            eps, rest = model_out[:, :3], model_out[:, 3:]
+            cond_eps, uncond_eps = th.split(eps, len(eps) // 2, dim=0)
+            beta = eval_diffusion.betas[
+                int(
+                    ts.flatten()[0].item()
+                    / glide_options["diffusion_steps"]
+                    * len(eval_diffusion.betas)
+                )
+            ]
+            # Apply CFG formula
+            half_eps = uncond_eps + guidance_scale * (cond_eps - uncond_eps)
+            eps = th.cat([half_eps, half_eps], dim=0)
+            # Don't save intermediate predictions during sampling
+            return th.cat([eps, rest], dim=1)
 
-    # Continue with the rest of the original sample function...
-    # (The rest remains the same as the original sample function)
-    model_fn = cfg_model_fn  # so we use CFG for the base model.
+        model_fn = cfg_model_fn  # so we use CFG for the base model.
     if upsample_enabled:
         assert image_to_upsample != "", "You must specify a path to an image to upsample."
         low_res_samples = read_image(image_to_upsample, size=(side_x, side_y))
