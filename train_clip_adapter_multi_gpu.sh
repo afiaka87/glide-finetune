@@ -70,6 +70,26 @@ ACTIVATION_CHECKPOINTING=true    # Enable gradient checkpointing
 DISABLE_LAION_FILTERS=true       # Set to true to disable all LAION quality/NSFW/similarity filters
 
 # ============================================
+# Environment Variables for Multi-GPU Training
+# ============================================
+
+# Set environment variables for multi-GPU training
+export TRANSFORMERS_OFFLINE=1
+export HF_HUB_OFFLINE=1
+export WANDB_MODE="online"  # or "offline" if you don't want logging
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+
+# Dynamic CUDA_VISIBLE_DEVICES based on NUM_GPUS
+if [ "$NUM_GPUS" = "1" ]; then
+    export CUDA_VISIBLE_DEVICES=0
+elif [ "$NUM_GPUS" = "2" ]; then
+    export CUDA_VISIBLE_DEVICES=0,1
+elif [ "$NUM_GPUS" = "4" ]; then
+    export CUDA_VISIBLE_DEVICES=0,1,2,3
+fi
+
+# ============================================
 # Auto-detect GPU count if set to "auto"
 # ============================================
 
