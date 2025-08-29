@@ -78,6 +78,7 @@ def load_model(
     freeze_diffusion: bool = False,
     activation_checkpointing: bool = False,
     model_type: str = "base",
+    accelerator: Any = None,
 ) -> tuple[nn.Module, Any, dict[str, Any]]:
     assert model_type in MODEL_TYPES, f"Model must be one of {MODEL_TYPES}. Exiting."
     if model_type in ["base", "base-inpaint"]:
