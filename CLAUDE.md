@@ -89,6 +89,7 @@ The system supports two data loading modes:
 - Both models train on 64x64 inputs (upsampler scales internally to 256x256)
 - Checkpoint saving creates numbered folders per run and per epoch
 - The `glide_text2im` package must be installed from the crowsonkb fork for compatibility
+- **Default sampler during training**: Euler with 30 steps (fast and deterministic)
 
 ## Sampling Methods
 

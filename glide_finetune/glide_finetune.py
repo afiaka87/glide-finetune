@@ -85,7 +85,8 @@ def run_glide_finetune_epoch(
     optimizer: th.optim.Optimizer,
     sample_bs: int,  # batch size for inference
     sample_gs: float = 4.0,  # guidance scale for inference
-    sample_respacing: str = '100', # respacing for inference
+    sample_respacing: str = '30', # respacing for inference - using 30 steps with Euler
+    sample_sampler: str = 'euler',  # sampler for inference - Euler is fast and deterministic
     prompt: str = "",  # prompt for inference, not training
     side_x: int = 64,
     side_y: int = 64,
@@ -131,6 +132,7 @@ def run_glide_finetune_epoch(
                 guidance_scale=sample_gs,
                 device=device,
                 prediction_respacing=sample_respacing,
+                sampler=sample_sampler,
                 image_to_upsample=image_to_upsample,
             )
             sample_save_path = os.path.join(outputs_dir, f"{train_idx}.png")
