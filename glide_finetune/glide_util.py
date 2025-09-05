@@ -236,3 +236,176 @@ def sample(
         
     glide_model.del_cache()
     return samples
+
+
+@th.inference_mode()
+def sample_with_superres(
+    base_model,
+    base_options,
+    upsampler_model,
+    upsampler_options,
+    prompt="",
+    batch_size=1,
+    guidance_scale=4,
+    device="cpu",
+    base_respacing="30",  # Fast sampling for base
+    upsampler_respacing="17",  # Fast sampling for upsampler
+    upsample_temp=0.997,
+    sampler: Literal["plms", "ddim", "euler", "euler_a", "dpm++"] = "euler",  # Default to Euler
+    sampler_eta: float = 0.0,
+    dpm_order: int = 2,
+):
+    """
+    Generate samples using the full pipeline: base model (64x64) -> upsampler (256x256).
+    
+    This function follows the approach from the GLIDE notebook, generating a 64x64
+    image with the base model and then upscaling it to 256x256 with the upsampler.
+    """
+    # First, generate 64x64 samples with the base model
+    base_model.del_cache()
+    base_diffusion = create_gaussian_diffusion(
+        steps=base_options["diffusion_steps"],
+        noise_schedule=base_options["noise_schedule"],
+        timestep_respacing=base_respacing,
+    )
+    
+    # Create the text tokens to feed to the base model
+    tokens = base_model.tokenizer.encode(prompt)
+    tokens, mask = base_model.tokenizer.padded_tokens_and_mask(
+        tokens, base_options["text_ctx"]
+    )
+    
+    # Create the classifier-free guidance tokens (empty)
+    full_batch_size = batch_size * 2
+    uncond_tokens, uncond_mask = base_model.tokenizer.padded_tokens_and_mask(
+        [], base_options["text_ctx"]
+    )
+    
+    # Pack the tokens together into model kwargs for base model
+    base_model_kwargs = dict(
+        tokens=th.tensor(
+            [tokens] * batch_size + [uncond_tokens] * batch_size, device=device
+        ),
+        mask=th.tensor(
+            [mask] * batch_size + [uncond_mask] * batch_size,
+            dtype=th.bool,
+            device=device,
+        )
+    )
+    
+    # Classifier-free guidance function for base model
+    def base_cfg_model_fn(x_t, ts, **kwargs):
+        half = x_t[: len(x_t) // 2]
+        combined = th.cat([half, half], dim=0)
+        model_out = base_model(combined, ts, **kwargs)
+        eps, rest = model_out[:, :3], model_out[:, 3:]
+        cond_eps, uncond_eps = th.split(eps, len(eps) // 2, dim=0)
+        half_eps = uncond_eps + guidance_scale * (cond_eps - uncond_eps)
+        eps = th.cat([half_eps, half_eps], dim=0)
+        return th.cat([eps, rest], dim=1)
+    
+    # Sample from base model using the selected sampler
+    if sampler == "plms":
+        base_samples = base_diffusion.plms_sample_loop(
+            base_cfg_model_fn,
+            (full_batch_size, 3, 64, 64),
+            device=device,
+            clip_denoised=True,
+            progress=False,  # Don't show progress for base model
+            model_kwargs=base_model_kwargs,
+            cond_fn=None,
+        )[:batch_size]
+    elif sampler == "ddim":
+        base_samples = base_diffusion.ddim_sample_loop(
+            base_cfg_model_fn,
+            (full_batch_size, 3, 64, 64),
+            device=device,
+            clip_denoised=True,
+            progress=False,
+            model_kwargs=base_model_kwargs,
+            cond_fn=None,
+            eta=sampler_eta,
+        )[:batch_size]
+    elif sampler == "euler":
+        enhance_diffusion(base_diffusion)
+        base_samples = base_diffusion.euler_sample_loop(
+            base_cfg_model_fn,
+            (full_batch_size, 3, 64, 64),
+            device=device,
+            clip_denoised=True,
+            progress=False,
+            model_kwargs=base_model_kwargs,
+            cond_fn=None,
+            eta=0.0,
+        )[:batch_size]
+    elif sampler == "euler_a":
+        enhance_diffusion(base_diffusion)
+        base_samples = base_diffusion.euler_ancestral_sample_loop(
+            base_cfg_model_fn,
+            (full_batch_size, 3, 64, 64),
+            device=device,
+            clip_denoised=True,
+            progress=False,
+            model_kwargs=base_model_kwargs,
+            cond_fn=None,
+            eta=sampler_eta if sampler_eta > 0 else 1.0,
+        )[:batch_size]
+    elif sampler == "dpm++":
+        enhance_diffusion(base_diffusion)
+        base_samples = base_diffusion.dpm_solver_sample_loop(
+            base_cfg_model_fn,
+            (full_batch_size, 3, 64, 64),
+            device=device,
+            clip_denoised=True,
+            progress=False,
+            model_kwargs=base_model_kwargs,
+            cond_fn=None,
+            eta=0.0,
+            order=dpm_order,
+        )[:batch_size]
+    else:
+        raise ValueError(f"Unknown sampler: {sampler}")
+    
+    base_model.del_cache()
+    
+    # Now upsample the 64x64 samples to 256x256
+    upsampler_model.del_cache()
+    upsampler_diffusion = create_gaussian_diffusion(
+        steps=upsampler_options["diffusion_steps"],
+        noise_schedule=upsampler_options["noise_schedule"],
+        timestep_respacing=upsampler_respacing,
+    )
+    
+    # Prepare tokens for upsampler (same prompt)
+    up_tokens = upsampler_model.tokenizer.encode(prompt)
+    up_tokens, up_mask = upsampler_model.tokenizer.padded_tokens_and_mask(
+        up_tokens, upsampler_options["text_ctx"]
+    )
+    
+    # Create the model conditioning dict for upsampler
+    upsampler_model_kwargs = dict(
+        # Low-res image to upsample (normalize to [-1, 1])
+        low_res=((base_samples + 1) * 127.5).round() / 127.5 - 1,
+        # Text tokens
+        tokens=th.tensor([up_tokens] * batch_size, device=device),
+        mask=th.tensor([up_mask] * batch_size, dtype=th.bool, device=device),
+    )
+    
+    # Sample from the upsampler (no CFG needed for upsampler)
+    up_shape = (batch_size, 3, 256, 256)
+    
+    # Use PLMS for upsampler as it's fast and works well
+    upsampled_samples = upsampler_diffusion.plms_sample_loop(
+        upsampler_model,
+        up_shape,
+        noise=th.randn(up_shape, device=device) * upsample_temp,
+        device=device,
+        clip_denoised=True,
+        progress=False,  # Don't show progress for upsampler
+        model_kwargs=upsampler_model_kwargs,
+        cond_fn=None,
+    )[:batch_size]
+    
+    upsampler_model.del_cache()
+    
+    return upsampled_samples
