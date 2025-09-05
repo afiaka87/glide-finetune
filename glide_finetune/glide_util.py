@@ -60,18 +60,57 @@ def load_model(
     if activation_checkpointing:
         glide_model.use_checkpoint = True
 
+    # Start with all parameters trainable
     glide_model.requires_grad_(True)
+    
+    # Freeze transformer components if requested
     if freeze_transformer:
-        glide_model.transformer.requires_grad_(False)
-        glide_model.transformer_proj.requires_grad_(False)
-        glide_model.token_embedding.requires_grad_(False)
-        glide_model.padding_embedding.requires_grad_(False)
-        glide_model.positional_embedding.requires_grad_(False)
+        # Freeze the main transformer
+        if hasattr(glide_model, 'transformer'):
+            glide_model.transformer.requires_grad_(False)
+        
+        # Freeze transformer projection layer
+        if hasattr(glide_model, 'transformer_proj'):
+            glide_model.transformer_proj.requires_grad_(False)
+        
+        # Freeze token embedding
+        if hasattr(glide_model, 'token_embedding'):
+            glide_model.token_embedding.requires_grad_(False)
+        
+        # Freeze positional and padding embeddings (these are Parameters, not Modules)
+        if hasattr(glide_model, 'padding_embedding'):
+            glide_model.padding_embedding.requires_grad = False
+        if hasattr(glide_model, 'positional_embedding'):
+            glide_model.positional_embedding.requires_grad = False
+        
+        # Freeze final layer norm (part of transformer output)
+        if hasattr(glide_model, 'final_ln'):
+            glide_model.final_ln.requires_grad_(False)
+    
+    # Freeze diffusion/UNet components if requested
     if freeze_diffusion:
-        glide_model.out.requires_grad_(False)
-        glide_model.input_blocks.requires_grad_(False)
-        glide_model.middle_block.requires_grad_(False)
-        glide_model.output_blocks.requires_grad_(False)
+        # Freeze time embedding layers
+        if hasattr(glide_model, 'time_embed'):
+            glide_model.time_embed.requires_grad_(False)
+        
+        # Freeze input blocks
+        if hasattr(glide_model, 'input_blocks'):
+            glide_model.input_blocks.requires_grad_(False)
+        
+        # Freeze middle block
+        if hasattr(glide_model, 'middle_block'):
+            glide_model.middle_block.requires_grad_(False)
+        
+        # Freeze output blocks
+        if hasattr(glide_model, 'output_blocks'):
+            glide_model.output_blocks.requires_grad_(False)
+        
+        # Freeze final output projection
+        if hasattr(glide_model, 'out'):
+            glide_model.out.requires_grad_(False)
+        
+        # Note: label_emb doesn't exist in base model but might in other variants
+    
     if len(glide_path) > 0:  # user provided checkpoint
         assert os.path.exists(glide_path), "glide path does not exist"
         weights = th.load(glide_path, map_location="cpu")
@@ -80,10 +119,105 @@ def load_model(
         glide_model.load_state_dict(
             load_checkpoint(model_type, "cpu")
         )  # always load to cpu, saves memory
+    
+    # Print parameter freeze status
+    if freeze_transformer or freeze_diffusion:
+        _print_freeze_status(glide_model, freeze_transformer, freeze_diffusion)
+    
     if use_fp16:
         glide_model.convert_to_fp16()
         print("Converted to fp16, likely gradients will explode")
     return glide_model, glide_diffusion, options
+
+
+def _print_freeze_status(model, freeze_transformer, freeze_diffusion):
+    """Print detailed information about which parameters are frozen."""
+    
+    def count_params(module_or_param):
+        if isinstance(module_or_param, th.nn.Parameter):
+            return module_or_param.numel()
+        return sum(p.numel() for p in module_or_param.parameters())
+    
+    def count_trainable_params(module_or_param):
+        if isinstance(module_or_param, th.nn.Parameter):
+            return module_or_param.numel() if module_or_param.requires_grad else 0
+        return sum(p.numel() for p in module_or_param.parameters() if p.requires_grad)
+    
+    # Categorize parameters
+    transformer_components = {
+        'transformer': None,
+        'transformer_proj': None,
+        'token_embedding': None,
+        'padding_embedding': None,
+        'positional_embedding': None,
+        'final_ln': None,
+    }
+    
+    diffusion_components = {
+        'time_embed': None,
+        'input_blocks': None,
+        'middle_block': None,
+        'output_blocks': None,
+        'out': None,
+    }
+    
+    # Collect existing components
+    for comp_name in transformer_components:
+        if hasattr(model, comp_name):
+            transformer_components[comp_name] = getattr(model, comp_name)
+    
+    for comp_name in diffusion_components:
+        if hasattr(model, comp_name):
+            diffusion_components[comp_name] = getattr(model, comp_name)
+    
+    # Count parameters
+    print("\n" + "="*60)
+    print("PARAMETER FREEZE STATUS")
+    print("="*60)
+    
+    # Transformer components
+    print("\n📝 TRANSFORMER COMPONENTS:")
+    trans_total = 0
+    trans_trainable = 0
+    for name, component in transformer_components.items():
+        if component is not None:
+            total = count_params(component)
+            trainable = count_trainable_params(component)
+            trans_total += total
+            trans_trainable += trainable
+            status = "❄️ FROZEN" if trainable == 0 else "🔥 TRAINABLE"
+            print(f"  {name:20s}: {total:>12,} params | {trainable:>12,} trainable | {status}")
+    
+    # Diffusion components
+    print("\n🎨 DIFFUSION/UNET COMPONENTS:")
+    diff_total = 0
+    diff_trainable = 0
+    for name, component in diffusion_components.items():
+        if component is not None:
+            total = count_params(component)
+            trainable = count_trainable_params(component)
+            diff_total += total
+            diff_trainable += trainable
+            status = "❄️ FROZEN" if trainable == 0 else "🔥 TRAINABLE"
+            print(f"  {name:20s}: {total:>12,} params | {trainable:>12,} trainable | {status}")
+    
+    # Summary
+    print("\n" + "-"*60)
+    print("SUMMARY:")
+    print(f"  Transformer: {trans_total:>15,} total | {trans_trainable:>15,} trainable ({100*trans_trainable/trans_total if trans_total > 0 else 0:.1f}%)")
+    print(f"  Diffusion:   {diff_total:>15,} total | {diff_trainable:>15,} trainable ({100*diff_trainable/diff_total if diff_total > 0 else 0:.1f}%)")
+    
+    total_params = trans_total + diff_total
+    trainable_params = trans_trainable + diff_trainable
+    print(f"  " + "-"*56)
+    print(f"  TOTAL:       {total_params:>15,} total | {trainable_params:>15,} trainable ({100*trainable_params/total_params if total_params > 0 else 0:.1f}%)")
+    
+    if freeze_transformer and trans_trainable > 0:
+        print("\n⚠️  WARNING: freeze_transformer=True but some transformer params are still trainable!")
+    if freeze_diffusion and diff_trainable > 0:
+        print("\n⚠️  WARNING: freeze_diffusion=True but some diffusion params are still trainable!")
+    
+    print("="*60 + "\n")
 
 
 def load_model_with_lora(

@@ -196,11 +196,8 @@ def run_glide_finetune(
         weight_decay=adam_weight_decay,
     )
 
-    if not freeze_transformer: # if we want to train the transformer, we need to backpropagate through the diffusion model.
-        glide_model.out.requires_grad_(True)
-        glide_model.input_blocks.requires_grad_(True)
-        glide_model.middle_block.requires_grad_(True)
-        glide_model.output_blocks.requires_grad_(True)
+    # Note: Freezing is already handled in load_model/load_model_with_lora
+    # No need for additional requires_grad_ modifications here
 
 
     # Training setup
