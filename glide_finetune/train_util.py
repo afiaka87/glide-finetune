@@ -27,6 +27,48 @@ def pred_to_pil(pred: th.Tensor) -> Image.Image:
     return Image.fromarray(reshaped.numpy())
 
 
+def make_grid(images: list, grid_size: int = None) -> Image.Image:
+    """
+    Create a grid of images from a list of PIL images.
+    
+    Args:
+        images: List of PIL Image objects
+        grid_size: Number of images per row/column (assumes square grid). 
+                   If None, automatically calculates based on number of images.
+    
+    Returns:
+        A single PIL Image containing the grid
+    """
+    n = len(images)
+    
+    if grid_size is None:
+        # Calculate grid size - prefer square grids
+        grid_size = int(np.ceil(np.sqrt(n)))
+    
+    # Get dimensions from first image
+    if n == 0:
+        return Image.new('RGB', (64, 64))
+    
+    img_width, img_height = images[0].size
+    
+    # Create grid dimensions
+    grid_width = grid_size * img_width
+    grid_height = grid_size * img_height
+    
+    # Create new image for grid
+    grid_img = Image.new('RGB', (grid_width, grid_height))
+    
+    # Paste images into grid
+    for idx, img in enumerate(images):
+        row = idx // grid_size
+        col = idx % grid_size
+        x = col * img_width
+        y = row * img_height
+        grid_img.paste(img, (x, y))
+    
+    return grid_img
+
+
 def pil_image_to_norm_tensor(pil_image):
     """
     Convert a PIL image to a PyTorch tensor normalized to [-1, 1] with shape [B, C, H, W].

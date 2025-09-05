@@ -1,6 +1,7 @@
 import argparse
 from glob import glob
 import os
+from braceexpand import braceexpand
 
 import numpy as np
 import torch as th
@@ -29,20 +30,25 @@ def run_glide_finetune(
     device="cpu",
     freeze_transformer=False,
     freeze_diffusion=False,
-    project_name="glide_finetune",
+    wandb_project_name="glide_finetune",
     activation_checkpointing=False,
     use_captions=True,
     num_epochs=100,
     log_frequency=100,
+    sample_interval=500,
     test_prompt="a group of skiers are preparing to ski down a mountain.",
     sample_bs=1,
     sample_gs=8.0,
+    sample_captions_file="eval_captions.txt",
+    num_captions_sample=1,
     use_webdataset=False,
     image_key="jpg",
     caption_key="txt",
+    dataset_name="laion",
     enable_upsample=False,
     upsample_factor=4,
     image_to_upsample='low_res_face.png',
+    use_sr_eval=False,
 ):
     if "~" in data_dir:
         data_dir = os.path.expanduser(data_dir)
@@ -62,7 +68,7 @@ def run_glide_finetune(
         device=device,
         data_dir=data_dir,
         base_dir=checkpoints_dir,
-        project_name=project_name,
+        project_name=wandb_project_name,
     )
     print("Wandb setup.")
 
@@ -82,6 +88,20 @@ def run_glide_finetune(
         x.numel() for x in glide_model.parameters() if x.requires_grad
     )
     print(f"Trainable parameters: {number_of_trainable_params}")
+    
+    # Load upsampler model if needed for evaluation
+    upsampler_model = None
+    upsampler_options = None
+    if use_sr_eval and not enable_upsample:
+        print("Loading upsampler model for evaluation...")
+        upsampler_model, _, upsampler_options = load_model(
+            glide_path="",  # Use pretrained OpenAI checkpoint
+            use_fp16=use_fp16,
+            model_type="upsample",
+        )
+        upsampler_model.eval()
+        upsampler_model.to(device)
+        print(f"Upsampler loaded with {sum(x.numel() for x in upsampler_model.parameters())} parameters")
 
     # Data setup
     print("Loading data...")
@@ -94,6 +114,9 @@ def run_glide_finetune(
             enable_text=use_captions,
             enable_upsample=enable_upsample,
             tokenizer=glide_model.tokenizer,
+            base_x=side_x,
+            base_y=side_y,
+            uncond_p=uncond_p,
             ar_lower=0.5,
             ar_upper=2.0,
             min_original_height=side_x * upsample_factor,
@@ -103,7 +126,7 @@ def run_glide_finetune(
             similarity_threshold_upper=0.0,
             similarity_threshold_lower=0.5,
             words_to_skip=[],
-            dataset_name="laion",  # can be laion, alamy.
+            dataset_name=dataset_name,  # can be laion, alamy, or simple.
         )
     else:
         dataset = TextImageDataset(
@@ -128,6 +151,14 @@ def run_glide_finetune(
         num_workers=0,
         pin_memory=(device == "cuda"),
     )
+    
+    # Quick test to ensure dataloader is set up (without consuming data)
+    print("\nDEBUG: Dataloader setup complete")
+    print(f"DEBUG: Batch size: {batch_size}")
+    print(f"DEBUG: Using webdataset: {use_webdataset}")
+    if use_webdataset:
+        print(f"DEBUG: Dataset name: {dataset_name}")
+        print(f"DEBUG: Number of tar files: {len(data_dir) if isinstance(data_dir, list) else 'N/A'}")
 
     # Optimizer setup
     optimizer = th.optim.AdamW(
@@ -168,10 +199,15 @@ def run_glide_finetune(
             glide_diffusion=glide_diffusion,
             glide_options=glide_options,
             optimizer=optimizer,
+            upsampler_model=upsampler_model,
+            upsampler_options=upsampler_options,
+            use_sr_eval=use_sr_eval,
             dataloader=dataloader,
             prompt=test_prompt,
             sample_bs=sample_bs,
             sample_gs=sample_gs,
+            sample_captions_file=sample_captions_file,
+            num_captions_sample=num_captions_sample,
             checkpoints_dir=current_run_ckpt_dir,
             outputs_dir=outputs_dir,
             side_x=side_x,
@@ -179,6 +215,7 @@ def run_glide_finetune(
             device=device,
             wandb_run=wandb_run,
             log_frequency=log_frequency,
+            sample_interval=sample_interval,
             epoch=epoch,
             gradient_accumualation_steps=1,
             train_upsample=enable_upsample,
@@ -222,9 +259,12 @@ def parse_args():
     parser.add_argument("--use_fp16", "-fp16", action="store_true")
     parser.add_argument("--device", "-dev", type=str, default="")
     parser.add_argument("--log_frequency", "-freq", type=int, default=100)
+    parser.add_argument("--sample_interval", "-sample_freq", type=int, default=500, 
+                        help="Frequency of sampling images for evaluation (defaults to 500)")
     parser.add_argument("--freeze_transformer", "-fz_xt", action="store_true")
     parser.add_argument("--freeze_diffusion", "-fz_unet", action="store_true")
-    parser.add_argument("--project_name", "-name", type=str, default="glide-finetune")
+    parser.add_argument("--wandb_project_name", "-wname", type=str, default="glide_finetune", 
+                        help="Project name for wandb logging")
     parser.add_argument("--activation_checkpointing", "-grad_ckpt", action="store_true")
     parser.add_argument("--use_captions", "-txt", action="store_true")
     parser.add_argument("--epochs", "-epochs", type=int, default=20)
@@ -286,6 +326,23 @@ def parse_args():
         "--upscale_factor", "-upscale", type=int, default=4, help="Upscale factor for training the upsampling model only"
     )
     parser.add_argument("--image_to_upsample", "-lowres", type=str, default="low_res_face.png")
+    parser.add_argument(
+        "--use_sr_eval",
+        action="store_true",
+        help="Use full pipeline (base + superres) for evaluation sampling during training"
+    )
+    parser.add_argument(
+        "--sample_captions_file",
+        type=str,
+        default="eval_captions.txt",
+        help="Path to file containing captions to randomly sample from during evaluation"
+    )
+    parser.add_argument(
+        "--num_captions_sample",
+        type=int,
+        default=1,
+        help="Number of captions to sample and generate images for (should be power of 2 for grid)"
+    )
     args = parser.parse_args()
 
     return args
@@ -307,13 +364,36 @@ if __name__ == "__main__":
         print(f"--{arg} {getattr(args, arg)}")
 
     if args.use_webdataset:
-        # webdataset uses tars
-        data_dir = glob(os.path.join(args.data_dir, "*.tar"))
+        # webdataset uses tars - handle glob patterns and braceexpand
+        # First expand any brace patterns like {00000..00115}
+        expanded_patterns = list(braceexpand(args.data_dir))
+        
+        # Then apply glob to each expanded pattern
+        data_dir = []
+        for pattern in expanded_patterns:
+            # If pattern contains wildcards, expand them
+            if '*' in pattern or '?' in pattern or '[' in pattern:
+                data_dir.extend(glob(pattern))
+            # If it's a directory, add *.tar to it
+            elif os.path.isdir(pattern):
+                data_dir.extend(glob(os.path.join(pattern, "*.tar")))
+            # Otherwise assume it's a specific file path
+            else:
+                if os.path.exists(pattern):
+                    data_dir.append(pattern)
+        
+        # Sort for consistent ordering
+        data_dir = sorted(data_dir)
+        
+        if not data_dir:
+            raise ValueError(f"No tar files found matching pattern: {args.data_dir}")
+        
+        print(f"Found {len(data_dir)} tar files")
     else:
         data_dir = args.data_dir
     
     run_glide_finetune(
-        data_dir=args.data_dir,
+        data_dir=data_dir,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
         adam_weight_decay=args.adam_weight_decay,
@@ -326,9 +406,10 @@ if __name__ == "__main__":
         use_fp16=args.use_fp16,
         device=device,
         log_frequency=args.log_frequency,
+        sample_interval=args.sample_interval,
         freeze_transformer=args.freeze_transformer,
         freeze_diffusion=args.freeze_diffusion,
-        project_name=args.project_name,
+        wandb_project_name=args.wandb_project_name,
         activation_checkpointing=args.activation_checkpointing,
         use_captions=args.use_captions,
         num_epochs=args.epochs,
@@ -338,7 +419,11 @@ if __name__ == "__main__":
         use_webdataset=args.use_webdataset,
         image_key=args.wds_image_key,
         caption_key=args.wds_caption_key,
+        dataset_name=args.wds_dataset_name,
         enable_upsample=args.train_upsample,
         upsample_factor=args.upscale_factor,
         image_to_upsample=args.image_to_upsample,
+        use_sr_eval=args.use_sr_eval,
+        sample_captions_file=args.sample_captions_file,
+        num_captions_sample=args.num_captions_sample,
     )
