@@ -2,12 +2,13 @@
 # Utilities for tokenizing, padding, and batching data and sampling from GLIDE.
 
 import os
-from typing import Tuple
+from typing import Tuple, Literal, Optional
 
 import PIL
 import numpy as np
 import torch as th
 from glide_finetune.train_util import pred_to_pil
+from glide_finetune.enhanced_samplers import enhance_diffusion
 from glide_text2im.download import load_checkpoint
 from glide_text2im.model_creation import (
     create_gaussian_diffusion,
@@ -106,6 +107,9 @@ def sample(
     upsample_enabled=False,
     image_to_upsample='',
     upsample_temp=0.997,
+    sampler: Literal["plms", "ddim", "euler", "euler_a", "dpm++"] = "plms",
+    sampler_eta: float = 0.0,
+    dpm_order: int = 2,
 ):
     glide_model.del_cache()
     eval_diffusion = create_gaussian_diffusion(
@@ -165,14 +169,70 @@ def sample(
         model_kwargs['noise'] = noise
         model_fn = glide_model # just use the base model, no need for CFG.
 
-    samples = eval_diffusion.plms_sample_loop(
-        model_fn,
-        (full_batch_size, 3, side_y, side_x),  # only thing that's changed
-        device=device,
-        clip_denoised=True,
-        progress=True,
-        model_kwargs=model_kwargs,
-        cond_fn=None,
-    )[:batch_size]
+    # Choose the appropriate sampler
+    if sampler == "plms":
+        samples = eval_diffusion.plms_sample_loop(
+            model_fn,
+            (full_batch_size, 3, side_y, side_x),
+            device=device,
+            clip_denoised=True,
+            progress=True,
+            model_kwargs=model_kwargs,
+            cond_fn=None,
+        )[:batch_size]
+    elif sampler == "ddim":
+        samples = eval_diffusion.ddim_sample_loop(
+            model_fn,
+            (full_batch_size, 3, side_y, side_x),
+            device=device,
+            clip_denoised=True,
+            progress=True,
+            model_kwargs=model_kwargs,
+            cond_fn=None,
+            eta=sampler_eta,
+        )[:batch_size]
+    elif sampler == "euler":
+        # Enhance diffusion with new samplers
+        enhance_diffusion(eval_diffusion)
+        samples = eval_diffusion.euler_sample_loop(
+            model_fn,
+            (full_batch_size, 3, side_y, side_x),
+            device=device,
+            clip_denoised=True,
+            progress=True,
+            model_kwargs=model_kwargs,
+            cond_fn=None,
+            eta=0.0,  # Euler is deterministic
+        )[:batch_size]
+    elif sampler == "euler_a":
+        # Enhance diffusion with new samplers
+        enhance_diffusion(eval_diffusion)
+        samples = eval_diffusion.euler_ancestral_sample_loop(
+            model_fn,
+            (full_batch_size, 3, side_y, side_x),
+            device=device,
+            clip_denoised=True,
+            progress=True,
+            model_kwargs=model_kwargs,
+            cond_fn=None,
+            eta=sampler_eta if sampler_eta > 0 else 1.0,  # Default to stochastic
+        )[:batch_size]
+    elif sampler == "dpm++":
+        # Enhance diffusion with new samplers
+        enhance_diffusion(eval_diffusion)
+        samples = eval_diffusion.dpm_solver_sample_loop(
+            model_fn,
+            (full_batch_size, 3, side_y, side_x),
+            device=device,
+            clip_denoised=True,
+            progress=True,
+            model_kwargs=model_kwargs,
+            cond_fn=None,
+            eta=0.0,  # DPM++ is deterministic
+            order=dpm_order,
+        )[:batch_size]
+    else:
+        raise ValueError(f"Unknown sampler: {sampler}")
+        
     glide_model.del_cache()
     return samples
