@@ -11,3 +11,19 @@ docker_child/
 eval_captions.txt
 test_pipeline_output_*.png
 test_full_pipeline.py
+
+# Training and model files
+checkpoints/
+current_prediction.png
+download_models.py
+eval_captions_persons_aesthetic_256.txt
+glide-text2im/
+
+# Scripts and configs
+run-finetune-laion.sh
+run-finetune-wds.sh
+scripts/run-finetune-wds.sh
+
+# Logs and temporary files
+test.log
+trash/

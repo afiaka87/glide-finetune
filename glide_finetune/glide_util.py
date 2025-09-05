@@ -180,7 +180,7 @@ def sample(
             model_kwargs=model_kwargs,
             cond_fn=None,
         )[:batch_size]
-    elif sampler == "ddim":
+    elif base_sampler == "ddim":
         samples = eval_diffusion.ddim_sample_loop(
             model_fn,
             (full_batch_size, 3, side_y, side_x),
@@ -191,7 +191,7 @@ def sample(
             cond_fn=None,
             eta=sampler_eta,
         )[:batch_size]
-    elif sampler == "euler":
+    elif base_sampler == "euler":
         # Enhance diffusion with new samplers
         enhance_diffusion(eval_diffusion)
         samples = eval_diffusion.euler_sample_loop(
@@ -204,7 +204,7 @@ def sample(
             cond_fn=None,
             eta=0.0,  # Euler is deterministic
         )[:batch_size]
-    elif sampler == "euler_a":
+    elif base_sampler == "euler_a":
         # Enhance diffusion with new samplers
         enhance_diffusion(eval_diffusion)
         samples = eval_diffusion.euler_ancestral_sample_loop(
@@ -217,7 +217,7 @@ def sample(
             cond_fn=None,
             eta=sampler_eta if sampler_eta > 0 else 1.0,  # Default to stochastic
         )[:batch_size]
-    elif sampler == "dpm++":
+    elif base_sampler == "dpm++":
         # Enhance diffusion with new samplers
         enhance_diffusion(eval_diffusion)
         samples = eval_diffusion.dpm_solver_sample_loop(
@@ -252,6 +252,8 @@ def sample_with_superres(
     upsampler_respacing="17",  # Fast sampling for upsampler
     upsample_temp=0.997,
     sampler: Literal["plms", "ddim", "euler", "euler_a", "dpm++"] = "euler",  # Default to Euler
+    base_sampler: Optional[Literal["plms", "ddim", "euler", "euler_a", "dpm++"]] = None,  # Sampler for base model (defaults to sampler)
+    upsampler_sampler: Optional[Literal["plms", "ddim", "euler", "euler_a", "dpm++"]] = None,  # Sampler for upsampler (defaults to sampler)
     sampler_eta: float = 0.0,
     dpm_order: int = 2,
 ):
@@ -260,7 +262,15 @@ def sample_with_superres(
     
     This function follows the approach from the GLIDE notebook, generating a 64x64
     image with the base model and then upscaling it to 256x256 with the upsampler.
+    
+    Args:
+        sampler: Default sampler to use for both models if base_sampler/upsampler_sampler not specified
+        base_sampler: Specific sampler for base model (overrides sampler)
+        upsampler_sampler: Specific sampler for upsampler (overrides sampler)
     """
+    # Use specific samplers if provided, otherwise fall back to default sampler
+    base_sampler = base_sampler or sampler
+    upsampler_sampler = upsampler_sampler or sampler
     # First, generate 64x64 samples with the base model
     base_model.del_cache()
     base_diffusion = create_gaussian_diffusion(
@@ -305,7 +315,7 @@ def sample_with_superres(
         return th.cat([eps, rest], dim=1)
     
     # Sample from base model using the selected sampler
-    if sampler == "plms":
+    if base_sampler == "plms":
         base_samples = base_diffusion.plms_sample_loop(
             base_cfg_model_fn,
             (full_batch_size, 3, 64, 64),
@@ -315,7 +325,7 @@ def sample_with_superres(
             model_kwargs=base_model_kwargs,
             cond_fn=None,
         )[:batch_size]
-    elif sampler == "ddim":
+    elif base_sampler == "ddim":
         base_samples = base_diffusion.ddim_sample_loop(
             base_cfg_model_fn,
             (full_batch_size, 3, 64, 64),
@@ -326,7 +336,7 @@ def sample_with_superres(
             cond_fn=None,
             eta=sampler_eta,
         )[:batch_size]
-    elif sampler == "euler":
+    elif base_sampler == "euler":
         enhance_diffusion(base_diffusion)
         base_samples = base_diffusion.euler_sample_loop(
             base_cfg_model_fn,
@@ -338,7 +348,7 @@ def sample_with_superres(
             cond_fn=None,
             eta=0.0,
         )[:batch_size]
-    elif sampler == "euler_a":
+    elif base_sampler == "euler_a":
         enhance_diffusion(base_diffusion)
         base_samples = base_diffusion.euler_ancestral_sample_loop(
             base_cfg_model_fn,
@@ -350,7 +360,7 @@ def sample_with_superres(
             cond_fn=None,
             eta=sampler_eta if sampler_eta > 0 else 1.0,
         )[:batch_size]
-    elif sampler == "dpm++":
+    elif base_sampler == "dpm++":
         enhance_diffusion(base_diffusion)
         base_samples = base_diffusion.dpm_solver_sample_loop(
             base_cfg_model_fn,
@@ -364,7 +374,7 @@ def sample_with_superres(
             order=dpm_order,
         )[:batch_size]
     else:
-        raise ValueError(f"Unknown sampler: {sampler}")
+        raise ValueError(f"Unknown sampler: {base_sampler}")
     
     base_model.del_cache()
     
@@ -394,17 +404,72 @@ def sample_with_superres(
     # Sample from the upsampler (no CFG needed for upsampler)
     up_shape = (batch_size, 3, 256, 256)
     
-    # Use PLMS for upsampler as it's fast and works well
-    upsampled_samples = upsampler_diffusion.plms_sample_loop(
-        upsampler_model,
-        up_shape,
-        noise=th.randn(up_shape, device=device) * upsample_temp,
-        device=device,
-        clip_denoised=True,
-        progress=False,  # Don't show progress for upsampler
-        model_kwargs=upsampler_model_kwargs,
-        cond_fn=None,
-    )[:batch_size]
+    # Sample from upsampler using the selected sampler
+    if upsampler_sampler == "plms":
+        upsampled_samples = upsampler_diffusion.plms_sample_loop(
+            upsampler_model,
+            up_shape,
+            noise=th.randn(up_shape, device=device) * upsample_temp,
+            device=device,
+            clip_denoised=True,
+            progress=False,  # Don't show progress for upsampler
+            model_kwargs=upsampler_model_kwargs,
+            cond_fn=None,
+        )[:batch_size]
+    elif upsampler_sampler == "ddim":
+        upsampled_samples = upsampler_diffusion.ddim_sample_loop(
+            upsampler_model,
+            up_shape,
+            noise=th.randn(up_shape, device=device) * upsample_temp,
+            device=device,
+            clip_denoised=True,
+            progress=False,
+            model_kwargs=upsampler_model_kwargs,
+            cond_fn=None,
+            eta=sampler_eta,
+        )[:batch_size]
+    elif upsampler_sampler == "euler":
+        enhance_diffusion(upsampler_diffusion)
+        upsampled_samples = upsampler_diffusion.euler_sample_loop(
+            upsampler_model,
+            up_shape,
+            noise=th.randn(up_shape, device=device) * upsample_temp,
+            device=device,
+            clip_denoised=True,
+            progress=False,
+            model_kwargs=upsampler_model_kwargs,
+            cond_fn=None,
+            eta=0.0,
+        )[:batch_size]
+    elif upsampler_sampler == "euler_a":
+        enhance_diffusion(upsampler_diffusion)
+        upsampled_samples = upsampler_diffusion.euler_ancestral_sample_loop(
+            upsampler_model,
+            up_shape,
+            noise=th.randn(up_shape, device=device) * upsample_temp,
+            device=device,
+            clip_denoised=True,
+            progress=False,
+            model_kwargs=upsampler_model_kwargs,
+            cond_fn=None,
+            eta=sampler_eta if sampler_eta > 0 else 1.0,
+        )[:batch_size]
+    elif upsampler_sampler == "dpm++":
+        enhance_diffusion(upsampler_diffusion)
+        upsampled_samples = upsampler_diffusion.dpm_solver_sample_loop(
+            upsampler_model,
+            up_shape,
+            noise=th.randn(up_shape, device=device) * upsample_temp,
+            device=device,
+            clip_denoised=True,
+            progress=False,
+            model_kwargs=upsampler_model_kwargs,
+            cond_fn=None,
+            eta=0.0,
+            order=dpm_order,
+        )[:batch_size]
+    else:
+        raise ValueError(f"Unknown sampler: {upsampler_sampler}")
     
     upsampler_model.del_cache()
     

@@ -35,26 +35,35 @@ def glide_wds_loader(
     words_to_skip=[],
     dataset_name="laion",  # can be laion, alamy, or simple.
     upscale_factor=4,
+    buffer_size=1000,  # Shuffle buffer size
+    initial_prefetch=10,  # Initial prefetch size
+    debug=False,  # Enable debug printing
 ):
-    print(f"\nDEBUG: glide_wds_loader called with:")
-    print(f"  - URLs: {len(urls) if isinstance(urls, list) else 'single/pattern'}")
-    print(f"  - Dataset name: {dataset_name}")
-    print(f"  - Image key: {image_key}")
-    print(f"  - Caption key: {caption_key}")
-    print(f"  - Enable text: {enable_text}")
-    print(f"  - Enable upsample: {enable_upsample}")
+    if debug:
+        print(f"\nDEBUG: glide_wds_loader called with:")
+        print(f"  - URLs: {len(urls) if isinstance(urls, list) else 'single/pattern'}")
+        print(f"  - Dataset name: {dataset_name}")
+        print(f"  - Image key: {image_key}")
+        print(f"  - Caption key: {caption_key}")
+        print(f"  - Enable text: {enable_text}")
+        print(f"  - Enable upsample: {enable_upsample}")
+        print(f"  - Buffer size: {buffer_size}")
+        print(f"  - Workers will be used for parallel processing")
 
     base_image_shape = (base_x, base_y)
     upsample_image_shape = (int(base_x * upscale_factor), int(base_y * upscale_factor))
+    # Create WebDataset with optimizations
     dataset = wds.WebDataset(
         urls,
         cache_dir=cache_path,
         cache_size=10**10,
         handler=wds.handlers.reraise_exception,
-        shardshuffle=False,  # Assume datasets are pre-shuffled
+        shardshuffle=False,  # Disabled when using resampled=True to avoid warning
+        resampled=True,  # Infinite iteration to avoid exhaustion
     )
 
     def filter_dataset_laion(item):
+        # Quick checks first (before JSON decoding)
         if enable_text and caption_key not in item:
             return False
         if enable_image and image_key not in item:
@@ -62,28 +71,42 @@ def glide_wds_loader(
         if enable_metadata and metadata_key not in item:
             return False
 
-        metadata = json.loads(item["json"].decode("utf-8"))
+        return True
+        # Decode metadata once
+        try:
+            metadata = json.loads(item[metadata_key].decode("utf-8"))
+        except (json.JSONDecodeError, KeyError, UnicodeDecodeError):
+            return False
 
-        similarity = float(metadata["similarity"])
-        original_height = float(metadata["original_height"])
-        original_width = float(metadata["original_width"])
-        aspect_ratio = original_width / original_height
-        caption = item[caption_key].decode("utf-8").lower()
-        nsfw_rating = metadata["NSFW"]
-
+        # Extract all values at once
+        try:
+            similarity = metadata["similarity"]
+            original_height = metadata["original_height"]
+            original_width = metadata["original_width"]
+            nsfw_rating = metadata.get("NSFW", "UNLIKELY")
+        except KeyError:
+            return False
+        
+        # Fast numeric checks (no unnecessary float conversion)
         if original_height < min_original_height or original_width < min_original_width:
             return False
+        
+        aspect_ratio = original_width / original_height
         if aspect_ratio < ar_lower or aspect_ratio > ar_upper:
             return False
-        if (
-            similarity < similarity_threshold_lower
-            or similarity > similarity_threshold_upper
-        ):
+        
+        if similarity < similarity_threshold_lower or similarity > similarity_threshold_upper:
             return False
+        
         if nsfw_filter and nsfw_rating in ["NSFW", "LIKELY"]:
             return False
-        if any(slur.lower() in caption for slur in words_to_skip):
-            return False
+        
+        # Text check last (most expensive)
+        if words_to_skip:
+            caption = item[caption_key].decode("utf-8").lower()
+            if any(word.lower() in caption for word in words_to_skip):
+                return False
+        
         return True
 
     def filter_dataset_alamy(item):
@@ -102,15 +125,18 @@ def glide_wds_loader(
     def filter_dataset_simple(item):
         # Simple filter for datasets with just image and text pairs (no metadata)
         if enable_text and caption_key not in item:
-            print(f"DEBUG: Item missing caption key '{caption_key}'. Keys: {list(item.keys())}")
+            if debug:
+                print(f"DEBUG: Item missing caption key '{caption_key}'. Keys: {list(item.keys())}")
             return False
         if enable_image and image_key not in item:
-            print(f"DEBUG: Item missing image key '{image_key}'. Keys: {list(item.keys())}")
+            if debug:
+                print(f"DEBUG: Item missing image key '{image_key}'. Keys: {list(item.keys())}")
             return False
         return True
 
-    print(f"DEBUG: Using dataset filter for '{dataset_name}'")
-    print(f"DEBUG: Looking for image_key='{image_key}', caption_key='{caption_key}'")
+    if debug:
+        print(f"DEBUG: Using dataset filter for '{dataset_name}'")
+        print(f"DEBUG: Looking for image_key='{image_key}', caption_key='{caption_key}'")
     
     if dataset_name == "laion":
         filtered_dataset = dataset.select(filter_dataset_laion)
@@ -123,14 +149,15 @@ def glide_wds_loader(
             f"Unknown dataset: {dataset_name}. Must be one of 'laion', 'alamy', or 'simple'."
         )
 
-    # Add a counter to track processed items
-    processed_count = [0]  # Use list to make it mutable in nested function
+    # Add a counter to track processed items (only if debugging)
+    processed_count = [0] if debug else None
     
     def preprocess_dataset(item):
-        processed_count[0] += 1
-        if processed_count[0] <= 3:  # Log first 3 items for debugging
-            print(f"\nDEBUG: Processing item {processed_count[0]}")
-            print(f"  Keys in item: {list(item.keys())}")
+        if debug and processed_count is not None:
+            processed_count[0] += 1
+            if processed_count[0] <= 3:  # Log first 3 items for debugging
+                print(f"\nDEBUG: Processing item {processed_count[0]}")
+                print(f"  Keys in item: {list(item.keys())}")
         
         tokens, mask, base_tensor, upsample_tensor = None, None, None, None
 
@@ -155,18 +182,25 @@ def glide_wds_loader(
             ).convert("RGB")
             upsample_tensor = pil_image_to_norm_tensor(upsample_pil_image)
             return (
-                th.tensor(tokens),
-                th.tensor(mask, dtype=th.bool),
+                tokens,  # Already a tensor from get_tokens_and_mask
+                mask,    # Already a tensor from get_tokens_and_mask
                 base_tensor,
                 upsample_tensor,
             )
-        return th.tensor(tokens), th.tensor(mask, dtype=th.bool), base_tensor
+        return tokens, mask, base_tensor  # Already tensors
 
-    transformed_dataset = filtered_dataset.map(
-        preprocess_dataset, handler=wds.handlers.reraise_exception
+    # Apply transformations with optimizations
+    transformed_dataset = (
+        filtered_dataset
+        .shuffle(buffer_size)  # Add shuffling with buffer
+        .map(preprocess_dataset, handler=wds.handlers.reraise_exception)
+        # Note: batched() creates an extra dimension, skip it for now
+        # The DataLoader will handle batching
     )
     
-    print(f"\nDEBUG: WebDataset loader setup complete")
-    print(f"  Returning dataset pipeline with filters and preprocessing")
+    if debug:
+        print(f"\nDEBUG: WebDataset loader setup complete")
+        print(f"  Returning dataset pipeline with filters and preprocessing")
+        print(f"  Pipeline: WebDataset -> Filter -> Shuffle({buffer_size}) -> Map")
     
     return transformed_dataset

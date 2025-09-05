@@ -127,6 +127,9 @@ def run_glide_finetune(
             similarity_threshold_lower=0.5,
             words_to_skip=[],
             dataset_name=dataset_name,  # can be laion, alamy, or simple.
+            buffer_size=args.wds_buffer_size,
+            initial_prefetch=args.wds_initial_prefetch,
+            debug=args.wds_debug,
         )
     else:
         dataset = TextImageDataset(
@@ -148,8 +151,10 @@ def run_glide_finetune(
         dataset,
         batch_size=batch_size,
         shuffle=not use_webdataset,
-        num_workers=0,
+        num_workers=args.num_workers,
         pin_memory=(device == "cuda"),
+        prefetch_factor=2 if args.num_workers > 0 else None,
+        persistent_workers=True if args.num_workers > 0 else False,
     )
     
     # Quick test to ensure dataloader is set up (without consuming data)
@@ -208,6 +213,10 @@ def run_glide_finetune(
             sample_gs=sample_gs,
             sample_captions_file=sample_captions_file,
             num_captions_sample=num_captions_sample,
+            eval_base_sampler=args.eval_base_sampler,
+            eval_sr_sampler=args.eval_sr_sampler,
+            eval_base_sampler_steps=args.eval_base_sampler_steps,
+            eval_sr_sampler_steps=args.eval_sr_sampler_steps,
             checkpoints_dir=current_run_ckpt_dir,
             outputs_dir=outputs_dir,
             side_x=side_x,
@@ -342,6 +351,55 @@ def parse_args():
         type=int,
         default=1,
         help="Number of captions to sample and generate images for (should be power of 2 for grid)"
+    )
+    parser.add_argument(
+        "--eval_base_sampler",
+        type=str,
+        default="euler",
+        choices=["standard", "euler", "euler_a", "dpm++"],
+        help="Sampler to use for base model evaluation (standard=PLMS/DDIM, euler, euler_a=ancestral, dpm++)"
+    )
+    parser.add_argument(
+        "--eval_sr_sampler",
+        type=str,
+        default="euler",
+        choices=["standard", "euler", "euler_a", "dpm++"],
+        help="Sampler to use for super-resolution evaluation (standard=PLMS, euler, euler_a=ancestral, dpm++)"
+    )
+    parser.add_argument(
+        "--eval_base_sampler_steps",
+        type=int,
+        default=30,
+        help="Number of diffusion steps for base model evaluation (default: 30)"
+    )
+    parser.add_argument(
+        "--eval_sr_sampler_steps",
+        type=int,
+        default=17,
+        help="Number of diffusion steps for super-resolution evaluation (default: 17)"
+    )
+    parser.add_argument(
+        "--num_workers",
+        type=int,
+        default=4,
+        help="Number of dataloader workers for parallel data loading (default: 4)"
+    )
+    parser.add_argument(
+        "--wds_buffer_size",
+        type=int,
+        default=1000,
+        help="WebDataset shuffle buffer size (default: 1000)"
+    )
+    parser.add_argument(
+        "--wds_initial_prefetch",
+        type=int,
+        default=10,
+        help="WebDataset initial prefetch size (default: 10)"
+    )
+    parser.add_argument(
+        "--wds_debug",
+        action="store_true",
+        help="Enable debug printing for WebDataset loading"
     )
     args = parser.parse_args()
 

@@ -1,5 +1,6 @@
 import os
 import random
+import time
 from typing import Tuple
 
 import numpy as np
@@ -89,6 +90,10 @@ def run_glide_finetune_epoch(
     sample_gs: float = 4.0,  # guidance scale for inference
     sample_respacing: str = '30', # respacing for inference - using 30 steps with Euler
     sample_sampler: str = 'euler',  # sampler for inference - Euler is fast and deterministic
+    eval_base_sampler: str = 'euler',  # sampler for base model evaluation
+    eval_sr_sampler: str = 'euler',  # sampler for super-resolution evaluation
+    eval_base_sampler_steps: int = 30,  # number of steps for base model evaluation
+    eval_sr_sampler_steps: int = 17,  # number of steps for super-resolution evaluation
     prompt: str = "",  # prompt for inference, not training
     sample_captions_file: str = "eval_captions.txt",  # file with captions to sample from
     num_captions_sample: int = 1,  # number of captions to sample and generate
@@ -124,6 +129,12 @@ def run_glide_finetune_epoch(
     glide_model.to(device)
     glide_model.train()
     log = {}
+    
+    # Initialize timing for samples/sec calculation
+    start_time = time.time()
+    last_log_time = start_time
+    samples_processed = 0
+    
     for train_idx, batch in enumerate(dataloader):
         accumulated_loss = train_step(
             glide_model=glide_model,
@@ -134,14 +145,43 @@ def run_glide_finetune_epoch(
         accumulated_loss.backward()
         optimizer.step()
         glide_model.zero_grad()
-        log = {**log, "iter": train_idx, "loss": accumulated_loss.item() / gradient_accumualation_steps}
+        
+        # Calculate samples per second
+        batch_size = batch[0].shape[0] if isinstance(batch, (list, tuple)) else batch.shape[0]
+        samples_processed += batch_size
+        
+        # Calculate instantaneous and average samples/sec
+        current_time = time.time()
+        total_elapsed = current_time - start_time
+        avg_samples_per_sec = samples_processed / total_elapsed if total_elapsed > 0 else 0
+        
+        log = {
+            **log, 
+            "iter": train_idx, 
+            "loss": accumulated_loss.item() / gradient_accumualation_steps,
+            "samples_per_sec": avg_samples_per_sec,
+            "total_samples": samples_processed,
+        }
         
         # Log metrics to wandb every step
         wandb_run.log(log)
         
         # Print to console at log_frequency
         if train_idx > 0 and train_idx % log_frequency == 0:
-            print(f"loss: {accumulated_loss.item():.4f}")
+            # Calculate interval samples/sec since last log
+            interval_time = current_time - last_log_time
+            interval_samples = batch_size * log_frequency
+            interval_samples_per_sec = interval_samples / interval_time if interval_time > 0 else 0
+            
+            # Add interval samples/sec to wandb log
+            wandb_run.log({"interval_samples_per_sec": interval_samples_per_sec})
+            
+            print(f"Step {train_idx}: loss: {accumulated_loss.item():.4f}, "
+                  f"samples/sec: {interval_samples_per_sec:.1f} (interval), "
+                  f"{avg_samples_per_sec:.1f} (avg), "
+                  f"total samples: {samples_processed}")
+            
+            last_log_time = current_time
         
         # Sample from the model at sample_interval
         if train_idx > 0 and train_idx % sample_interval == 0:
@@ -165,6 +205,10 @@ def run_glide_finetune_epoch(
                 
                 # Use full pipeline if requested and we're training base model
                 if use_sr_eval and not train_upsample and upsampler_model is not None:
+                    # Map 'standard' to appropriate samplers
+                    base_sampler = 'plms' if eval_base_sampler == 'standard' else eval_base_sampler
+                    sr_sampler = 'plms' if eval_sr_sampler == 'standard' else eval_sr_sampler
+                    
                     samples = glide_util.sample_with_superres(
                         base_model=glide_model,
                         base_options=glide_options,
@@ -174,13 +218,17 @@ def run_glide_finetune_epoch(
                         batch_size=sample_bs,
                         guidance_scale=sample_gs,
                         device=device,
-                        base_respacing=sample_respacing,
-                        upsampler_respacing="17",  # Fast sampling for upsampler
+                        base_respacing=str(eval_base_sampler_steps),
+                        upsampler_respacing=str(eval_sr_sampler_steps),
                         upsample_temp=0.997,
-                        sampler=sample_sampler,
+                        base_sampler=base_sampler,  # Use specific sampler for base model
+                        upsampler_sampler=sr_sampler,  # Use specific sampler for upsampler
                     )
                 else:
                     # Use regular sampling
+                    # Map 'standard' to appropriate sampler
+                    sampler_to_use = 'plms' if eval_base_sampler == 'standard' else eval_base_sampler
+                    
                     samples = glide_util.sample(
                         glide_model=glide_model,
                         glide_options=glide_options,
@@ -190,8 +238,8 @@ def run_glide_finetune_epoch(
                         batch_size=sample_bs,
                         guidance_scale=sample_gs,
                         device=device,
-                        prediction_respacing=sample_respacing,
-                        sampler=sample_sampler,
+                        prediction_respacing=str(eval_base_sampler_steps),
+                        sampler=sampler_to_use,
                         image_to_upsample=image_to_upsample,
                     )
                 

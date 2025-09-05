@@ -198,4 +198,36 @@ uv run python test_samplers.py \
 - **Euler Ancestral**: Similar speed to Euler, adds controlled stochasticity
 - **DPM++**: Can achieve good quality with fewer steps (20-30 vs 50-100)
 - **DDIM**: Flexible deterministic/stochastic balance via eta parameter
+
+### Enhanced Samplers with Upsampling
+
+The enhanced samplers (Euler, Euler Ancestral, DPM++) now work with the upsampling pipeline in `sample_with_superres`:
+
+```python
+from glide_finetune.glide_util import load_model, sample_with_superres
+
+# Load base and upsampler models
+base_model, _, base_options = load_model(model_type="base")
+upsampler_model, _, upsampler_options = load_model(model_type="upsample")
+
+# Generate with full pipeline using enhanced samplers
+samples = sample_with_superres(
+    base_model, base_options,
+    upsampler_model, upsampler_options,
+    prompt="a beautiful landscape",
+    sampler="euler",  # Works for both base and upsampler
+    base_respacing="27",
+    upsampler_respacing="17",
+)
+```
+
+**Upsampler Performance**: Testing shows ~1.5x speedup when using Euler/DPM++ vs PLMS for the upsampling stage.
+
+### Testing Upsampler Samplers
+
+```bash
+uv run python test_upsampler_samplers.py
+```
+
+This tests all samplers with the full text2im pipeline (64x64 → 256x256).
 - If I make an obvious oversight or mistake - feel free to point it out rather than making code changes. It won't hurt my feelings.
