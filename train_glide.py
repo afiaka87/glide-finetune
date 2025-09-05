@@ -9,7 +9,7 @@ import torchvision.transforms as T
 from tqdm import trange
 
 from glide_finetune.glide_finetune import run_glide_finetune_epoch
-from glide_finetune.glide_util import load_model
+from glide_finetune.glide_util import load_model, load_model_with_lora
 from glide_finetune.loader import TextImageDataset
 from glide_finetune.train_util import wandb_setup
 from glide_finetune.wds_loader import glide_wds_loader
@@ -49,6 +49,13 @@ def run_glide_finetune(
     upsample_factor=4,
     image_to_upsample='low_res_face.png',
     use_sr_eval=False,
+    use_lora=False,
+    lora_rank=4,
+    lora_alpha=32,
+    lora_dropout=0.1,
+    lora_target_mode="attention",
+    lora_save_steps=1000,
+    lora_resume="",
 ):
     if "~" in data_dir:
         data_dir = os.path.expanduser(data_dir)
@@ -73,14 +80,31 @@ def run_glide_finetune(
     print("Wandb setup.")
 
     # Model setup
-    glide_model, glide_diffusion, glide_options = load_model(
-        glide_path=resume_ckpt,
-        use_fp16=use_fp16,
-        freeze_transformer=freeze_transformer,
-        freeze_diffusion=freeze_diffusion,
-        activation_checkpointing=activation_checkpointing,
-        model_type="base" if not enable_upsample else "upsample",
-    )
+    if use_lora:
+        glide_model, glide_diffusion, glide_options = load_model_with_lora(
+            glide_path=resume_ckpt,
+            use_fp16=use_fp16,
+            freeze_transformer=freeze_transformer,
+            freeze_diffusion=freeze_diffusion,
+            activation_checkpointing=activation_checkpointing,
+            model_type="base" if not enable_upsample else "upsample",
+            use_lora=True,
+            lora_rank=lora_rank,
+            lora_alpha=lora_alpha,
+            lora_dropout=lora_dropout,
+            lora_target_mode=lora_target_mode,
+            lora_resume=lora_resume,
+            device=device,
+        )
+    else:
+        glide_model, glide_diffusion, glide_options = load_model(
+            glide_path=resume_ckpt,
+            use_fp16=use_fp16,
+            freeze_transformer=freeze_transformer,
+            freeze_diffusion=freeze_diffusion,
+            activation_checkpointing=activation_checkpointing,
+            model_type="base" if not enable_upsample else "upsample",
+        )
     glide_model.train()
     number_of_params = sum(x.numel() for x in glide_model.parameters())
     print(f"Number of parameters: {number_of_params}")
@@ -228,6 +252,8 @@ def run_glide_finetune(
             epoch=epoch,
             gradient_accumualation_steps=1,
             train_upsample=enable_upsample,
+            use_lora=use_lora,
+            lora_save_steps=lora_save_steps,
         )
 
 
@@ -401,6 +427,51 @@ def parse_args():
         action="store_true",
         help="Enable debug printing for WebDataset loading"
     )
+    
+    # LoRA configuration arguments
+    parser.add_argument(
+        "--use_lora",
+        action="store_true",
+        help="Enable LoRA (Low-Rank Adaptation) for efficient fine-tuning"
+    )
+    parser.add_argument(
+        "--lora_rank",
+        type=int,
+        default=4,
+        help="Rank of LoRA decomposition (default: 4)"
+    )
+    parser.add_argument(
+        "--lora_alpha",
+        type=int,
+        default=32,
+        help="LoRA scaling parameter (default: 32)"
+    )
+    parser.add_argument(
+        "--lora_dropout",
+        type=float,
+        default=0.1,
+        help="Dropout for LoRA layers (default: 0.1)"
+    )
+    parser.add_argument(
+        "--lora_target_mode",
+        type=str,
+        default="attention",
+        choices=["attention", "mlp", "all", "minimal"],
+        help="Which modules to apply LoRA to (default: attention)"
+    )
+    parser.add_argument(
+        "--lora_save_steps",
+        type=int,
+        default=1000,
+        help="Save LoRA adapter every N steps (default: 1000)"
+    )
+    parser.add_argument(
+        "--lora_resume",
+        type=str,
+        default="",
+        help="Path to resume LoRA adapter from"
+    )
+    
     args = parser.parse_args()
 
     return args
@@ -484,4 +555,11 @@ if __name__ == "__main__":
         use_sr_eval=args.use_sr_eval,
         sample_captions_file=args.sample_captions_file,
         num_captions_sample=args.num_captions_sample,
+        use_lora=args.use_lora,
+        lora_rank=args.lora_rank,
+        lora_alpha=args.lora_alpha,
+        lora_dropout=args.lora_dropout,
+        lora_target_mode=args.lora_target_mode,
+        lora_save_steps=args.lora_save_steps,
+        lora_resume=args.lora_resume,
     )

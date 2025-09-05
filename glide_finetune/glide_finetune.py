@@ -113,6 +113,8 @@ def run_glide_finetune_epoch(
     upsampler_model=None,
     upsampler_options=None,
     use_sr_eval: bool = False,
+    use_lora: bool = False,
+    lora_save_steps: int = 1000,
 ):
     if train_upsample: train_step = upsample_train_step
     else: train_step = base_train_step
@@ -278,11 +280,57 @@ def run_glide_finetune_epoch(
                     "iter": train_idx,
                     f"samples{suffix}": wandb_images[0],
                 })
-        if train_idx % 5000 == 0 and train_idx > 0:
-            train_util.save_model(glide_model, checkpoints_dir, train_idx, epoch)
-            print(
-                f"Saved checkpoint {train_idx} to {checkpoints_dir}/glide-ft-{train_idx}.pt"
+        # Save LoRA adapter if enabled and at save interval
+        if use_lora and lora_save_steps > 0 and train_idx % lora_save_steps == 0 and train_idx > 0:
+            from glide_finetune.lora_wrapper import save_lora_checkpoint
+            lora_save_path = os.path.join(checkpoints_dir, f"lora_adapter_{epoch}_{train_idx}")
+            save_lora_checkpoint(
+                glide_model,
+                lora_save_path,
+                metadata={
+                    "epoch": epoch,
+                    "step": train_idx,
+                    "loss": accumulated_loss.item(),
+                }
             )
+            print(f"Saved LoRA adapter to {lora_save_path}")
+        
+        if train_idx % 5000 == 0 and train_idx > 0:
+            if use_lora:
+                # For LoRA, save adapter separately
+                from glide_finetune.lora_wrapper import save_lora_checkpoint
+                lora_save_path = os.path.join(checkpoints_dir, f"lora_checkpoint_{epoch}_{train_idx}")
+                save_lora_checkpoint(
+                    glide_model,
+                    lora_save_path,
+                    metadata={
+                        "epoch": epoch,
+                        "step": train_idx,
+                        "loss": accumulated_loss.item(),
+                    }
+                )
+                print(f"Saved LoRA checkpoint to {lora_save_path}")
+            else:
+                # Save full model if not using LoRA
+                train_util.save_model(glide_model, checkpoints_dir, train_idx, epoch)
+                print(
+                    f"Saved checkpoint {train_idx} to {checkpoints_dir}/glide-ft-{train_idx}.pt"
+                )
         wandb_run.log(log)
+    
     print(f"Finished training, saving final checkpoint")
-    train_util.save_model(glide_model, checkpoints_dir, train_idx, epoch)
+    if use_lora:
+        from glide_finetune.lora_wrapper import save_lora_checkpoint
+        final_lora_path = os.path.join(checkpoints_dir, f"lora_final_{epoch}")
+        save_lora_checkpoint(
+            glide_model,
+            final_lora_path,
+            metadata={
+                "epoch": epoch,
+                "step": train_idx,
+                "final": True,
+            }
+        )
+        print(f"Saved final LoRA adapter to {final_lora_path}")
+    else:
+        train_util.save_model(glide_model, checkpoints_dir, train_idx, epoch)
