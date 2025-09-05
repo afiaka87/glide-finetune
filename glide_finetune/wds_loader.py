@@ -33,9 +33,16 @@ def glide_wds_loader(
     similarity_threshold_upper=0.0,
     similarity_threshold_lower=0.5,
     words_to_skip=[],
-    dataset_name="laion",  # can be laion, alamy.
+    dataset_name="laion",  # can be laion, alamy, or simple.
     upscale_factor=4,
 ):
+    print(f"\nDEBUG: glide_wds_loader called with:")
+    print(f"  - URLs: {len(urls) if isinstance(urls, list) else 'single/pattern'}")
+    print(f"  - Dataset name: {dataset_name}")
+    print(f"  - Image key: {image_key}")
+    print(f"  - Caption key: {caption_key}")
+    print(f"  - Enable text: {enable_text}")
+    print(f"  - Enable upsample: {enable_upsample}")
 
     base_image_shape = (base_x, base_y)
     upsample_image_shape = (int(base_x * upscale_factor), int(base_y * upscale_factor))
@@ -44,6 +51,7 @@ def glide_wds_loader(
         cache_dir=cache_path,
         cache_size=10**10,
         handler=wds.handlers.reraise_exception,
+        shardshuffle=False,  # Assume datasets are pre-shuffled
     )
 
     def filter_dataset_laion(item):
@@ -91,16 +99,39 @@ def glide_wds_loader(
             return False
         return True  # all good
 
+    def filter_dataset_simple(item):
+        # Simple filter for datasets with just image and text pairs (no metadata)
+        if enable_text and caption_key not in item:
+            print(f"DEBUG: Item missing caption key '{caption_key}'. Keys: {list(item.keys())}")
+            return False
+        if enable_image and image_key not in item:
+            print(f"DEBUG: Item missing image key '{image_key}'. Keys: {list(item.keys())}")
+            return False
+        return True
+
+    print(f"DEBUG: Using dataset filter for '{dataset_name}'")
+    print(f"DEBUG: Looking for image_key='{image_key}', caption_key='{caption_key}'")
+    
     if dataset_name == "laion":
         filtered_dataset = dataset.select(filter_dataset_laion)
     elif dataset_name == "alamy":
         filtered_dataset = dataset.select(filter_dataset_alamy)
+    elif dataset_name == "simple":
+        filtered_dataset = dataset.select(filter_dataset_simple)
     else:
         raise ValueError(
-            f"Unknown dataset: {dataset_name}. Must be one of 'laion' or 'alamy'."
+            f"Unknown dataset: {dataset_name}. Must be one of 'laion', 'alamy', or 'simple'."
         )
 
+    # Add a counter to track processed items
+    processed_count = [0]  # Use list to make it mutable in nested function
+    
     def preprocess_dataset(item):
+        processed_count[0] += 1
+        if processed_count[0] <= 3:  # Log first 3 items for debugging
+            print(f"\nDEBUG: Processing item {processed_count[0]}")
+            print(f"  Keys in item: {list(item.keys())}")
+        
         tokens, mask, base_tensor, upsample_tensor = None, None, None, None
 
         # 20%, the empty token is used to represent the unconditional token.
@@ -134,4 +165,8 @@ def glide_wds_loader(
     transformed_dataset = filtered_dataset.map(
         preprocess_dataset, handler=wds.handlers.reraise_exception
     )
+    
+    print(f"\nDEBUG: WebDataset loader setup complete")
+    print(f"  Returning dataset pipeline with filters and preprocessing")
+    
     return transformed_dataset
