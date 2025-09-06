@@ -56,6 +56,7 @@ def run_glide_finetune(
     lora_target_mode="attention",
     lora_save_steps=1000,
     lora_resume="",
+    save_checkpoint_interval=5000,
 ):
     if "~" in data_dir:
         data_dir = os.path.expanduser(data_dir)
@@ -251,6 +252,7 @@ def run_glide_finetune(
             train_upsample=enable_upsample,
             use_lora=use_lora,
             lora_save_steps=lora_save_steps,
+            save_checkpoint_interval=save_checkpoint_interval,
         )
 
 
@@ -468,6 +470,12 @@ def parse_args():
         default="",
         help="Path to resume LoRA adapter from"
     )
+    parser.add_argument(
+        "--save_checkpoint_interval",
+        type=int,
+        default=5000,
+        help="Save full model checkpoint every N steps (default: 5000)"
+    )
     
     args = parser.parse_args()
 
@@ -559,4 +567,5 @@ if __name__ == "__main__":
         lora_target_mode=args.lora_target_mode,
         lora_save_steps=args.lora_save_steps,
         lora_resume=args.lora_resume,
+        save_checkpoint_interval=args.save_checkpoint_interval,
     )

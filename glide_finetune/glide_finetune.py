@@ -115,6 +115,7 @@ def run_glide_finetune_epoch(
     use_sr_eval: bool = False,
     use_lora: bool = False,
     lora_save_steps: int = 1000,
+    save_checkpoint_interval: int = 5000,
 ):
     if train_upsample: train_step = upsample_train_step
     else: train_step = base_train_step
@@ -295,7 +296,7 @@ def run_glide_finetune_epoch(
             )
             print(f"Saved LoRA adapter to {lora_save_path}")
         
-        if train_idx % 5000 == 0 and train_idx > 0:
+        if save_checkpoint_interval > 0 and train_idx % save_checkpoint_interval == 0 and train_idx > 0:
             if use_lora:
                 # For LoRA, save adapter separately
                 from glide_finetune.lora_wrapper import save_lora_checkpoint
