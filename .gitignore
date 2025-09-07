@@ -43,3 +43,12 @@ test_clip_rerank.py
 test_prompts.txt
 text2im.ipynb
 two_prompts.txt
+
+eval_glide.sh
+eval_persons.txt
+glide-cli-batch/
+glide-cli-test/
+glide-ft-0x60000.compiled.pt
+glide_finetune.egg-info/
+glide_finetune/cli/
+upsample.compiled.pt
