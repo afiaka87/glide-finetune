@@ -28,15 +28,15 @@ def get_uncond_tokens_mask(tokenizer: Encoder):
 
 def get_tokens_and_mask(
     tokenizer: Encoder, prompt: str = "", context_len: int = 128
-) -> Tuple[th.tensor, th.tensor]:
+) -> Tuple[th.Tensor, th.Tensor]:
     if len(prompt) == 0:
-        return get_uncond_tokens_mask(tokenizer)
+        return get_uncond_tokens_mask(tokenizer)  # type: ignore
     else:
         tokens = tokenizer.encode(prompt)
         tokens, mask = tokenizer.padded_tokens_and_mask(tokens, context_len)
-        tokens = th.tensor(tokens)  # + uncond_tokens)
-        mask = th.tensor(mask, dtype=th.bool)  # + uncond_mask, dtype=th.bool)
-        return tokens, mask
+        tokens_tensor = th.tensor(tokens)  # + uncond_tokens)
+        mask_tensor = th.tensor(mask, dtype=th.bool)  # + uncond_mask, dtype=th.bool)
+        return tokens_tensor, mask_tensor
 
 
 def load_model(
@@ -117,7 +117,7 @@ def load_model(
         glide_model.load_state_dict(weights)
     else:  # use default checkpoint from openai
         glide_model.load_state_dict(
-            load_checkpoint(model_type, "cpu")
+            load_checkpoint(model_type, th.device("cpu"))
         )  # always load to cpu, saves memory
 
     # Print parameter freeze status
@@ -307,7 +307,7 @@ def load_model_with_lora(
 
 def read_image(path: str, shape: Tuple[int, int]):
     pil_img = PIL.Image.open(path).convert("RGB")
-    pil_img = pil_img.resize(shape, resample=PIL.Image.BICUBIC)
+    pil_img = pil_img.resize(shape, resample=PIL.Image.Resampling.BICUBIC)
     img = np.array(pil_img)
     return th.from_numpy(img)[None].permute(0, 3, 1, 2).float() / 127.5 - 1
 
@@ -387,7 +387,7 @@ def sample(
         assert image_to_upsample != "", (
             "You must specify a path to an image to upsample."
         )
-        low_res_samples = read_image(image_to_upsample, size=(side_x, side_y))
+        low_res_samples = read_image(image_to_upsample, shape=(side_x, side_y))
         model_kwargs["low_res"] = low_res_samples
         noise = th.randn((batch_size, 3, side_y, side_x), device=device) * upsample_temp
         model_kwargs["noise"] = noise

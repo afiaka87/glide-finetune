@@ -7,7 +7,7 @@ import numpy as np
 import torch as th
 from glide_text2im.respace import SpacedDiffusion
 from glide_text2im.text2im_model import Text2ImUNet
-from wandb import wandb
+import wandb
 
 from glide_finetune import glide_util, train_util
 
@@ -127,9 +127,9 @@ def run_glide_finetune_epoch(
     save_checkpoint_interval: int = 5000,
 ):
     if train_upsample:
-        train_step = upsample_train_step
+        train_step = upsample_train_step  # type: ignore
     else:
-        train_step = base_train_step
+        train_step = base_train_step  # type: ignore
 
     # Load eval captions if available
     eval_captions = []
@@ -142,7 +142,7 @@ def run_glide_finetune_epoch(
 
     glide_model.to(device)
     glide_model.train()
-    log = {}
+    log: dict = {}
 
     # Initialize timing for samples/sec calculation
     start_time = time.time()
@@ -253,8 +253,8 @@ def run_glide_finetune_epoch(
                         base_respacing=str(eval_base_sampler_steps),
                         upsampler_respacing=str(eval_sr_sampler_steps),
                         upsample_temp=0.997,
-                        base_sampler=base_sampler,  # Use specific sampler for base model
-                        upsampler_sampler=sr_sampler,  # Use specific sampler for upsampler
+                        base_sampler=base_sampler,  # type: ignore  # Use specific sampler for base model
+                        upsampler_sampler=sr_sampler,  # type: ignore  # Use specific sampler for upsampler
                     )
                 else:
                     # Use regular sampling
@@ -273,7 +273,7 @@ def run_glide_finetune_epoch(
                         guidance_scale=sample_gs,
                         device=device,
                         prediction_respacing=str(eval_base_sampler_steps),
-                        sampler=sampler_to_use,
+                        sampler=sampler_to_use,  # type: ignore
                         image_to_upsample=image_to_upsample,
                     )
 

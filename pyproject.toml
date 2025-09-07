@@ -44,5 +44,24 @@ packages = ["glide_finetune", "glide_finetune.cli"]
 
 [dependency-groups]
 dev = [
+    "mypy>=1.17.1",
     "ruff>=0.12.12",
+    "types-pyyaml>=6.0.12.20250822",
+    "types-requests>=2.32.4.20250809",
+    "types-pillow",
+]
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+no_implicit_optional = true
+strict_optional = true
+exclude = [
+    "wandb/",
+    "glide-cli-batch/",
+    "glide-cli-test/",
+    "__pycache__/",
+    ".mypy_cache/",
 ]

@@ -12,7 +12,7 @@ def train_step(
     batch: Tuple[th.Tensor, th.Tensor, th.Tensor],
     device: str,
 ):
-    prompts, x_start = batch
+    prompts, x_start = batch  # type: ignore
     x_start.to(device)
     x_start.permute(0, 3, 1, 2)
     with th.no_grad():

@@ -246,7 +246,7 @@ def merge_lora_weights(model: PeftModel) -> nn.Module:
         Base model with LoRA weights merged
     """
     merged_model = model.merge_and_unload()
-    return merged_model
+    return merged_model  # type: ignore
 
 
 def get_lora_state_dict(model: PeftModel) -> Dict[str, torch.Tensor]:

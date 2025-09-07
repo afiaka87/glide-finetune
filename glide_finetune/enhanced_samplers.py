@@ -363,9 +363,9 @@ def add_enhanced_samplers(diffusion_class: type) -> type:
         return sample
 
     # Add the new methods to the class
-    diffusion_class.euler_sample_loop = euler_sample_loop
-    diffusion_class.euler_ancestral_sample_loop = euler_ancestral_sample_loop
-    diffusion_class.dpm_solver_sample_loop = dpm_solver_sample_loop
+    diffusion_class.euler_sample_loop = euler_sample_loop  # type: ignore
+    diffusion_class.euler_ancestral_sample_loop = euler_ancestral_sample_loop  # type: ignore
+    diffusion_class.dpm_solver_sample_loop = dpm_solver_sample_loop  # type: ignore
 
     return diffusion_class
 

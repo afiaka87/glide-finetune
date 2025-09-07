@@ -176,7 +176,8 @@ def load_checkpoint(output_dir: Path) -> Optional[Dict[str, Any]]:
     checkpoint_path = output_dir / "checkpoint.json"
     if checkpoint_path.exists():
         with open(checkpoint_path, "r") as f:
-            return json.load(f)
+            data = json.load(f)
+            return data  # type: ignore
     return None
 
 
@@ -463,8 +464,8 @@ def save_image_text_pair(
         Tuple of (image_path, text_path)
     """
     # Convert tensor to PIL image
-    image_np = ((image_tensor + 1) * 127.5).clamp(0, 255).to(torch.uint8)
-    image_np = image_np.permute(1, 2, 0).cpu().numpy()
+    image_tensor_uint8 = ((image_tensor + 1) * 127.5).clamp(0, 255).to(torch.uint8)
+    image_np = image_tensor_uint8.permute(1, 2, 0).cpu().numpy()
     image = Image.fromarray(image_np)
 
     # Save files with consistent naming
@@ -516,8 +517,8 @@ def save_ranked_images(
     # Save each ranked image
     for rank, (image_tensor, score) in enumerate(zip(images, scores), 1):
         # Convert tensor to PIL image
-        image_np = ((image_tensor + 1) * 127.5).clamp(0, 255).to(torch.uint8)
-        image_np = image_np.permute(1, 2, 0).cpu().numpy()
+        image_tensor_uint8 = ((image_tensor + 1) * 127.5).clamp(0, 255).to(torch.uint8)
+        image_np = image_tensor_uint8.permute(1, 2, 0).cpu().numpy()
         image = Image.fromarray(image_np)
 
         # Save with rank in filename

@@ -27,7 +27,7 @@ def pred_to_pil(pred: th.Tensor) -> Image.Image:
     return Image.fromarray(reshaped.numpy())
 
 
-def make_grid(images: list, grid_size: int = None) -> Image.Image:
+def make_grid(images: list, grid_size: int | None = None) -> Image.Image:
     """
     Create a grid of images from a list of PIL images.
 
@@ -94,10 +94,10 @@ def resize_for_upsample(
         The downsampled image and the corresponding upscaled version cropped according to upscale_factor.
     """
     high_res_x, high_res_y = low_res_x * upscale_factor, low_res_y * upscale_factor
-    high_res_image = original.resize((high_res_x, high_res_y), PIL.Image.LANCZOS)
+    high_res_image = original.resize((high_res_x, high_res_y), Image.Resampling.LANCZOS)
     high_res_tensor = pil_image_to_norm_tensor(pil_image=high_res_image)
     low_res_image = high_res_image.resize(
-        (low_res_x, low_res_y), resample=PIL.Image.BICUBIC
+        (low_res_x, low_res_y), resample=Image.Resampling.BICUBIC
     )
     low_res_tensor = pil_image_to_norm_tensor(pil_image=low_res_image)
     return low_res_tensor, high_res_tensor
