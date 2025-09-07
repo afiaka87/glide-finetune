@@ -2,74 +2,197 @@
 
 [colab](https://github.com/eliohead/glide-finetune-colab)
 
-Finetune GLIDE-text2im on your own image-text dataset.
+Fine-tune and evaluate GLIDE text-to-image diffusion models with a modern CLI interface.
 
 --- 
 
-- finetune the upscaler as well.
-- drop-in support for laion and alamy.
+## Features
 
+- 🎨 **Modern CLI**: Clean command-line interface built with Typer
+- 🚀 **Advanced Samplers**: Euler, Euler-A, DPM++, PLMS, and DDIM
+- 🎯 **CLIP Re-ranking**: Generate multiple candidates and select the best
+- 📊 **WebDataset Support**: Train on large-scale datasets like LAION
+- 🔧 **LoRA Support**: Parameter-efficient fine-tuning
+- 📈 **W&B Integration**: Automatic experiment tracking
+- ⚡ **Performance**: Gradient accumulation, mixed precision, torch.compile support
 
 ## Installation
 
-```sh
+### Using uv (Recommended)
+```bash
 git clone https://github.com/afiaka87/glide-finetune.git
 cd glide-finetune/
-python3 -m venv .venv # create a virtual environment to keep global install clean.
-source .venv/bin/activate
-(.venv) # optionally install pytorch manually for your own specific env first...
-(.venv) python -m pip install -r requirements.txt
+uv sync
+uv pip install -e .
 ```
 
-## Example usage
+### Using pip
+```bash
+git clone https://github.com/afiaka87/glide-finetune.git
+cd glide-finetune/
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+```
 
-### Finetune the base model
+## Quick Start
 
+### Generate Images
 
-The base model should be tuned for "classifier free guidance". This means you want to randomly replace captions with an unconditional (empty) token about 20% of the time. This is controlled by the argument `--uncond_p`, which is set to 0.2 by default and should only be disabled for the upsampler.
+```bash
+# Generate a single image
+glide eval generate base.pt sr.pt \
+  --prompt "a serene mountain landscape at sunset" \
+  --cfg 4.0 \
+  --seed 42
 
-```sh
+# Generate from prompt file with CLIP re-ranking
+glide eval generate base.pt sr.pt \
+  --prompt-file prompts.txt \
+  --clip-rerank \
+  --clip-candidates 32 \
+  --clip-top-k 8
+```
+
+### Train Models
+
+```bash
+# Train base model (64x64)
+glide train base /path/to/dataset \
+  --batch-size 4 \
+  --lr 1e-4 \
+  --wandb my-project
+
+# Train upsampler (64→256)
+glide train upsampler /path/to/dataset \
+  --upscale 4 \
+  --lr 5e-5 \
+  --wandb my-upsampler
+```
+
+## CLI Usage
+
+The GLIDE CLI provides two main commands: `train` and `eval`.
+
+### Training Commands
+
+#### Train Base Model (64x64)
+```bash
+glide train base /path/to/dataset \
+  --batch-size 4 \
+  --lr 1e-4 \
+  --epochs 100 \
+  --uncond-p 0.2 \  # Classifier-free guidance
+  --wandb my-project \
+  --fp16 \  # Mixed precision
+  --grad-ckpt  # Gradient checkpointing
+```
+
+#### Train with LoRA (Efficient Fine-tuning)
+```bash
+glide train base /path/to/dataset \
+  --lora \
+  --lora-rank 8 \
+  --lora-alpha 32 \
+  --freeze-transformer \
+  --wandb lora-finetune
+```
+
+#### Train on WebDataset (LAION)
+```bash
+glide train base /mnt/laion/*.tar \
+  --webdataset \
+  --batch-size 8 \
+  --lr 1e-4 \
+  --fp16 \
+  --grad-ckpt
+```
+
+### Evaluation Commands
+
+#### Generate with Advanced Samplers
+```bash
+# DPM++ for better quality with fewer steps
+glide eval generate base.pt sr.pt \
+  --prompt "a masterpiece painting" \
+  --sampler dpm++ \
+  --base-steps 20 \
+  --sr-steps 15
+
+# Euler for fast generation
+glide eval generate base.pt sr.pt \
+  --prompt "futuristic city" \
+  --sampler euler \
+  --cfg 3.0
+```
+
+#### CLIP Re-ranking for Quality
+```bash
+glide eval generate base.pt sr.pt \
+  --prompt-file artistic_prompts.txt \
+  --clip-rerank \
+  --clip-model ViT-L-14/laion2b_s32b_b82k \
+  --clip-candidates 64 \
+  --clip-top-k 4
+```
+
+#### Compare Models
+```bash
+glide eval compare \
+  model1_base.pt model1_sr.pt \
+  model2_base.pt model2_sr.pt \
+  "a test prompt" \
+  --seed 42
+```
+
+## Advanced Features
+
+### Samplers
+- **euler**: Fast deterministic ODE solver
+- **euler_a**: Euler with ancestral sampling
+- **dpm++**: DPM-Solver++ for fewer steps
+- **plms**: Pseudo Linear Multi-Step
+- **ddim**: Denoising Diffusion Implicit Models
+
+### CLIP Re-ranking
+Generate multiple candidates and select the best using CLIP:
+- Supports OpenCLIP models (ViT-L-14/laion2b_s32b_b82k recommended)
+- Memory-efficient GPU offloading
+- Batch processing for speed
+
+### Performance Optimizations
+- **Gradient Accumulation**: Larger effective batch sizes
+- **Mixed Precision**: FP16/BF16 training
+- **Gradient Checkpointing**: Trade compute for memory
+- **torch.compile**: Optimized inference
+- **LoRA**: Parameter-efficient fine-tuning
+
+## Legacy Script Usage
+
+The original training scripts are still available:
+
+### Train Base Model (Traditional)
+```bash
 python train_glide.py \
-  --data_dir '/userdir/data/mscoco' \
+  --data_dir '/path/to/dataset' \
   --train_upsample False \
-  --project_name 'base_tuning_wandb' \
   --batch_size 4 \
   --learning_rate 1e-04 \
   --side_x 64 \
   --side_y 64 \
-  --resize_ratio 1.0 \
   --uncond_p 0.2 \
-  --resume_ckpt 'ckpt_to_resume_from.pt' \
-  --checkpoints_dir 'my_local_checkpoint_directory' \
+  --wandb_project_name 'my_project'
 ```
 
-### Finetune the prompt-aware super-res model (stage 2 of generating)
-
-Note that the `--side_x` and `--side_y` args here should still be 64. They are scaled to 256 after mutliplying by the upscaling factor (4, by default.)
-
-```sh
+### Train Upsampler (Traditional)
+```bash
 python train_glide.py \
-  --data_dir '/userdir/data/mscoco' \
+  --data_dir '/path/to/dataset' \
   --train_upsample True \
-  --image_to_upsample 'low_res_face.png'
   --upscale_factor 4 \
   --side_x 64 \
   --side_y 64 \
-  --uncond_p 0.0 \
-  --resume_ckpt 'ckpt_to_resume_from.pt' \
-  --checkpoints_dir 'my_local_checkpoint_directory' \
-```
-
-### Finetune on LAION or alamy (webdataset)
-
-I have written data loaders for both LAION2B and Alamy. Other webdatasets may require custom caption/image keys.
-
-```sh
-python train_glide.py \
-  --data_dir '/folder/with/tars/in/it/' \
-  --wds_caption_key 'txt' \
-  --wds_image_key 'jpg' \
-  --wds_dataset_name 'laion' \
+  --uncond_p 0.0
 ```
 
 

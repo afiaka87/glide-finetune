@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.13' and platform_machine == 'aarch64' and sys_platform == 'linux'",
@@ -649,10 +649,16 @@ dependencies = [
     { name = "torchvision" },
     { name = "tornado" },
     { name = "tqdm" },
+    { name = "typer" },
     { name = "typing-extensions" },
     { name = "urllib3" },
     { name = "wandb" },
     { name = "webdataset" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "ruff" },
 ]
 
 [package.metadata]
@@ -681,11 +687,15 @@ requires-dist = [
     { name = "torchvision", specifier = ">=0.23.0" },
     { name = "tornado", specifier = ">=6.5.2" },
     { name = "tqdm", specifier = ">=4.67.1" },
+    { name = "typer", specifier = ">=0.17.4" },
     { name = "typing-extensions", specifier = ">=4.14.1" },
     { name = "urllib3", specifier = ">=2.5.0" },
     { name = "wandb", specifier = ">=0.21.1" },
     { name = "webdataset", specifier = ">=1.0.2" },
 ]
+
+[package.metadata.requires-dev]
+dev = [{ name = "ruff", specifier = ">=0.12.12" }]
 
 [[package]]
 name = "gradio"

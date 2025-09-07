@@ -20,7 +20,9 @@ def random_resized_crop(image, shape, resize_ratio=1.0):
         shape (tuple): The desired output shape.
         resize_ratio (float): The ratio to resize the image.
     """
-    image_transform = T.RandomResizedCrop(shape, scale=(resize_ratio, 1.0), ratio=(1.0, 1.0))
+    image_transform = T.RandomResizedCrop(
+        shape, scale=(resize_ratio, 1.0), ratio=(1.0, 1.0)
+    )
     return image_transform(image)
 
 
@@ -73,7 +75,7 @@ class TextImageDataset(Dataset):
             self.text_files = None
             self.keys = list(self.image_files.keys())
             print(f"Found {len(self.keys)} images.")
-            print(f"NOT using text files. Restart with --use_captions to enable...")
+            print("NOT using text files. Restart with --use_captions to enable...")
             time.sleep(3)
 
         self.resize_ratio = resize_ratio
@@ -112,7 +114,7 @@ class TextImageDataset(Dataset):
         try:
             description = choice(descriptions).strip()
             return get_tokens_and_mask(tokenizer=self.tokenizer, prompt=description)
-        except IndexError as zero_captions_in_file_ex:
+        except IndexError:
             print(f"An exception occurred trying to load file {text_file}.")
             print(f"Skipping index {ind}")
             return self.skip_sample(ind)
@@ -127,17 +129,32 @@ class TextImageDataset(Dataset):
 
         try:
             original_pil_image = PIL.Image.open(image_file).convert("RGB")
-        except (OSError, ValueError) as e:
+        except (OSError, ValueError):
             print(f"An exception occurred trying to load file {image_file}.")
             print(f"Skipping index {ind}")
             return self.skip_sample(ind)
-        if self.enable_upsample: # the base image used should be derived from the cropped high-resolution image.
-            upsample_pil_image = random_resized_crop(original_pil_image, (self.side_x * self.upscale_factor, self.side_y * self.upscale_factor), resize_ratio=self.resize_ratio)
+        if self.enable_upsample:  # the base image used should be derived from the cropped high-resolution image.
+            upsample_pil_image = random_resized_crop(
+                original_pil_image,
+                (self.side_x * self.upscale_factor, self.side_y * self.upscale_factor),
+                resize_ratio=self.resize_ratio,
+            )
             upsample_tensor = pil_image_to_norm_tensor(upsample_pil_image)
-            base_pil_image = upsample_pil_image.resize((self.side_x, self.side_y), resample=PIL.Image.BICUBIC)
+            base_pil_image = upsample_pil_image.resize(
+                (self.side_x, self.side_y), resample=PIL.Image.BICUBIC
+            )
             base_tensor = pil_image_to_norm_tensor(base_pil_image)
-            return th.tensor(tokens), th.tensor(mask, dtype=th.bool), base_tensor, upsample_tensor
-        
-        base_pil_image = random_resized_crop(original_pil_image, (self.side_x, self.side_y), resize_ratio=self.resize_ratio)
+            return (
+                th.tensor(tokens),
+                th.tensor(mask, dtype=th.bool),
+                base_tensor,
+                upsample_tensor,
+            )
+
+        base_pil_image = random_resized_crop(
+            original_pil_image,
+            (self.side_x, self.side_y),
+            resize_ratio=self.resize_ratio,
+        )
         base_tensor = pil_image_to_norm_tensor(base_pil_image)
         return th.tensor(tokens), th.tensor(mask, dtype=th.bool), base_tensor

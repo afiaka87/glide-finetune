@@ -5,7 +5,6 @@ from braceexpand import braceexpand
 
 import numpy as np
 import torch as th
-import torchvision.transforms as T
 from tqdm import trange
 
 from glide_finetune.glide_finetune import run_glide_finetune_epoch
@@ -47,7 +46,7 @@ def run_glide_finetune(
     dataset_name="laion",
     enable_upsample=False,
     upsample_factor=4,
-    image_to_upsample='low_res_face.png',
+    image_to_upsample="low_res_face.png",
     use_sr_eval=False,
     use_lora=False,
     lora_rank=4,
@@ -113,7 +112,7 @@ def run_glide_finetune(
         x.numel() for x in glide_model.parameters() if x.requires_grad
     )
     print(f"Trainable parameters: {number_of_trainable_params}")
-    
+
     # Load upsampler model if needed for evaluation
     upsampler_model = None
     upsampler_options = None
@@ -126,7 +125,9 @@ def run_glide_finetune(
         )
         upsampler_model.eval()
         upsampler_model.to(device)
-        print(f"Upsampler loaded with {sum(x.numel() for x in upsampler_model.parameters())} parameters")
+        print(
+            f"Upsampler loaded with {sum(x.numel() for x in upsampler_model.parameters())} parameters"
+        )
 
     # Data setup
     print("Loading data...")
@@ -181,14 +182,16 @@ def run_glide_finetune(
         prefetch_factor=2 if args.num_workers > 0 else None,
         persistent_workers=True if args.num_workers > 0 else False,
     )
-    
+
     # Quick test to ensure dataloader is set up (without consuming data)
     print("\nDEBUG: Dataloader setup complete")
     print(f"DEBUG: Batch size: {batch_size}")
     print(f"DEBUG: Using webdataset: {use_webdataset}")
     if use_webdataset:
         print(f"DEBUG: Dataset name: {dataset_name}")
-        print(f"DEBUG: Number of tar files: {len(data_dir) if isinstance(data_dir, list) else 'N/A'}")
+        print(
+            f"DEBUG: Number of tar files: {len(data_dir) if isinstance(data_dir, list) else 'N/A'}"
+        )
 
     # Optimizer setup
     optimizer = th.optim.AdamW(
@@ -200,19 +203,22 @@ def run_glide_finetune(
     # Note: Freezing is already handled in load_model/load_model_with_lora
     # No need for additional requires_grad_ modifications here
 
-
     # Training setup
     outputs_dir = "./outputs"
     os.makedirs(outputs_dir, exist_ok=True)
 
-    existing_runs = [ sub_dir for sub_dir in os.listdir(checkpoints_dir) if os.path.isdir(os.path.join(checkpoints_dir, sub_dir))]
+    existing_runs = [
+        sub_dir
+        for sub_dir in os.listdir(checkpoints_dir)
+        if os.path.isdir(os.path.join(checkpoints_dir, sub_dir))
+    ]
     existing_runs_int = []
     for x in existing_runs:
         try:
             existing_runs_int.append(int(x))
-        except:
+        except ValueError:
             print("unexpected directory naming scheme")
-            #ignore
+            # ignore
     existing_runs_int = sorted(existing_runs_int)
     next_run = 0 if len(existing_runs) == 0 else existing_runs_int[-1] + 1
     current_run_ckpt_dir = os.path.join(checkpoints_dir, str(next_run).zfill(4))
@@ -293,12 +299,22 @@ def parse_args():
     parser.add_argument("--use_fp16", "-fp16", action="store_true")
     parser.add_argument("--device", "-dev", type=str, default="")
     parser.add_argument("--log_frequency", "-freq", type=int, default=100)
-    parser.add_argument("--sample_interval", "-sample_freq", type=int, default=500, 
-                        help="Frequency of sampling images for evaluation (defaults to 500)")
+    parser.add_argument(
+        "--sample_interval",
+        "-sample_freq",
+        type=int,
+        default=500,
+        help="Frequency of sampling images for evaluation (defaults to 500)",
+    )
     parser.add_argument("--freeze_transformer", "-fz_xt", action="store_true")
     parser.add_argument("--freeze_diffusion", "-fz_unet", action="store_true")
-    parser.add_argument("--wandb_project_name", "-wname", type=str, default="glide_finetune", 
-                        help="Project name for wandb logging")
+    parser.add_argument(
+        "--wandb_project_name",
+        "-wname",
+        type=str,
+        default="glide_finetune",
+        help="Project name for wandb logging",
+    )
     parser.add_argument("--activation_checkpointing", "-grad_ckpt", action="store_true")
     parser.add_argument("--use_captions", "-txt", action="store_true")
     parser.add_argument("--epochs", "-epochs", type=int, default=20)
@@ -357,126 +373,129 @@ def parse_args():
         help="Enable cudnn benchmarking. May improve performance. (may not)",
     )
     parser.add_argument(
-        "--upscale_factor", "-upscale", type=int, default=4, help="Upscale factor for training the upsampling model only"
+        "--upscale_factor",
+        "-upscale",
+        type=int,
+        default=4,
+        help="Upscale factor for training the upsampling model only",
     )
-    parser.add_argument("--image_to_upsample", "-lowres", type=str, default="low_res_face.png")
+    parser.add_argument(
+        "--image_to_upsample", "-lowres", type=str, default="low_res_face.png"
+    )
     parser.add_argument(
         "--use_sr_eval",
         action="store_true",
-        help="Use full pipeline (base + superres) for evaluation sampling during training"
+        help="Use full pipeline (base + superres) for evaluation sampling during training",
     )
     parser.add_argument(
         "--sample_captions_file",
         type=str,
         default="eval_captions.txt",
-        help="Path to file containing captions to randomly sample from during evaluation"
+        help="Path to file containing captions to randomly sample from during evaluation",
     )
     parser.add_argument(
         "--num_captions_sample",
         type=int,
         default=1,
-        help="Number of captions to sample and generate images for (should be power of 2 for grid)"
+        help="Number of captions to sample and generate images for (should be power of 2 for grid)",
     )
     parser.add_argument(
         "--eval_base_sampler",
         type=str,
         default="euler",
         choices=["standard", "euler", "euler_a", "dpm++"],
-        help="Sampler to use for base model evaluation (standard=PLMS/DDIM, euler, euler_a=ancestral, dpm++)"
+        help="Sampler to use for base model evaluation (standard=PLMS/DDIM, euler, euler_a=ancestral, dpm++)",
     )
     parser.add_argument(
         "--eval_sr_sampler",
         type=str,
         default="euler",
         choices=["standard", "euler", "euler_a", "dpm++"],
-        help="Sampler to use for super-resolution evaluation (standard=PLMS, euler, euler_a=ancestral, dpm++)"
+        help="Sampler to use for super-resolution evaluation (standard=PLMS, euler, euler_a=ancestral, dpm++)",
     )
     parser.add_argument(
         "--eval_base_sampler_steps",
         type=int,
         default=30,
-        help="Number of diffusion steps for base model evaluation (default: 30)"
+        help="Number of diffusion steps for base model evaluation (default: 30)",
     )
     parser.add_argument(
         "--eval_sr_sampler_steps",
         type=int,
         default=17,
-        help="Number of diffusion steps for super-resolution evaluation (default: 17)"
+        help="Number of diffusion steps for super-resolution evaluation (default: 17)",
     )
     parser.add_argument(
         "--num_workers",
         type=int,
         default=4,
-        help="Number of dataloader workers for parallel data loading (default: 4)"
+        help="Number of dataloader workers for parallel data loading (default: 4)",
     )
     parser.add_argument(
         "--wds_buffer_size",
         type=int,
         default=1000,
-        help="WebDataset shuffle buffer size (default: 1000)"
+        help="WebDataset shuffle buffer size (default: 1000)",
     )
     parser.add_argument(
         "--wds_initial_prefetch",
         type=int,
         default=10,
-        help="WebDataset initial prefetch size (default: 10)"
+        help="WebDataset initial prefetch size (default: 10)",
     )
     parser.add_argument(
         "--wds_debug",
         action="store_true",
-        help="Enable debug printing for WebDataset loading"
+        help="Enable debug printing for WebDataset loading",
     )
-    
+
     # LoRA configuration arguments
     parser.add_argument(
         "--use_lora",
         action="store_true",
-        help="Enable LoRA (Low-Rank Adaptation) for efficient fine-tuning"
+        help="Enable LoRA (Low-Rank Adaptation) for efficient fine-tuning",
     )
     parser.add_argument(
         "--lora_rank",
         type=int,
         default=4,
-        help="Rank of LoRA decomposition (default: 4)"
+        help="Rank of LoRA decomposition (default: 4)",
     )
     parser.add_argument(
         "--lora_alpha",
         type=int,
         default=32,
-        help="LoRA scaling parameter (default: 32)"
+        help="LoRA scaling parameter (default: 32)",
     )
     parser.add_argument(
         "--lora_dropout",
         type=float,
         default=0.1,
-        help="Dropout for LoRA layers (default: 0.1)"
+        help="Dropout for LoRA layers (default: 0.1)",
     )
     parser.add_argument(
         "--lora_target_mode",
         type=str,
         default="attention",
         choices=["attention", "mlp", "all", "minimal"],
-        help="Which modules to apply LoRA to (default: attention)"
+        help="Which modules to apply LoRA to (default: attention)",
     )
     parser.add_argument(
         "--lora_save_steps",
         type=int,
         default=1000,
-        help="Save LoRA adapter every N steps (default: 1000)"
+        help="Save LoRA adapter every N steps (default: 1000)",
     )
     parser.add_argument(
-        "--lora_resume",
-        type=str,
-        default="",
-        help="Path to resume LoRA adapter from"
+        "--lora_resume", type=str, default="", help="Path to resume LoRA adapter from"
     )
     parser.add_argument(
         "--save_checkpoint_interval",
         type=int,
         default=5000,
-        help="Save full model checkpoint every N steps (default: 5000)"
+        help="Save full model checkpoint every N steps (default: 5000)",
     )
-    
+
     args = parser.parse_args()
 
     return args
@@ -501,12 +520,12 @@ if __name__ == "__main__":
         # webdataset uses tars - handle glob patterns and braceexpand
         # First expand any brace patterns like {00000..00115}
         expanded_patterns = list(braceexpand(args.data_dir))
-        
+
         # Then apply glob to each expanded pattern
         data_dir = []
         for pattern in expanded_patterns:
             # If pattern contains wildcards, expand them
-            if '*' in pattern or '?' in pattern or '[' in pattern:
+            if "*" in pattern or "?" in pattern or "[" in pattern:
                 data_dir.extend(glob(pattern))
             # If it's a directory, add *.tar to it
             elif os.path.isdir(pattern):
@@ -515,17 +534,17 @@ if __name__ == "__main__":
             else:
                 if os.path.exists(pattern):
                     data_dir.append(pattern)
-        
+
         # Sort for consistent ordering
         data_dir = sorted(data_dir)
-        
+
         if not data_dir:
             raise ValueError(f"No tar files found matching pattern: {args.data_dir}")
-        
+
         print(f"Found {len(data_dir)} tar files")
     else:
         data_dir = args.data_dir
-    
+
     run_glide_finetune(
         data_dir=data_dir,
         batch_size=args.batch_size,

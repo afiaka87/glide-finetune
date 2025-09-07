@@ -2,26 +2,23 @@
 Helpers to train with 16-bit precision. Modified from OpenAI's guided diffusion repo.
 """
 
+from copy import deepcopy
+
 from tqdm import tqdm
 import numpy as np
+import torch
 import torch as th
 import torch.nn as nn
 from torch._utils import _flatten_dense_tensors, _unflatten_dense_tensors
 
-INITIAL_LOG_LOSS_SCALE = 20.0 # Default from OpenAI. May wish to change this for finetuning.
-from copy import deepcopy
-
-import torch
-from torch import nn
+INITIAL_LOG_LOSS_SCALE = (
+    20.0  # Default from OpenAI. May wish to change this for finetuning.
+)
 
 # Exponential Moving Average (from https://gist.github.com/crowsonkb/76b94d5238272722290734bf4725d204)
 """Exponential moving average for PyTorch. Adapted from
 https://www.zijianhu.com/post/pytorch/ema/ by crowsonkb
 """
-from copy import deepcopy
-
-import torch
-from torch import nn
 
 
 class EMA(nn.Module):
@@ -29,7 +26,7 @@ class EMA(nn.Module):
         super().__init__()
         self.model = model
         self.decay = decay
-        self.register_buffer('accum', torch.tensor(1.))
+        self.register_buffer("accum", torch.tensor(1.0))
         self._biased = deepcopy(self.model)
         self.average = deepcopy(self.model)
         for param in self._biased.parameters():
@@ -41,7 +38,7 @@ class EMA(nn.Module):
     @torch.no_grad()
     def update(self):
         if not self.training:
-            raise RuntimeError('Update should only be called during training')
+            raise RuntimeError("Update should only be called during training")
 
         self.accum *= self.decay
 
@@ -68,26 +65,27 @@ class EMA(nn.Module):
     def forward(self, *args, **kwargs):
         if self.training:
             return self.model(*args, **kwargs)
-        return self.average(*args, **kwargs) 
+        return self.average(*args, **kwargs)
 
-def convert_module_to_f16(l):
+
+def convert_module_to_f16(module):
     """
     Convert primitive modules to float16.
     """
-    if isinstance(l, (nn.Conv1d, nn.Conv2d, nn.Conv3d)):
-        l.weight.data = l.weight.data.half()
-        if l.bias is not None:
-            l.bias.data = l.bias.data.half()
+    if isinstance(module, (nn.Conv1d, nn.Conv2d, nn.Conv3d)):
+        module.weight.data = module.weight.data.half()
+        if module.bias is not None:
+            module.bias.data = module.bias.data.half()
 
 
-def convert_module_to_f32(l):
+def convert_module_to_f32(module):
     """
     Convert primitive modules to float32, undoing convert_module_to_f16().
     """
-    if isinstance(l, (nn.Conv1d, nn.Conv2d, nn.Conv3d)):
-        l.weight.data = l.weight.data.float()
-        if l.bias is not None:
-            l.bias.data = l.bias.data.float()
+    if isinstance(module, (nn.Conv1d, nn.Conv2d, nn.Conv3d)):
+        module.weight.data = module.weight.data.float()
+        if module.bias is not None:
+            module.bias.data = module.bias.data.float()
 
 
 def make_master_params(param_groups_and_shapes):
@@ -139,8 +137,10 @@ def unflatten_master_params(param_group, master_param):
 
 def get_param_groups_and_shapes(named_model_params):
     named_model_params = list(named_model_params)
-    named_model_params = [ # TODO added by me
-        (name, param) for (name, param) in named_model_params if param.requires_grad # TODO added by me
+    named_model_params = [  # TODO added by me
+        (name, param)
+        for (name, param) in named_model_params
+        if param.requires_grad  # TODO added by me
     ]
     scalar_vector_named_params = (
         [(n, p) for (n, p) in named_model_params if p.ndim <= 1],
@@ -177,12 +177,18 @@ def master_params_to_state_dict(
 def state_dict_to_master_params(model, state_dict, use_fp16):
     if use_fp16:
         named_model_params = [
-            (name, state_dict[name]) for name, param in model.named_parameters() if param.requires_grad
+            (name, state_dict[name])
+            for name, param in model.named_parameters()
+            if param.requires_grad
         ]
         param_groups_and_shapes = get_param_groups_and_shapes(named_model_params)
         master_params = make_master_params(param_groups_and_shapes)
     else:
-        master_params = [state_dict[name] for name, param in model.named_parameters() if param.requires_grad]
+        master_params = [
+            state_dict[name]
+            for name, param in model.named_parameters()
+            if param.requires_grad
+        ]
     return master_params
 
 
@@ -253,7 +259,7 @@ class MixedPrecisionTrainer:
     def _optimize_fp16(self, opt: th.optim.Optimizer):
         tqdm.write(f"lg_loss_scale {self.lg_loss_scale}")
         model_grads_to_master_grads(self.param_groups_and_shapes, self.master_params)
-        grad_norm, param_norm = self._compute_norms(grad_scale=2 ** self.lg_loss_scale)
+        grad_norm, param_norm = self._compute_norms(grad_scale=2**self.lg_loss_scale)
         if check_overflow(grad_norm):
             self.lg_loss_scale -= 1
             tqdm.write(f"Found NaN, decreased lg_loss_scale to {self.lg_loss_scale}")
@@ -263,7 +269,7 @@ class MixedPrecisionTrainer:
         tqdm.write(f"grad_norm {grad_norm}")
         tqdm.write(f"param_norm {param_norm}")
 
-        self.master_params[0].grad.mul_(1.0 / (2 ** self.lg_loss_scale))
+        self.master_params[0].grad.mul_(1.0 / (2**self.lg_loss_scale))
         opt.step()
         zero_master_grads(self.master_params)
         master_params_to_model_params(self.param_groups_and_shapes, self.master_params)

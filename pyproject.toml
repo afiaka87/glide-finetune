@@ -1,7 +1,7 @@
 [project]
 name = "glide-finetune"
 version = "0.1.0"
-description = "Add your description here"
+description = "Fine-tune and evaluate GLIDE text-to-image diffusion models"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -33,4 +33,16 @@ dependencies = [
     "wandb>=0.21.1",
     "webdataset>=1.0.2",
     "open-clip-torch>=2.20.0",
+    "typer>=0.17.4",
+]
+
+[project.scripts]
+glide = "glide_finetune.cli:app"
+
+[tool.setuptools]
+packages = ["glide_finetune", "glide_finetune.cli"]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.12.12",
 ]

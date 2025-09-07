@@ -2,6 +2,22 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Recent Work (September 2025)
+
+### Completed Enhancements
+- ✅ **CLI Interface**: Implemented modern Typer-based CLI with `glide train` and `glide eval` commands
+- ✅ **Gradient Accumulation**: Added proper gradient accumulation with loss scaling
+- ✅ **WebDataset Integration**: Fixed WebDataset epoch tracking and batch handling for LAION training
+- ✅ **WandB Logging**: Corrected to log metrics at every step for granular tracking
+- ✅ **CLIP Re-ranking**: Fixed OpenCLIP model naming (ViT-L-14 not ViT-L/14)
+- ✅ **Rich UI**: Added beautiful console output with progress bars and status panels
+
+### Key Files Modified
+- `glide_finetune/cli/` - New CLI module with train and eval subcommands
+- `train_from_scratch.py` - Fixed WebDataset integration and gradient accumulation
+- `eval_glide.sh` - Updated CLIP model naming to OpenCLIP format
+- `pyproject.toml` - Added CLI entry points and Typer dependency
+
 ## Commands
 
 ### Setup and Environment
@@ -21,6 +37,26 @@ uv pip install -e glide-text2im
 
 # Run commands with uv
 uv run python train_glide.py [args]
+```
+
+### Common Development Tasks
+
+```bash
+# Run training with wandb logging
+uv run python train_glide.py --data_dir /path/to/data --wandb_project_name my_project
+
+# Quick test of samplers
+uv run python quick_test_samplers.py
+
+# Run evaluation on compiled models
+./eval_glide.sh
+
+# Launch Gradio web interface
+uv run python gradio_app.py
+
+# Run shell scripts in scripts/ directory
+bash scripts/run-finetune.sh
+bash scripts/run-docker.sh
 ```
 
 ### Training Commands
@@ -209,6 +245,26 @@ This repository implements finetuning for GLIDE (Guided Language to Image Diffus
 
 - **Upsampler Training** (`train_upsample=True`): Trains the prompt-aware super-resolution model that upscales 64x64 images to 256x256
 
+### Important Technical Details
+
+#### WebDataset Integration
+- WebDatasets with `resampled=True` create infinite iterators - epochs must be manually tracked
+- LAION tar files typically contain ~10,000 samples each
+- Glob patterns in data paths must be expanded before passing to WebDataset
+- The dataloader wraps the WebDataset iterator for proper batching
+
+#### Gradient Accumulation
+- Loss is scaled by accumulation steps during backward pass
+- Optimizer step only occurs after accumulating specified number of gradients  
+- WandB metrics are logged only after weight updates with averaged loss
+- Learning rate scheduler steps only after weight updates
+
+#### Memory Management
+- Use gradient accumulation to achieve larger effective batch sizes with limited GPU memory
+- Activation checkpointing (`--activation_checkpointing`) trades compute for memory
+- Mixed precision training (`--use_fp16`) reduces memory usage
+- CLIP re-ranking offloads GLIDE models to CPU while scoring
+
 ### Key Modules
 
 - `glide_finetune/`: Main training logic and model utilities
@@ -376,3 +432,57 @@ The system automatically manages GPU memory by:
 - Loading CLIP model only when needed
 - Clearing CUDA cache between phases
 - Reloading GLIDE models for next prompt
+
+## Common Issues and Solutions
+
+### WebDataset Training
+- **Empty epoch_metrics**: WebDataset may not yield batches if glob patterns aren't expanded or tar files are inaccessible
+- **Token length mismatch**: LAION uses 128 tokens while GLIDE expects 77 - ensure tokenizer compatibility
+- **Infinite iteration**: WebDataset with `resampled=True` requires manual epoch tracking
+- **Steps per epoch calculation**: For WebDataset, calculate as `(num_tars * samples_per_tar) // batch_size`
+
+### Training Configuration
+- **WandB logging frequency**: Metrics should be logged to WandB at every step for granular tracking, not just at log_frequency intervals
+- **Gradient accumulation**: Ensure global_step only increments when weights are updated, not on every batch
+- **Checkpoint saving**: Checkpoints should be saved based on global_step (weight updates) not raw batch iterations
+- **Effective batch size**: With gradient accumulation, effective batch = `batch_size * gradient_accumulation_steps`
+
+### Model Loading  
+- **Compiled models**: Use torch.compile for inference speedup, models are saved as `.compiled.pt`
+- **LoRA weights**: When using LoRA, ensure target_mode matches model architecture (attention, mlp, or all)
+- **Mixed precision**: Some operations may need to remain in fp32 for stability
+
+### CLIP Re-ranking
+- **Model naming**: OpenCLIP uses hyphen format (e.g., `ViT-L-14`) not slash format (`ViT-L/14`)
+- **Pretrained weights**: Specify both model and weights (e.g., `ViT-L-14/laion2b_s32b_b82k`)
+- **Memory management**: GLIDE models are offloaded to CPU during CLIP scoring to save GPU memory
+
+## CLI Development
+
+### Typer CLI Structure
+The codebase now includes a modern CLI built with Typer:
+
+```
+glide/
+├── train/
+│   ├── base        # Train 64x64 base model
+│   └── upsampler   # Train 64→256 upsampler
+└── eval/
+    ├── generate    # Generate images from prompts
+    ├── batch       # Batch evaluation
+    └── compare     # Compare model outputs
+```
+
+### CLI Implementation Notes
+- **Import paths**: CLI modules need to add parent directory to sys.path to import original scripts
+- **Enum types**: Use Typer Enums for choices (e.g., SamplerType, OutputFormat)
+- **Rich integration**: Use Rich console for beautiful output with panels and progress bars
+- **Entry points**: Defined in `pyproject.toml` under `[project.scripts]`
+- **Package discovery**: Must explicitly list packages in `[tool.setuptools]` to avoid flat-layout issues
+
+### Best Practices
+- **No args is help**: Set `no_args_is_help=True` for better UX
+- **Type hints**: Leverage Python type hints for automatic CLI argument parsing
+- **Subcommands**: Use `app.add_typer()` to organize related commands
+- **Documentation**: Include examples in docstrings for help text
+- **Error handling**: Check for required inputs early with clear error messages

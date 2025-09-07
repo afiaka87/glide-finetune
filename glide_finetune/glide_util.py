@@ -62,55 +62,55 @@ def load_model(
 
     # Start with all parameters trainable
     glide_model.requires_grad_(True)
-    
+
     # Freeze transformer components if requested
     if freeze_transformer:
         # Freeze the main transformer
-        if hasattr(glide_model, 'transformer'):
+        if hasattr(glide_model, "transformer"):
             glide_model.transformer.requires_grad_(False)
-        
+
         # Freeze transformer projection layer
-        if hasattr(glide_model, 'transformer_proj'):
+        if hasattr(glide_model, "transformer_proj"):
             glide_model.transformer_proj.requires_grad_(False)
-        
+
         # Freeze token embedding
-        if hasattr(glide_model, 'token_embedding'):
+        if hasattr(glide_model, "token_embedding"):
             glide_model.token_embedding.requires_grad_(False)
-        
+
         # Freeze positional and padding embeddings (these are Parameters, not Modules)
-        if hasattr(glide_model, 'padding_embedding'):
+        if hasattr(glide_model, "padding_embedding"):
             glide_model.padding_embedding.requires_grad = False
-        if hasattr(glide_model, 'positional_embedding'):
+        if hasattr(glide_model, "positional_embedding"):
             glide_model.positional_embedding.requires_grad = False
-        
+
         # Freeze final layer norm (part of transformer output)
-        if hasattr(glide_model, 'final_ln'):
+        if hasattr(glide_model, "final_ln"):
             glide_model.final_ln.requires_grad_(False)
-    
+
     # Freeze diffusion/UNet components if requested
     if freeze_diffusion:
         # Freeze time embedding layers
-        if hasattr(glide_model, 'time_embed'):
+        if hasattr(glide_model, "time_embed"):
             glide_model.time_embed.requires_grad_(False)
-        
+
         # Freeze input blocks
-        if hasattr(glide_model, 'input_blocks'):
+        if hasattr(glide_model, "input_blocks"):
             glide_model.input_blocks.requires_grad_(False)
-        
+
         # Freeze middle block
-        if hasattr(glide_model, 'middle_block'):
+        if hasattr(glide_model, "middle_block"):
             glide_model.middle_block.requires_grad_(False)
-        
+
         # Freeze output blocks
-        if hasattr(glide_model, 'output_blocks'):
+        if hasattr(glide_model, "output_blocks"):
             glide_model.output_blocks.requires_grad_(False)
-        
+
         # Freeze final output projection
-        if hasattr(glide_model, 'out'):
+        if hasattr(glide_model, "out"):
             glide_model.out.requires_grad_(False)
-        
+
         # Note: label_emb doesn't exist in base model but might in other variants
-    
+
     if len(glide_path) > 0:  # user provided checkpoint
         assert os.path.exists(glide_path), "glide path does not exist"
         weights = th.load(glide_path, map_location="cpu")
@@ -119,11 +119,11 @@ def load_model(
         glide_model.load_state_dict(
             load_checkpoint(model_type, "cpu")
         )  # always load to cpu, saves memory
-    
+
     # Print parameter freeze status
     if freeze_transformer or freeze_diffusion:
         _print_freeze_status(glide_model, freeze_transformer, freeze_diffusion)
-    
+
     if use_fp16:
         glide_model.convert_to_fp16()
         print("Converted to fp16, likely gradients will explode")
@@ -132,49 +132,49 @@ def load_model(
 
 def _print_freeze_status(model, freeze_transformer, freeze_diffusion):
     """Print detailed information about which parameters are frozen."""
-    
+
     def count_params(module_or_param):
         if isinstance(module_or_param, th.nn.Parameter):
             return module_or_param.numel()
         return sum(p.numel() for p in module_or_param.parameters())
-    
+
     def count_trainable_params(module_or_param):
         if isinstance(module_or_param, th.nn.Parameter):
             return module_or_param.numel() if module_or_param.requires_grad else 0
         return sum(p.numel() for p in module_or_param.parameters() if p.requires_grad)
-    
+
     # Categorize parameters
     transformer_components = {
-        'transformer': None,
-        'transformer_proj': None,
-        'token_embedding': None,
-        'padding_embedding': None,
-        'positional_embedding': None,
-        'final_ln': None,
+        "transformer": None,
+        "transformer_proj": None,
+        "token_embedding": None,
+        "padding_embedding": None,
+        "positional_embedding": None,
+        "final_ln": None,
     }
-    
+
     diffusion_components = {
-        'time_embed': None,
-        'input_blocks': None,
-        'middle_block': None,
-        'output_blocks': None,
-        'out': None,
+        "time_embed": None,
+        "input_blocks": None,
+        "middle_block": None,
+        "output_blocks": None,
+        "out": None,
     }
-    
+
     # Collect existing components
     for comp_name in transformer_components:
         if hasattr(model, comp_name):
             transformer_components[comp_name] = getattr(model, comp_name)
-    
+
     for comp_name in diffusion_components:
         if hasattr(model, comp_name):
             diffusion_components[comp_name] = getattr(model, comp_name)
-    
+
     # Count parameters
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("PARAMETER FREEZE STATUS")
-    print("="*60)
-    
+    print("=" * 60)
+
     # Transformer components
     print("\n📝 TRANSFORMER COMPONENTS:")
     trans_total = 0
@@ -186,8 +186,10 @@ def _print_freeze_status(model, freeze_transformer, freeze_diffusion):
             trans_total += total
             trans_trainable += trainable
             status = "❄️ FROZEN" if trainable == 0 else "🔥 TRAINABLE"
-            print(f"  {name:20s}: {total:>12,} params | {trainable:>12,} trainable | {status}")
-    
+            print(
+                f"  {name:20s}: {total:>12,} params | {trainable:>12,} trainable | {status}"
+            )
+
     # Diffusion components
     print("\n🎨 DIFFUSION/UNET COMPONENTS:")
     diff_total = 0
@@ -199,25 +201,37 @@ def _print_freeze_status(model, freeze_transformer, freeze_diffusion):
             diff_total += total
             diff_trainable += trainable
             status = "❄️ FROZEN" if trainable == 0 else "🔥 TRAINABLE"
-            print(f"  {name:20s}: {total:>12,} params | {trainable:>12,} trainable | {status}")
-    
+            print(
+                f"  {name:20s}: {total:>12,} params | {trainable:>12,} trainable | {status}"
+            )
+
     # Summary
-    print("\n" + "-"*60)
+    print("\n" + "-" * 60)
     print("SUMMARY:")
-    print(f"  Transformer: {trans_total:>15,} total | {trans_trainable:>15,} trainable ({100*trans_trainable/trans_total if trans_total > 0 else 0:.1f}%)")
-    print(f"  Diffusion:   {diff_total:>15,} total | {diff_trainable:>15,} trainable ({100*diff_trainable/diff_total if diff_total > 0 else 0:.1f}%)")
-    
+    print(
+        f"  Transformer: {trans_total:>15,} total | {trans_trainable:>15,} trainable ({100 * trans_trainable / trans_total if trans_total > 0 else 0:.1f}%)"
+    )
+    print(
+        f"  Diffusion:   {diff_total:>15,} total | {diff_trainable:>15,} trainable ({100 * diff_trainable / diff_total if diff_total > 0 else 0:.1f}%)"
+    )
+
     total_params = trans_total + diff_total
     trainable_params = trans_trainable + diff_trainable
-    print(f"  " + "-"*56)
-    print(f"  TOTAL:       {total_params:>15,} total | {trainable_params:>15,} trainable ({100*trainable_params/total_params if total_params > 0 else 0:.1f}%)")
-    
+    print("  " + "-" * 56)
+    print(
+        f"  TOTAL:       {total_params:>15,} total | {trainable_params:>15,} trainable ({100 * trainable_params / total_params if total_params > 0 else 0:.1f}%)"
+    )
+
     if freeze_transformer and trans_trainable > 0:
-        print("\n⚠️  WARNING: freeze_transformer=True but some transformer params are still trainable!")
+        print(
+            "\n⚠️  WARNING: freeze_transformer=True but some transformer params are still trainable!"
+        )
     if freeze_diffusion and diff_trainable > 0:
-        print("\n⚠️  WARNING: freeze_diffusion=True but some diffusion params are still trainable!")
-    
-    print("="*60 + "\n")
+        print(
+            "\n⚠️  WARNING: freeze_diffusion=True but some diffusion params are still trainable!"
+        )
+
+    print("=" * 60 + "\n")
 
 
 def load_model_with_lora(
@@ -237,7 +251,7 @@ def load_model_with_lora(
 ):
     """
     Load GLIDE model with optional LoRA support.
-    
+
     Args:
         Standard load_model arguments plus:
         use_lora: Enable LoRA adaptation
@@ -247,7 +261,7 @@ def load_model_with_lora(
         lora_target_mode: Which modules to target
         lora_resume: Path to resume LoRA adapter from
         device: Device to load model on
-        
+
     Returns:
         model, diffusion, options (model is PEFT model if LoRA enabled)
     """
@@ -260,44 +274,46 @@ def load_model_with_lora(
         activation_checkpointing=activation_checkpointing,
         model_type=model_type,
     )
-    
+
     if use_lora:
         from glide_finetune.lora_wrapper import (
             apply_lora_to_glide,
-            load_lora_checkpoint
+            load_lora_checkpoint,
         )
-        
+
         # If resuming from LoRA checkpoint
         if lora_resume and os.path.exists(lora_resume):
             print(f"Loading LoRA adapter from {lora_resume}")
             glide_model = load_lora_checkpoint(
-                glide_model,
-                lora_resume,
-                device=device,
-                is_trainable=True
+                glide_model, lora_resume, device=device, is_trainable=True
             )
         else:
             # Apply new LoRA configuration
-            print(f"Applying LoRA with rank={lora_rank}, alpha={lora_alpha}, mode={lora_target_mode}")
+            print(
+                f"Applying LoRA with rank={lora_rank}, alpha={lora_alpha}, mode={lora_target_mode}"
+            )
             glide_model = apply_lora_to_glide(
                 glide_model,
                 lora_rank=lora_rank,
                 lora_alpha=lora_alpha,
                 lora_dropout=lora_dropout,
                 target_mode=lora_target_mode,
-                verbose=True
+                verbose=True,
             )
             glide_model = glide_model.to(device)
-    
+
     return glide_model, glide_diffusion, options
 
+
 def read_image(path: str, shape: Tuple[int, int]):
-    pil_img = PIL.Image.open(path).convert('RGB')
+    pil_img = PIL.Image.open(path).convert("RGB")
     pil_img = pil_img.resize(shape, resample=PIL.Image.BICUBIC)
     img = np.array(pil_img)
     return th.from_numpy(img)[None].permute(0, 3, 1, 2).float() / 127.5 - 1
 
+
 # Sample from the base model.
+
 
 @th.inference_mode()
 def sample(
@@ -311,7 +327,7 @@ def sample(
     device="cpu",
     prediction_respacing="100",
     upsample_enabled=False,
-    image_to_upsample='',
+    image_to_upsample="",
     upsample_temp=0.997,
     sampler: Literal["plms", "ddim", "euler", "euler_a", "dpm++"] = "plms",
     sampler_eta: float = 0.0,
@@ -331,7 +347,9 @@ def sample(
 
     # Create the classifier-free guidance tokens (empty)
     full_batch_size = batch_size * 2
-    uncond_tokens, uncond_mask = glide_model.tokenizer.padded_tokens_and_mask( [], glide_options["text_ctx"])
+    uncond_tokens, uncond_mask = glide_model.tokenizer.padded_tokens_and_mask(
+        [], glide_options["text_ctx"]
+    )
 
     # Pack the tokens together into model kwargs.
     model_kwargs = dict(
@@ -342,7 +360,7 @@ def sample(
             [mask] * batch_size + [uncond_mask] * batch_size,
             dtype=th.bool,
             device=device,
-        )
+        ),
     )
 
     def cfg_model_fn(x_t, ts, **kwargs):
@@ -360,20 +378,20 @@ def sample(
         ]
         half_eps = uncond_eps + guidance_scale * (cond_eps - uncond_eps)
         eps = th.cat([half_eps, half_eps], dim=0)
-        current_prediction_pil = pred_to_pil(
-            (x_t - eps * (beta**0.5))[:batch_size]
-        )
+        current_prediction_pil = pred_to_pil((x_t - eps * (beta**0.5))[:batch_size])
         current_prediction_pil.save("current_prediction.png")
         return th.cat([eps, rest], dim=1)
 
-    model_fn = cfg_model_fn # so we use CFG for the base model.
+    model_fn = cfg_model_fn  # so we use CFG for the base model.
     if upsample_enabled:
-        assert image_to_upsample != '', "You must specify a path to an image to upsample."
+        assert image_to_upsample != "", (
+            "You must specify a path to an image to upsample."
+        )
         low_res_samples = read_image(image_to_upsample, size=(side_x, side_y))
-        model_kwargs['low_res'] = low_res_samples
+        model_kwargs["low_res"] = low_res_samples
         noise = th.randn((batch_size, 3, side_y, side_x), device=device) * upsample_temp
-        model_kwargs['noise'] = noise
-        model_fn = glide_model # just use the base model, no need for CFG.
+        model_kwargs["noise"] = noise
+        model_fn = glide_model  # just use the base model, no need for CFG.
 
     # Choose the appropriate sampler
     if sampler == "plms":
@@ -386,7 +404,7 @@ def sample(
             model_kwargs=model_kwargs,
             cond_fn=None,
         )[:batch_size]
-    elif base_sampler == "ddim":
+    elif sampler == "ddim":
         samples = eval_diffusion.ddim_sample_loop(
             model_fn,
             (full_batch_size, 3, side_y, side_x),
@@ -397,7 +415,7 @@ def sample(
             cond_fn=None,
             eta=sampler_eta,
         )[:batch_size]
-    elif base_sampler == "euler":
+    elif sampler == "euler":
         # Enhance diffusion with new samplers
         enhance_diffusion(eval_diffusion)
         samples = eval_diffusion.euler_sample_loop(
@@ -410,7 +428,7 @@ def sample(
             cond_fn=None,
             eta=0.0,  # Euler is deterministic
         )[:batch_size]
-    elif base_sampler == "euler_a":
+    elif sampler == "euler_a":
         # Enhance diffusion with new samplers
         enhance_diffusion(eval_diffusion)
         samples = eval_diffusion.euler_ancestral_sample_loop(
@@ -423,7 +441,7 @@ def sample(
             cond_fn=None,
             eta=sampler_eta if sampler_eta > 0 else 1.0,  # Default to stochastic
         )[:batch_size]
-    elif base_sampler == "dpm++":
+    elif sampler == "dpm++":
         # Enhance diffusion with new samplers
         enhance_diffusion(eval_diffusion)
         samples = eval_diffusion.dpm_solver_sample_loop(
@@ -439,7 +457,7 @@ def sample(
         )[:batch_size]
     else:
         raise ValueError(f"Unknown sampler: {sampler}")
-        
+
     glide_model.del_cache()
     return samples
 
@@ -457,18 +475,24 @@ def sample_with_superres(
     base_respacing="30",  # Fast sampling for base
     upsampler_respacing="17",  # Fast sampling for upsampler
     upsample_temp=0.997,
-    sampler: Literal["plms", "ddim", "euler", "euler_a", "dpm++"] = "euler",  # Default to Euler
-    base_sampler: Optional[Literal["plms", "ddim", "euler", "euler_a", "dpm++"]] = None,  # Sampler for base model (defaults to sampler)
-    upsampler_sampler: Optional[Literal["plms", "ddim", "euler", "euler_a", "dpm++"]] = None,  # Sampler for upsampler (defaults to sampler)
+    sampler: Literal[
+        "plms", "ddim", "euler", "euler_a", "dpm++"
+    ] = "euler",  # Default to Euler
+    base_sampler: Optional[
+        Literal["plms", "ddim", "euler", "euler_a", "dpm++"]
+    ] = None,  # Sampler for base model (defaults to sampler)
+    upsampler_sampler: Optional[
+        Literal["plms", "ddim", "euler", "euler_a", "dpm++"]
+    ] = None,  # Sampler for upsampler (defaults to sampler)
     sampler_eta: float = 0.0,
     dpm_order: int = 2,
 ):
     """
     Generate samples using the full pipeline: base model (64x64) -> upsampler (256x256).
-    
+
     This function follows the approach from the GLIDE notebook, generating a 64x64
     image with the base model and then upscaling it to 256x256 with the upsampler.
-    
+
     Args:
         sampler: Default sampler to use for both models if base_sampler/upsampler_sampler not specified
         base_sampler: Specific sampler for base model (overrides sampler)
@@ -484,19 +508,19 @@ def sample_with_superres(
         noise_schedule=base_options["noise_schedule"],
         timestep_respacing=base_respacing,
     )
-    
+
     # Create the text tokens to feed to the base model
     tokens = base_model.tokenizer.encode(prompt)
     tokens, mask = base_model.tokenizer.padded_tokens_and_mask(
         tokens, base_options["text_ctx"]
     )
-    
+
     # Create the classifier-free guidance tokens (empty)
     full_batch_size = batch_size * 2
     uncond_tokens, uncond_mask = base_model.tokenizer.padded_tokens_and_mask(
         [], base_options["text_ctx"]
     )
-    
+
     # Pack the tokens together into model kwargs for base model
     base_model_kwargs = dict(
         tokens=th.tensor(
@@ -506,9 +530,9 @@ def sample_with_superres(
             [mask] * batch_size + [uncond_mask] * batch_size,
             dtype=th.bool,
             device=device,
-        )
+        ),
     )
-    
+
     # Classifier-free guidance function for base model
     def base_cfg_model_fn(x_t, ts, **kwargs):
         half = x_t[: len(x_t) // 2]
@@ -519,7 +543,7 @@ def sample_with_superres(
         half_eps = uncond_eps + guidance_scale * (cond_eps - uncond_eps)
         eps = th.cat([half_eps, half_eps], dim=0)
         return th.cat([eps, rest], dim=1)
-    
+
     # Sample from base model using the selected sampler
     if base_sampler == "plms":
         base_samples = base_diffusion.plms_sample_loop(
@@ -581,9 +605,9 @@ def sample_with_superres(
         )[:batch_size]
     else:
         raise ValueError(f"Unknown sampler: {base_sampler}")
-    
+
     base_model.del_cache()
-    
+
     # Now upsample the 64x64 samples to 256x256
     upsampler_model.del_cache()
     upsampler_diffusion = create_gaussian_diffusion(
@@ -591,13 +615,13 @@ def sample_with_superres(
         noise_schedule=upsampler_options["noise_schedule"],
         timestep_respacing=upsampler_respacing,
     )
-    
+
     # Prepare tokens for upsampler (same prompt)
     up_tokens = upsampler_model.tokenizer.encode(prompt)
     up_tokens, up_mask = upsampler_model.tokenizer.padded_tokens_and_mask(
         up_tokens, upsampler_options["text_ctx"]
     )
-    
+
     # Create the model conditioning dict for upsampler
     upsampler_model_kwargs = dict(
         # Low-res image to upsample (normalize to [-1, 1])
@@ -606,10 +630,10 @@ def sample_with_superres(
         tokens=th.tensor([up_tokens] * batch_size, device=device),
         mask=th.tensor([up_mask] * batch_size, dtype=th.bool, device=device),
     )
-    
+
     # Sample from the upsampler (no CFG needed for upsampler)
     up_shape = (batch_size, 3, 256, 256)
-    
+
     # Sample from upsampler using the selected sampler
     if upsampler_sampler == "plms":
         upsampled_samples = upsampler_diffusion.plms_sample_loop(
@@ -676,7 +700,7 @@ def sample_with_superres(
         )[:batch_size]
     else:
         raise ValueError(f"Unknown sampler: {upsampler_sampler}")
-    
+
     upsampler_model.del_cache()
-    
+
     return upsampled_samples
