@@ -5,6 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ### Setup and Environment
+
 ```bash
 # Clone required dependency (crowsonkb fork for compatibility)
 git clone https://github.com/crowsonkb/glide-text2im
@@ -14,6 +15,9 @@ cd ..
 
 # Install dependencies with uv (Python 3.12+)
 uv sync
+
+# Install glide-text2im in uv environment if not already installed
+uv pip install -e glide-text2im
 
 # Run commands with uv
 uv run python train_glide.py [args]
@@ -34,7 +38,8 @@ uv run python train_glide.py \
   --checkpoints_dir 'checkpoint_directory' \
   --wandb_project_name 'my_project' \
   --sample_interval 500 \
-  --log_frequency 100
+  --log_frequency 100 \
+  --save_checkpoint_interval 5000
 ```
 
 #### Train upsampler model (64x64 → 256x256)
@@ -48,6 +53,19 @@ uv run python train_glide.py \
   --upscale_factor 4 \
   --image_to_upsample 'low_res_image.png' \
   --checkpoints_dir 'checkpoint_directory'
+```
+
+#### Train with LoRA (efficient finetuning)
+```bash
+uv run python train_glide.py \
+  --data_dir '/path/to/dataset' \
+  --use_lora \
+  --lora_rank 4 \
+  --lora_alpha 32 \
+  --lora_dropout 0.1 \
+  --lora_target_mode 'attention' \
+  --freeze_transformer \
+  --freeze_diffusion
 ```
 
 #### Train on webdataset (LAION/Alamy/Custom)
@@ -80,26 +98,89 @@ uv run python train_glide.py \
   --use_captions
 ```
 
+### Gradio Web Interface
+
+#### Running the Interactive Web App
+```bash
+# Start the Gradio interface
+./run_gradio.sh
+
+# Or with custom port
+PORT=8080 ./run_gradio.sh
+
+# Enable public sharing (generates a public URL)
+SHARE=true ./run_gradio.sh
+
+# Direct Python execution
+uv run python gradio_app.py
+```
+
+The web interface provides:
+- Single prompt text input with batch generation
+- Adjustable parameters (batch size, sampler, steps, CFG scale)
+- Model selection and optimization options
+- Real-time progress updates
+- Image gallery with download options
+- GPU memory monitoring
+- Example prompts for quick testing
+
+Access at: http://localhost:7860
+
 ### Testing and Evaluation
 
-#### Test all samplers
+#### Batch Evaluation with Rich UI
 ```bash
-uv run python test_samplers.py \
-  --prompt "a beautiful landscape" \
-  --steps 50 \
-  --guidance-scale 3.0 \
-  --output-dir sampler_outputs
+# Basic evaluation
+uv run python evaluate_glide.py \
+  --prompt_file prompts.txt \
+  --base_model checkpoints/base.pt \
+  --sr_model checkpoints/sr.pt
+
+# Advanced options
+uv run python evaluate_glide.py \
+  --prompt_file prompts.txt \
+  --base_model checkpoints/base.pt \
+  --sr_model checkpoints/sr.pt \
+  --sampler euler \
+  --base_steps 30 \
+  --sr_steps 30 \
+  --cfg 4.0 \
+  --batch_size 4 \
+  --save_grid \
+  --seed 42 \
+  --wandb_project my-evaluation
+
+# With torch.compile for optimized inference
+uv run python evaluate_glide.py \
+  --prompt_file prompts.txt \
+  --base_model checkpoints/base.pt \
+  --sr_model checkpoints/sr.pt \
+  --use_torch_compile \
+  --batch_size 4
+
+# Dry run to test configuration
+uv run python evaluate_glide.py \
+  --prompt_file prompts.txt \
+  --base_model checkpoints/base.pt \
+  --sr_model checkpoints/sr.pt \
+  --dry_run
 ```
 
-#### Quick sampler test
+**Note**: Prompt file must contain a power-of-2 number of prompts (1, 2, 4, 8, 16, 32, 64, 128, 256, 512, or 1024).
+
+#### Quick smoke test
 ```bash
-uv run python quick_test_samplers.py
+./smoke_test.sh
 ```
 
-#### Test WebDataset loading
+#### Test with compiled models
 ```bash
-uv run python test_webdataset.py
-uv run python test_wds_detailed.py
+./smoke_test_compiled.sh
+```
+
+#### Dry run test
+```bash
+./smoke_test_dry.sh
 ```
 
 ## Architecture
@@ -122,6 +203,12 @@ This repository implements finetuning for GLIDE (Guided Language to Image Diffus
   - `train_util.py`: Training utilities including wandb integration
   - `fp16_util.py`: Mixed precision training utilities
   - `enhanced_samplers.py`: Advanced sampling methods (Euler, Euler-A, DPM++)
+  - `lora_wrapper.py`: LoRA (Low-Rank Adaptation) implementation for efficient finetuning
+  - `cli_utils.py`: Command-line interface utilities
+
+- `train_glide.py`: Main training script with CLI argument parsing
+- `evaluate_glide.py`: Batch evaluation script with rich progress UI
+- `gradio_app.py`: Web interface for interactive generation
 
 ### Data Loading
 
@@ -137,22 +224,26 @@ The system supports two data loading modes:
 #### Key Parameters
 - `--uncond_p`: Probability of unconditional training (0.2 for base, 0.0 for upsampler)
 - `--sample_interval`: How often to generate sample images (default: 500 steps)
+- `--save_checkpoint_interval`: How often to save model checkpoints (default: 5000 steps)
 - `--log_frequency`: Console logging frequency (default: 100 steps)
 - `--wandb_project_name`: W&B project name for experiment tracking
 - `--use_captions`: Enable text conditioning (required for text-to-image)
 - `--activation_checkpointing`: Reduce memory usage via gradient checkpointing
 - `--use_fp16`: Enable mixed precision training
+- `--freeze_transformer`: Freeze transformer weights during training
+- `--freeze_diffusion`: Freeze diffusion model weights during training
+- `--use_lora`: Enable LoRA for parameter-efficient finetuning
 
 #### Training Notes
 - Metrics are logged to wandb every step for smooth monitoring
 - Sample images use random captions from `eval_captions.txt` if available
-- Checkpoints saved per epoch in numbered directories
+- Checkpoints saved at specified intervals in numbered directories
 - Default sampler during training: Euler with 30 steps
 - The `glide_text2im` package must be installed from the crowsonkb fork
 
 ## Sampling Methods
 
-The repository now supports multiple advanced sampling algorithms beyond the default PLMS and DDIM:
+The repository supports multiple advanced sampling algorithms beyond the default PLMS and DDIM:
 
 ### Available Samplers
 
@@ -181,17 +272,6 @@ sample_euler = sample(
 )
 ```
 
-### Testing Samplers
-
-Run the comparison script to test all samplers:
-```bash
-uv run python test_samplers.py \
-    --prompt "a beautiful landscape" \
-    --steps 50 \
-    --guidance-scale 3.0 \
-    --output-dir sampler_outputs
-```
-
 ### Performance Characteristics
 
 - **Euler**: ~15-20% faster than PLMS, deterministic
@@ -201,7 +281,7 @@ uv run python test_samplers.py \
 
 ### Enhanced Samplers with Upsampling
 
-The enhanced samplers (Euler, Euler Ancestral, DPM++) now work with the upsampling pipeline in `sample_with_superres`:
+The enhanced samplers (Euler, Euler Ancestral, DPM++) work with the upsampling pipeline in `sample_with_superres`:
 
 ```python
 from glide_finetune.glide_util import load_model, sample_with_superres
@@ -222,12 +302,3 @@ samples = sample_with_superres(
 ```
 
 **Upsampler Performance**: Testing shows ~1.5x speedup when using Euler/DPM++ vs PLMS for the upsampling stage.
-
-### Testing Upsampler Samplers
-
-```bash
-uv run python test_upsampler_samplers.py
-```
-
-This tests all samplers with the full text2im pipeline (64x64 → 256x256).
-- If I make an obvious oversight or mistake - feel free to point it out rather than making code changes. It won't hurt my feelings.
