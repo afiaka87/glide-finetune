@@ -45,6 +45,36 @@ def get_device(device_arg: Optional[str] = None) -> str:
     return "cuda" if torch.cuda.is_available() else "cpu"
 
 
+def validate_prompts_string(prompts_str: str) -> List[str]:
+    """
+    Validate and parse prompts from a pipe-separated string.
+    
+    Args:
+        prompts_str: Pipe-separated string of prompts
+        
+    Returns:
+        List of prompts
+        
+    Raises:
+        ValueError: If the number of prompts is not a power of 2
+    """
+    # Split by pipe and strip whitespace
+    prompts = [p.strip() for p in prompts_str.split("|") if p.strip()]
+    
+    # Check power of 2
+    n = len(prompts)
+    if n == 0:
+        raise ValueError("No prompts provided")
+    if n > 1024:
+        raise ValueError(f"Too many prompts: {n} (max 1024)")
+    if not (n & (n - 1)) == 0:
+        raise ValueError(
+            f"Number of prompts must be a power of 2 (1, 2, 4, 8, 16, ...), got {n}"
+        )
+    
+    return prompts
+
+
 def validate_prompt_file(prompt_file: str) -> List[str]:
     """
     Validate that the prompt file contains a power-of-2 number of prompts.
@@ -368,6 +398,50 @@ def create_summary_table(results: List[Dict[str, Any]]) -> Table:
     return table
 
 
+def create_reranking_progress_panel(
+    current_prompt: str,
+    num_candidates: int,
+    top_k: int,
+    clip_model: str,
+    phase: str = "generating"
+) -> Panel:
+    """
+    Create a progress panel for CLIP re-ranking.
+    
+    Args:
+        current_prompt: Current prompt being processed
+        num_candidates: Number of candidates to generate
+        top_k: Number of top images to keep
+        clip_model: CLIP model being used
+        phase: Current phase ("generating", "ranking", "saving")
+        
+    Returns:
+        Rich Panel with re-ranking status
+    """
+    content = Table(show_header=False, box=None, padding=(0, 1))
+    
+    # Add status rows
+    content.add_row("[bold]Prompt:[/bold]", Text(current_prompt[:80] + "..." if len(current_prompt) > 80 else current_prompt))
+    content.add_row("[bold]CLIP Model:[/bold]", clip_model)
+    content.add_row("[bold]Candidates:[/bold]", f"{num_candidates} images")
+    content.add_row("[bold]Selecting:[/bold]", f"Top {top_k} images")
+    
+    # Phase indicator
+    phase_text = {
+        "generating": "[yellow]⚡ Generating candidates...[/yellow]",
+        "ranking": "[cyan]🎯 Re-ranking with CLIP...[/cyan]",
+        "saving": "[green]💾 Saving best images...[/green]"
+    }
+    content.add_row("[bold]Status:[/bold]", phase_text.get(phase, phase))
+    
+    return Panel(
+        content,
+        title="[bold blue]CLIP Re-ranking[/bold blue]",
+        border_style="blue",
+        box=box.ROUNDED,
+    )
+
+
 def save_image_text_pair(
     image_tensor: torch.Tensor,
     prompt: str,
@@ -409,6 +483,74 @@ def save_image_text_pair(
         f.write(prompt)
     
     return str(image_path), str(text_path)
+
+
+def save_ranked_images(
+    images: List[torch.Tensor],
+    prompt: str,
+    scores: torch.Tensor,
+    output_dir: Path,
+    prompt_idx: int,
+    output_format: str = "jpg"
+) -> List[Dict[str, Any]]:
+    """
+    Save ranked images with CLIP scores and metadata.
+    
+    Args:
+        images: List of image tensors (already ranked)
+        prompt: Text prompt
+        scores: CLIP scores for the images
+        output_dir: Output directory
+        prompt_idx: Prompt index
+        output_format: Image format
+        
+    Returns:
+        List of metadata dictionaries for each saved image
+    """
+    # Create prompt-specific directory
+    prompt_dir = output_dir / f"prompt_{prompt_idx:03d}"
+    prompt_dir.mkdir(parents=True, exist_ok=True)
+    
+    results = []
+    
+    # Save each ranked image
+    for rank, (image_tensor, score) in enumerate(zip(images, scores), 1):
+        # Convert tensor to PIL image
+        image_np = ((image_tensor + 1) * 127.5).clamp(0, 255).to(torch.uint8)
+        image_np = image_np.permute(1, 2, 0).cpu().numpy()
+        image = Image.fromarray(image_np)
+        
+        # Save with rank in filename
+        image_path = prompt_dir / f"image_rank_{rank:03d}.{output_format}"
+        if output_format == "jpg":
+            image.save(image_path, quality=95)
+        else:
+            image.save(image_path)
+        
+        # Add to results
+        results.append({
+            "rank": rank,
+            "filename": image_path.name,
+            "clip_score": float(score),
+            "prompt": prompt,
+        })
+    
+    # Save metadata
+    metadata_path = prompt_dir / "metadata.json"
+    with open(metadata_path, 'w') as f:
+        json.dump({
+            "prompt": prompt,
+            "prompt_idx": prompt_idx,
+            "num_images": len(images),
+            "images": results,
+        }, f, indent=2)
+    
+    # Save prompt text file
+    prompt_path = prompt_dir / "prompt.txt"
+    with open(prompt_path, 'w') as f:
+        f.write(prompt)
+    
+    return results
 
 
 def create_image_grid(

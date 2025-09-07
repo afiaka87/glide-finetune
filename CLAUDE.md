@@ -130,11 +130,27 @@ Access at: http://localhost:7860
 
 #### Batch Evaluation with Rich UI
 ```bash
-# Basic evaluation
+# Basic evaluation from file
 uv run python evaluate_glide.py \
   --prompt_file prompts.txt \
   --base_model checkpoints/base.pt \
   --sr_model checkpoints/sr.pt
+
+# Direct prompts via command line (must be power of 2)
+uv run python evaluate_glide.py \
+  --prompts "a cat playing piano|a dog reading newspaper" \
+  --base_model checkpoints/base.pt \
+  --sr_model checkpoints/sr.pt
+
+# With CLIP re-ranking (generates 32 candidates, selects best 8)
+uv run python evaluate_glide.py \
+  --prompts "a beautiful landscape|a futuristic city" \
+  --base_model checkpoints/base.pt \
+  --sr_model checkpoints/sr.pt \
+  --use_clip_rerank \
+  --clip_candidates 32 \
+  --clip_top_k 8 \
+  --clip_model "ViT-L/14"
 
 # Advanced options
 uv run python evaluate_glide.py \
@@ -204,10 +220,11 @@ This repository implements finetuning for GLIDE (Guided Language to Image Diffus
   - `fp16_util.py`: Mixed precision training utilities
   - `enhanced_samplers.py`: Advanced sampling methods (Euler, Euler-A, DPM++)
   - `lora_wrapper.py`: LoRA (Low-Rank Adaptation) implementation for efficient finetuning
+  - `clip_rerank.py`: CLIP-based image re-ranking for quality selection
   - `cli_utils.py`: Command-line interface utilities
 
 - `train_glide.py`: Main training script with CLI argument parsing
-- `evaluate_glide.py`: Batch evaluation script with rich progress UI
+- `evaluate_glide.py`: Batch evaluation script with rich progress UI and CLIP re-ranking support
 - `gradio_app.py`: Web interface for interactive generation
 
 ### Data Loading
@@ -302,3 +319,60 @@ samples = sample_with_superres(
 ```
 
 **Upsampler Performance**: Testing shows ~1.5x speedup when using Euler/DPM++ vs PLMS for the upsampling stage.
+
+## CLIP Re-ranking
+
+The evaluation script supports CLIP-based re-ranking to select the best generated images:
+
+### How It Works
+
+1. **Generate Multiple Candidates**: For each prompt, generate N candidates (e.g., 32 images)
+2. **Memory-Efficient Processing**: Offload GLIDE models from GPU before loading CLIP
+3. **CLIP Scoring**: Score all candidates against the text prompt using CLIP ViT-L/14
+4. **Select Best Images**: Keep only the top-K images (e.g., best 8) based on CLIP scores
+5. **Organized Output**: Save ranked images with metadata including CLIP scores
+
+### Usage
+
+```bash
+# Generate 32 candidates per prompt, keep best 8
+uv run python evaluate_glide.py \
+  --prompts "a majestic mountain landscape|a cozy coffee shop" \
+  --base_model checkpoints/base.pt \
+  --sr_model checkpoints/sr.pt \
+  --use_clip_rerank \
+  --clip_candidates 32 \
+  --clip_top_k 8 \
+  --clip_model "ViT-L/14" \
+  --clip_batch_size 16
+```
+
+### Output Structure with Re-ranking
+
+```
+glide-outputs/
+├── prompt_000/
+│   ├── image_rank_001.jpg  # Best CLIP score
+│   ├── image_rank_002.jpg  # 2nd best
+│   ├── ...
+│   ├── image_rank_008.jpg  # 8th best
+│   ├── metadata.json        # CLIP scores and prompt
+│   └── prompt.txt           # Original prompt
+└── prompt_001/
+    └── ...
+```
+
+### Supported CLIP Models
+
+- `ViT-L/14` (default) - Best balance of quality and speed
+- `ViT-B/32` - Faster but lower quality
+- `ViT-B/16` - Good compromise
+- Other OpenCLIP models available
+
+### Memory Management
+
+The system automatically manages GPU memory by:
+- Offloading GLIDE models to CPU during CLIP ranking
+- Loading CLIP model only when needed
+- Clearing CUDA cache between phases
+- Reloading GLIDE models for next prompt

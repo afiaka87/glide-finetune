@@ -27,3 +27,19 @@ scripts/run-finetune-wds.sh
 # Logs and temporary files
 test.log
 trash/
+
+
+# various scripts and output directories
+.gradio/
+glide-outputs-smoke-test/
+glide-outputs/
+glide_finetune/list_i_want.txt
+run_gradio.sh
+smoke_test.sh
+smoke_test_captions.txt
+smoke_test_compiled.sh
+smoke_test_dry.sh
+test_clip_rerank.py
+test_prompts.txt
+text2im.ipynb
+two_prompts.txt

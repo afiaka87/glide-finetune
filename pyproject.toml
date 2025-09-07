@@ -32,4 +32,5 @@ dependencies = [
     "urllib3>=2.5.0",
     "wandb>=0.21.1",
     "webdataset>=1.0.2",
+    "open-clip-torch>=2.20.0",
 ]

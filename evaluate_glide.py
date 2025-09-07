@@ -30,6 +30,7 @@ from glide_finetune.train_util import pred_to_pil
 from glide_finetune.cli_utils import (
     get_device,
     validate_prompt_file,
+    validate_prompts_string,
     setup_output_directory,
     save_metadata,
     save_checkpoint,
@@ -40,10 +41,13 @@ from glide_finetune.cli_utils import (
     create_config_panel,
     create_batch_status_panel,
     create_summary_table,
+    create_reranking_progress_panel,
     save_image_text_pair,
+    save_ranked_images,
     create_image_grid,
     display_output_tree,
 )
+from glide_finetune.clip_rerank import CLIPReranker
 
 
 def get_compiled_model_path(original_path: str) -> Path:
@@ -186,12 +190,17 @@ def parse_arguments():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     
-    # Required arguments
-    parser.add_argument(
+    # Input arguments (mutually exclusive)
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument(
         "--prompt_file",
         type=str,
-        required=True,
         help="Path to file with line-separated prompts (must be power of 2, max 1024)",
+    )
+    input_group.add_argument(
+        "--prompts",
+        type=str,
+        help="Pipe-separated prompts, e.g., 'cat|dog|bird|fish' (must be power of 2)",
     )
     parser.add_argument(
         "--base_model",
@@ -311,6 +320,38 @@ def parse_arguments():
         type=str,
         default="glide-finetune-eval",
         help="W&B project name (default: glide-finetune-eval)",
+    )
+    
+    # CLIP re-ranking arguments
+    clip_group = parser.add_argument_group("CLIP Re-ranking")
+    clip_group.add_argument(
+        "--use_clip_rerank",
+        action="store_true",
+        help="Enable CLIP re-ranking of generated images",
+    )
+    clip_group.add_argument(
+        "--clip_model",
+        type=str,
+        default="ViT-L/14",
+        help="CLIP model to use for re-ranking (default: ViT-L/14)",
+    )
+    clip_group.add_argument(
+        "--clip_candidates",
+        type=int,
+        default=32,
+        help="Number of candidates to generate per prompt (default: 32)",
+    )
+    clip_group.add_argument(
+        "--clip_top_k",
+        type=int,
+        default=8,
+        help="Number of top images to keep after re-ranking (default: 8)",
+    )
+    clip_group.add_argument(
+        "--clip_batch_size",
+        type=int,
+        default=16,
+        help="Batch size for CLIP scoring (default: 16)",
     )
     
     return parser.parse_args()
@@ -442,6 +483,113 @@ def process_batch(
     return samples
 
 
+def process_prompt_with_reranking(
+    prompt: str,
+    prompt_idx: int,
+    base_model_tuple,
+    sr_model_tuple,
+    args,
+    device: str,
+    output_dir: Path,
+    console: Console,
+) -> Dict[str, Any]:
+    """
+    Process a single prompt with CLIP re-ranking.
+    
+    Returns:
+        Dictionary with results and metadata
+    """
+    base_model, base_diffusion, base_options = base_model_tuple
+    sr_model, sr_diffusion, sr_options = sr_model_tuple
+    
+    # Phase 1: Generate candidates
+    console.print(create_reranking_progress_panel(
+        prompt, args.clip_candidates, args.clip_top_k, 
+        args.clip_model, "generating"
+    ))
+    
+    candidates = []
+    with create_progress_bars() as progress:
+        gen_task = progress.add_task(
+            f"[cyan]Generating {args.clip_candidates} candidates...",
+            total=args.clip_candidates
+        )
+        
+        for i in range(args.clip_candidates):
+            sample = sample_with_superres(
+                base_model, base_options,
+                sr_model, sr_options,
+                prompt=prompt,
+                batch_size=1,
+                guidance_scale=args.cfg,
+                device=device,
+                base_respacing=str(args.base_steps),
+                upsampler_respacing=str(args.sr_steps),
+                sampler=args.sampler,
+            )
+            candidates.append(sample[0])
+            progress.update(gen_task, advance=1)
+    
+    # Phase 2: Unload GLIDE models and load CLIP
+    console.print(create_reranking_progress_panel(
+        prompt, args.clip_candidates, args.clip_top_k,
+        args.clip_model, "ranking"
+    ))
+    
+    # Move GLIDE models to CPU to free GPU memory
+    console.print("[yellow]Offloading GLIDE models to free GPU memory...[/yellow]")
+    base_model.cpu()
+    sr_model.cpu()
+    torch.cuda.empty_cache()
+    
+    # Load CLIP and perform re-ranking
+    clip_ranker = CLIPReranker(
+        model_name=args.clip_model,
+        device=device,
+        use_fp16=args.use_fp16,
+        console=console,
+    )
+    
+    with clip_ranker:
+        # Get top-k indices and scores
+        top_indices, top_scores = clip_ranker.rerank_images(
+            candidates,
+            prompt,
+            top_k=args.clip_top_k,
+            batch_size=args.clip_batch_size,
+            return_scores=True,
+        )
+    
+    # Get the top images
+    top_images = [candidates[idx] for idx in top_indices]
+    
+    # Phase 3: Save ranked images
+    console.print(create_reranking_progress_panel(
+        prompt, args.clip_candidates, args.clip_top_k,
+        args.clip_model, "saving"
+    ))
+    
+    results = save_ranked_images(
+        top_images,
+        prompt,
+        top_scores,
+        output_dir,
+        prompt_idx,
+        args.output_format,
+    )
+    
+    # Reload GLIDE models if needed (will be done in main loop)
+    
+    return {
+        "prompt": prompt,
+        "prompt_idx": prompt_idx,
+        "num_candidates": args.clip_candidates,
+        "num_selected": len(top_images),
+        "clip_scores": top_scores.tolist(),
+        "results": results,
+    }
+
+
 def main():
     """Main execution function."""
     console = Console()
@@ -451,8 +599,12 @@ def main():
     
     # Validate prompts
     try:
-        prompts = validate_prompt_file(args.prompt_file)
-        console.print(f"[green]✓[/green] Loaded {len(prompts)} prompts")
+        if args.prompt_file:
+            prompts = validate_prompt_file(args.prompt_file)
+            console.print(f"[green]✓[/green] Loaded {len(prompts)} prompts from file")
+        else:
+            prompts = validate_prompts_string(args.prompts)
+            console.print(f"[green]✓[/green] Parsed {len(prompts)} prompts from command line")
     except ValueError as e:
         console.print(f"[red]Error:[/red] {e}")
         sys.exit(1)
@@ -524,138 +676,210 @@ def main():
     
     results = []
     all_images = []
-    total_batches = (len(prompts) + args.batch_size - 1) // args.batch_size
     start_time = time.time()
     
-    with create_progress_bars() as progress:
-        # Main progress bar
-        main_task = progress.add_task(
-            "[bold blue]Overall Progress",
-            total=len(prompts)
-        )
+    # CLIP re-ranking mode - process each prompt individually
+    if args.use_clip_rerank:
+        console.print(f"[bold cyan]CLIP Re-ranking Mode[/bold cyan]")
+        console.print(f"  • Generating {args.clip_candidates} candidates per prompt")
+        console.print(f"  • Selecting top {args.clip_top_k} using {args.clip_model}\n")
         
-        # Batch progress bar
-        batch_task = progress.add_task(
-            "[green]Current Batch",
-            total=args.batch_size
-        )
-        
-        # Process in batches
-        for batch_idx in range(start_idx, len(prompts), args.batch_size):
-            batch_prompts = prompts[batch_idx:batch_idx + args.batch_size]
-            current_batch_num = (batch_idx // args.batch_size) + 1
+        for prompt_idx, prompt in enumerate(prompts):
+            if prompt_idx < start_idx:
+                continue
+                
+            console.print(f"\n[bold]Processing prompt {prompt_idx + 1}/{len(prompts)}[/bold]")
             
-            # Reset batch progress
-            progress.reset(batch_task, total=len(batch_prompts))
+            # Reload GLIDE models if they were offloaded
+            if prompt_idx > start_idx:
+                console.print("[cyan]Reloading GLIDE models...[/cyan]")
+                base_tuple[0].to(device)
+                sr_tuple[0].to(device)
             
-            # Skip existing if requested
-            if args.skip_existing:
-                skip_count = sum(
-                    1 for i in range(len(batch_prompts))
-                    if should_skip_prompt(
-                        batch_idx + i, output_dir, 
-                        args.output_format, args.skip_existing
-                    )
-                )
-                if skip_count == len(batch_prompts):
-                    console.print(f"[yellow]Skipping batch {current_batch_num} (all exist)[/yellow]")
-                    progress.update(main_task, advance=len(batch_prompts))
-                    continue
-            
-            # Update status
-            elapsed = time.time() - start_time
-            status_panel = create_batch_status_panel(
-                current_batch_num,
-                total_batches,
-                batch_prompts,
-                batch_idx,
-                len(prompts),
-                elapsed
-            )
-            console.print(status_panel)
-            
-            # Process batch
             try:
-                batch_start = time.time()
-                samples = process_batch(
-                    batch_prompts,
+                # Process with re-ranking
+                result = process_prompt_with_reranking(
+                    prompt,
+                    prompt_idx,
                     base_tuple,
                     sr_tuple,
                     args,
                     device,
-                    progress,
-                    batch_task,
+                    output_dir,
+                    console,
                 )
-                batch_time = time.time() - batch_start
                 
-                # Save outputs
-                for i, (sample, prompt) in enumerate(zip(samples, batch_prompts)):
-                    idx = batch_idx + i
-                    
-                    # Check if should skip
-                    if should_skip_prompt(idx, output_dir, args.output_format, args.skip_existing):
-                        results.append({
-                            'index': idx,
-                            'prompt': prompt,
-                            'filename': f"prompt_{idx:03d}.{args.output_format}",
-                            'status': 'skipped',
-                            'time': 0,
-                        })
-                        continue
-                    
-                    # Save image-text pair
-                    img_path, txt_path = save_image_text_pair(
-                        sample,
-                        prompt,
-                        output_dir,
-                        idx,
-                        args.output_format,
-                    )
-                    
-                    # Load image for grid
-                    if args.save_grid:
-                        all_images.append(Image.open(img_path))
-                    
-                    # Log to W&B
+                results.append({
+                    'index': prompt_idx,
+                    'prompt': prompt,
+                    'status': 'success',
+                    'num_candidates': result['num_candidates'],
+                    'num_selected': result['num_selected'],
+                    'clip_scores': result['clip_scores'],
+                })
+                
+                # Log to W&B
+                for rank, img_result in enumerate(result['results'], 1):
                     wandb.log({
-                        f"image_{idx}": wandb.Image(img_path, caption=prompt),
-                        "batch_idx": batch_idx,
-                        "batch_time": batch_time,
+                        f"image_{prompt_idx}_rank_{rank}": wandb.Image(
+                            output_dir / f"prompt_{prompt_idx:03d}" / img_result['filename'],
+                            caption=f"{prompt} (CLIP: {img_result['clip_score']:.3f})"
+                        ),
+                        "prompt_idx": prompt_idx,
+                        "clip_score": img_result['clip_score'],
                     })
-                    
-                    results.append({
-                        'index': idx,
-                        'prompt': prompt,
-                        'filename': Path(img_path).name,
-                        'status': 'success',
-                        'time': batch_time / len(batch_prompts),
-                    })
-                
-                # Update main progress
-                progress.update(main_task, advance=len(batch_prompts))
                 
                 # Save checkpoint
                 save_checkpoint(output_dir, {
-                    'last_completed_idx': batch_idx + len(batch_prompts) - 1,
+                    'last_completed_idx': prompt_idx,
                     'timestamp': time.time(),
                 })
                 
             except Exception as e:
-                console.print(f"[red]Error in batch {current_batch_num}: {e}[/red]")
-                for prompt in batch_prompts:
-                    results.append({
-                        'index': batch_idx,
-                        'prompt': prompt,
-                        'filename': 'error',
-                        'status': 'error',
-                        'time': 0,
-                    })
-                progress.update(main_task, advance=len(batch_prompts))
-                continue
+                console.print(f"[red]Error processing prompt {prompt_idx}: {e}[/red]")
+                results.append({
+                    'index': prompt_idx,
+                    'prompt': prompt,
+                    'status': 'error',
+                })
+        
+        # Ensure models are back on GPU at the end
+        base_tuple[0].to(device)
+        sr_tuple[0].to(device)
+        
+    else:
+        # Original batch processing mode
+        total_batches = (len(prompts) + args.batch_size - 1) // args.batch_size
+        
+        with create_progress_bars() as progress:
+            # Main progress bar
+            main_task = progress.add_task(
+                "[bold blue]Overall Progress",
+                total=len(prompts)
+            )
             
-            # Clear CUDA cache periodically
-            if device == "cuda" and batch_idx % 10 == 0:
-                torch.cuda.empty_cache()
+            # Batch progress bar
+            batch_task = progress.add_task(
+                "[green]Current Batch",
+                total=args.batch_size
+            )
+            
+            # Process in batches
+            for batch_idx in range(start_idx, len(prompts), args.batch_size):
+                batch_prompts = prompts[batch_idx:batch_idx + args.batch_size]
+                current_batch_num = (batch_idx // args.batch_size) + 1
+                
+                # Reset batch progress
+                progress.reset(batch_task, total=len(batch_prompts))
+                
+                # Skip existing if requested
+                if args.skip_existing:
+                    skip_count = sum(
+                        1 for i in range(len(batch_prompts))
+                        if should_skip_prompt(
+                            batch_idx + i, output_dir, 
+                            args.output_format, args.skip_existing
+                        )
+                    )
+                    if skip_count == len(batch_prompts):
+                        console.print(f"[yellow]Skipping batch {current_batch_num} (all exist)[/yellow]")
+                        progress.update(main_task, advance=len(batch_prompts))
+                        continue
+                
+                # Update status
+                elapsed = time.time() - start_time
+                status_panel = create_batch_status_panel(
+                    current_batch_num,
+                    total_batches,
+                    batch_prompts,
+                    batch_idx,
+                    len(prompts),
+                    elapsed
+                )
+                console.print(status_panel)
+                
+                # Process batch
+                try:
+                    batch_start = time.time()
+                    samples = process_batch(
+                        batch_prompts,
+                        base_tuple,
+                        sr_tuple,
+                        args,
+                        device,
+                        progress,
+                        batch_task,
+                    )
+                    batch_time = time.time() - batch_start
+                    
+                    # Save outputs
+                    for i, (sample, prompt) in enumerate(zip(samples, batch_prompts)):
+                        idx = batch_idx + i
+                        
+                        # Check if should skip
+                        if should_skip_prompt(idx, output_dir, args.output_format, args.skip_existing):
+                            results.append({
+                                'index': idx,
+                                'prompt': prompt,
+                                'filename': f"prompt_{idx:03d}.{args.output_format}",
+                                'status': 'skipped',
+                                'time': 0,
+                            })
+                            continue
+                        
+                        # Save image-text pair
+                        img_path, txt_path = save_image_text_pair(
+                            sample,
+                            prompt,
+                            output_dir,
+                            idx,
+                            args.output_format,
+                        )
+                        
+                        # Load image for grid
+                        if args.save_grid:
+                            all_images.append(Image.open(img_path))
+                        
+                        # Log to W&B
+                        wandb.log({
+                            f"image_{idx}": wandb.Image(img_path, caption=prompt),
+                            "batch_idx": batch_idx,
+                            "batch_time": batch_time,
+                        })
+                        
+                        results.append({
+                            'index': idx,
+                            'prompt': prompt,
+                            'filename': Path(img_path).name,
+                            'status': 'success',
+                            'time': batch_time / len(batch_prompts),
+                        })
+                    
+                    # Update main progress
+                    progress.update(main_task, advance=len(batch_prompts))
+                    
+                    # Save checkpoint
+                    save_checkpoint(output_dir, {
+                        'last_completed_idx': batch_idx + len(batch_prompts) - 1,
+                        'timestamp': time.time(),
+                    })
+                    
+                except Exception as e:
+                    console.print(f"[red]Error in batch {current_batch_num}: {e}[/red]")
+                    for prompt in batch_prompts:
+                        results.append({
+                            'index': batch_idx,
+                            'prompt': prompt,
+                            'filename': 'error',
+                            'status': 'error',
+                            'time': 0,
+                        })
+                    progress.update(main_task, advance=len(batch_prompts))
+                    continue
+                
+                # Clear CUDA cache periodically
+                if device == "cuda" and batch_idx % 10 == 0:
+                    torch.cuda.empty_cache()
     
     # Create and save grid if requested
     if args.save_grid and all_images:
