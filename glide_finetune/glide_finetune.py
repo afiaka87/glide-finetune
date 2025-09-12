@@ -104,8 +104,8 @@ def run_glide_finetune_epoch(
     eval_base_sampler_steps: int = 30,  # number of steps for base model evaluation
     eval_sr_sampler_steps: int = 17,  # number of steps for super-resolution evaluation
     prompt: str = "",  # prompt for inference, not training
-    sample_captions_file: str = "eval_captions.txt",  # file with captions to sample from
-    num_captions_sample: int = 1,  # number of captions to sample and generate
+    prompt_file: str = "eval_captions.txt",  # file with prompts to sample from
+    sample_batch_size: int = 8,  # number of prompts to randomly sample at each interval
     side_x: int = 64,
     side_y: int = 64,
     outputs_dir: str = "./outputs",
@@ -114,7 +114,7 @@ def run_glide_finetune_epoch(
     log_frequency: int = 100,
     sample_interval: int = 500,
     wandb_run=None,
-    gradient_accumualation_steps=1,
+    gradient_accumulation_steps=1,
     epoch: int = 0,
     train_upsample: bool = False,
     upsample_factor=4,
@@ -131,14 +131,14 @@ def run_glide_finetune_epoch(
     else:
         train_step = base_train_step  # type: ignore
 
-    # Load eval captions if available
-    eval_captions = []
-    if os.path.exists(sample_captions_file):
-        with open(sample_captions_file, "r") as f:
-            eval_captions = [line.strip() for line in f.readlines() if line.strip()]
-        print(f"Loaded {len(eval_captions)} eval captions from {sample_captions_file}")
+    # Load eval prompts if available
+    eval_prompts = []
+    if os.path.exists(prompt_file):
+        with open(prompt_file, "r") as f:
+            eval_prompts = [line.strip() for line in f.readlines() if line.strip()]
+        print(f"Loaded {len(eval_prompts)} eval prompts from {prompt_file}")
     else:
-        print(f"No {sample_captions_file} found, using fixed prompt: {prompt}")
+        print(f"No {prompt_file} found, using fixed prompt: {prompt}")
 
     glide_model.to(device)
     glide_model.train()
@@ -148,73 +148,96 @@ def run_glide_finetune_epoch(
     start_time = time.time()
     last_log_time = start_time
     samples_processed = 0
+    accumulated_loss = 0.0
+    current_loss = 0.0  # For logging the most recent loss
+    
+    # Zero gradients at the start
+    optimizer.zero_grad()
 
     for train_idx, batch in enumerate(dataloader):
-        accumulated_loss = train_step(
+        # Compute loss
+        loss = train_step(
             glide_model=glide_model,
             glide_diffusion=glide_diffusion,
             batch=batch,
             device=device,
         )
-        accumulated_loss.backward()
-        optimizer.step()
-        glide_model.zero_grad()
+        
+        # Scale loss by gradient accumulation steps
+        scaled_loss = loss / gradient_accumulation_steps
+        scaled_loss.backward()
+        
+        # Accumulate the loss for logging
+        accumulated_loss += loss.item()
+        current_loss = loss.item()  # Store current loss for immediate logging
 
         # Calculate samples per second
         batch_size = (
             batch[0].shape[0] if isinstance(batch, (list, tuple)) else batch.shape[0]
         )
         samples_processed += batch_size
-
-        # Calculate instantaneous and average samples/sec
+        
+        # Calculate current time and average samples/sec (needed for logging)
         current_time = time.time()
         total_elapsed = current_time - start_time
         avg_samples_per_sec = (
             samples_processed / total_elapsed if total_elapsed > 0 else 0
         )
 
-        log = {
-            **log,
-            "iter": train_idx,
-            "loss": accumulated_loss.item() / gradient_accumualation_steps,
-            "samples_per_sec": avg_samples_per_sec,
-            "total_samples": samples_processed,
-        }
+        # Update weights every gradient_accumulation_steps
+        if (train_idx + 1) % gradient_accumulation_steps == 0:
+            optimizer.step()
+            optimizer.zero_grad()
 
-        # Log metrics to wandb every step
-        wandb_run.log(log)
+            # Calculate the averaged loss for this accumulation
+            avg_accumulated_loss = accumulated_loss / gradient_accumulation_steps
+            
+            # Log the averaged loss
+            log = {
+                **log,
+                "iter": train_idx,
+                "loss": avg_accumulated_loss,
+                "samples_per_sec": avg_samples_per_sec,
+                "total_samples": samples_processed,
+            }
 
-        # Print to console at log_frequency
-        if train_idx > 0 and train_idx % log_frequency == 0:
-            # Calculate interval samples/sec since last log
-            interval_time = current_time - last_log_time
-            interval_samples = batch_size * log_frequency
-            interval_samples_per_sec = (
-                interval_samples / interval_time if interval_time > 0 else 0
-            )
+            # Log metrics to wandb every optimizer step
+            wandb_run.log(log)
+            
+            # Print to console at log_frequency (only after optimizer steps)
+            if train_idx > 0 and ((train_idx + 1) // gradient_accumulation_steps) % log_frequency == 0:
+                # Calculate interval samples/sec since last log
+                interval_time = current_time - last_log_time
+                interval_samples = batch_size * gradient_accumulation_steps * log_frequency
+                interval_samples_per_sec = (
+                    interval_samples / interval_time if interval_time > 0 else 0
+                )
 
-            # Add interval samples/sec to wandb log
-            wandb_run.log({"interval_samples_per_sec": interval_samples_per_sec})
+                # Add interval samples/sec to wandb log
+                wandb_run.log({"interval_samples_per_sec": interval_samples_per_sec})
 
-            print(
-                f"Step {train_idx}: loss: {accumulated_loss.item():.4f}, "
-                f"samples/sec: {interval_samples_per_sec:.1f} (interval), "
-                f"{avg_samples_per_sec:.1f} (avg), "
-                f"total samples: {samples_processed}"
-            )
+                print(
+                    f"Step {train_idx}: loss: {avg_accumulated_loss:.4f}, "
+                    f"samples/sec: {interval_samples_per_sec:.1f} (interval), "
+                    f"{avg_samples_per_sec:.1f} (avg), "
+                    f"total samples: {samples_processed}"
+                )
 
-            last_log_time = current_time
+                last_log_time = current_time
+            
+            # Reset accumulated loss
+            accumulated_loss = 0.0
 
         # Sample from the model at sample_interval
         if train_idx > 0 and train_idx % sample_interval == 0:
-            # Select captions for sampling
-            if eval_captions:
-                # Sample multiple captions randomly
-                n_captions = min(num_captions_sample, len(eval_captions))
-                sample_prompts = random.sample(eval_captions, n_captions)
+            # Select prompts for sampling
+            if eval_prompts:
+                # Sample multiple prompts randomly
+                n_prompts = min(sample_batch_size, len(eval_prompts))
+                sample_prompts = random.sample(eval_prompts, n_prompts)
             else:
                 # Use the fixed prompt multiple times
-                sample_prompts = [prompt] * num_captions_sample
+                sample_prompts = [prompt] * sample_batch_size
 
             print(
                 f"Sampling {len(sample_prompts)} images from model at iteration {train_idx}"
@@ -338,7 +361,7 @@ def run_glide_finetune_epoch(
                 metadata={
                     "epoch": epoch,
                     "step": train_idx,
-                    "loss": accumulated_loss.item(),
+                    "loss": current_loss,
                 },
             )
             print(f"Saved LoRA adapter to {lora_save_path}")
@@ -361,7 +384,7 @@ def run_glide_finetune_epoch(
                     metadata={
                         "epoch": epoch,
                         "step": train_idx,
-                        "loss": accumulated_loss.item(),
+                        "loss": current_loss,
                     },
                 )
                 print(f"Saved LoRA checkpoint to {lora_save_path}")

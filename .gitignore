@@ -17,7 +17,6 @@ checkpoints/
 current_prediction.png
 download_models.py
 eval_captions_persons_aesthetic_256.txt
-glide-text2im/
 
 # Scripts and configs
 run-finetune-laion.sh

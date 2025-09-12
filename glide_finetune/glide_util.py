@@ -42,6 +42,7 @@ def get_tokens_and_mask(
 def load_model(
     glide_path: str = "",
     use_fp16: bool = False,
+    precision: str = "fp32",  # "fp32", "fp16", "bf16"
     freeze_transformer: bool = False,
     freeze_diffusion: bool = False,
     activation_checkpointing: bool = False,
@@ -55,7 +56,10 @@ def load_model(
     if "inpaint" in model_type:
         options["inpaint"] = True
 
-    options["use_fp16"] = use_fp16
+    # Handle legacy use_fp16 parameter
+    if use_fp16:
+        precision = "fp16"
+    options["use_fp16"] = precision == "fp16"
     glide_model, glide_diffusion = create_model_and_diffusion(**options)
     if activation_checkpointing:
         glide_model.use_checkpoint = True
@@ -124,9 +128,12 @@ def load_model(
     if freeze_transformer or freeze_diffusion:
         _print_freeze_status(glide_model, freeze_transformer, freeze_diffusion)
 
-    if use_fp16:
+    if precision == "fp16":
         glide_model.convert_to_fp16()
         print("Converted to fp16, likely gradients will explode")
+    elif precision == "bf16":
+        glide_model.convert_to_bf16()
+        print("Converted to bf16 for stable mixed precision training")
     return glide_model, glide_diffusion, options
 
 
@@ -237,6 +244,7 @@ def _print_freeze_status(model, freeze_transformer, freeze_diffusion):
 def load_model_with_lora(
     glide_path: str = "",
     use_fp16: bool = False,
+    precision: str = "fp32",  # "fp32", "fp16", "bf16"
     freeze_transformer: bool = False,
     freeze_diffusion: bool = False,
     activation_checkpointing: bool = False,
@@ -269,6 +277,7 @@ def load_model_with_lora(
     glide_model, glide_diffusion, options = load_model(
         glide_path=glide_path,
         use_fp16=use_fp16,
+        precision=precision,
         freeze_transformer=freeze_transformer,
         freeze_diffusion=freeze_diffusion,
         activation_checkpointing=activation_checkpointing,

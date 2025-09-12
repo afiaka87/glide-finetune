@@ -11,10 +11,11 @@ Fine-tune and evaluate GLIDE text-to-image diffusion models with a modern CLI in
 - 🎨 **Modern CLI**: Clean command-line interface built with Typer
 - 🚀 **Advanced Samplers**: Euler, Euler-A, DPM++, PLMS, and DDIM
 - 🎯 **CLIP Re-ranking**: Generate multiple candidates and select the best
-- 📊 **WebDataset Support**: Train on large-scale datasets like LAION
+- 📊 **WebDataset Support**: Train on large-scale datasets like LAION and synthetic datasets
 - 🔧 **LoRA Support**: Parameter-efficient fine-tuning
 - 📈 **W&B Integration**: Automatic experiment tracking
-- ⚡ **Performance**: Gradient accumulation, mixed precision, torch.compile support
+- ⚡ **Performance**: Gradient accumulation, BF16/FP16 mixed precision, torch.compile support
+- 🆕 **BF16 Support**: Stable mixed-precision training with bfloat16 (recommended over FP16)
 
 ## Installation
 
@@ -104,8 +105,19 @@ glide train base /mnt/laion/*.tar \
   --webdataset \
   --batch-size 8 \
   --lr 1e-4 \
-  --fp16 \
+  --precision bf16 \
   --grad-ckpt
+```
+
+#### BF16 Mixed Precision Training (Recommended)
+```bash
+# BF16 provides better stability than FP16
+python train_glide.py \
+  --data_dir /path/to/dataset \
+  --precision bf16 \
+  --batch_size 4 \
+  --gradient_accumulation_steps 4 \
+  --activation_checkpointing
 ```
 
 ### Evaluation Commands

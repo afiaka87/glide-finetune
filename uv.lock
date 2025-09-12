@@ -629,6 +629,7 @@ dependencies = [
     { name = "braceexpand" },
     { name = "einops" },
     { name = "ftfy" },
+    { name = "glide-text2im" },
     { name = "gradio" },
     { name = "img2dataset" },
     { name = "matplotlib" },
@@ -671,6 +672,7 @@ requires-dist = [
     { name = "braceexpand", specifier = ">=0.1.7" },
     { name = "einops", specifier = ">=0.8.1" },
     { name = "ftfy", specifier = ">=6.3.1" },
+    { name = "glide-text2im", directory = "glide-text2im" },
     { name = "gradio", specifier = ">=5.0.0" },
     { name = "img2dataset", specifier = ">=1.25.4" },
     { name = "matplotlib", specifier = ">=3.10.5" },
@@ -705,6 +707,33 @@ dev = [
     { name = "types-pillow" },
     { name = "types-pyyaml", specifier = ">=6.0.12.20250822" },
     { name = "types-requests", specifier = ">=2.32.4.20250809" },
+]
+
+[[package]]
+name = "glide-text2im"
+version = "0.0.0"
+source = { directory = "glide-text2im" }
+dependencies = [
+    { name = "attrs" },
+    { name = "filelock" },
+    { name = "ftfy" },
+    { name = "pillow" },
+    { name = "regex" },
+    { name = "requests" },
+    { name = "torch" },
+    { name = "tqdm" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "attrs" },
+    { name = "filelock" },
+    { name = "ftfy" },
+    { name = "pillow" },
+    { name = "regex" },
+    { name = "requests" },
+    { name = "torch" },
+    { name = "tqdm" },
 ]
 
 [[package]]

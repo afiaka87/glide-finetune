@@ -25,7 +25,8 @@ def run_glide_finetune(
     uncond_p=0.0,
     resume_ckpt="",
     checkpoints_dir="./finetune_checkpoints",
-    use_fp16=False,  # Tends to cause issues,not sure why as the paper states fp16 is stable.
+    use_fp16=False,  # Deprecated, use precision parameter
+    precision="fp32",  # "fp32", "fp16", "bf16"
     device="cpu",
     freeze_transformer=False,
     freeze_diffusion=False,
@@ -38,8 +39,8 @@ def run_glide_finetune(
     test_prompt="a group of skiers are preparing to ski down a mountain.",
     sample_bs=1,
     sample_gs=8.0,
-    sample_captions_file="eval_captions.txt",
-    num_captions_sample=1,
+    prompt_file="eval_captions.txt",
+    sample_batch_size=8,
     use_webdataset=False,
     image_key="jpg",
     caption_key="txt",
@@ -56,6 +57,7 @@ def run_glide_finetune(
     lora_save_steps=1000,
     lora_resume="",
     save_checkpoint_interval=5000,
+    gradient_accumulation_steps=1,
 ):
     if "~" in data_dir:
         data_dir = os.path.expanduser(data_dir)
@@ -65,13 +67,17 @@ def run_glide_finetune(
     # Create the checkpoint/output directories
     os.makedirs(checkpoints_dir, exist_ok=True)
 
+    # Handle legacy use_fp16 parameter
+    if use_fp16:
+        precision = "fp16"
+    
     # Start wandb logging
     wandb_run = wandb_setup(
         batch_size=batch_size,
         side_x=side_x,
         side_y=side_y,
         learning_rate=learning_rate,
-        use_fp16=use_fp16,
+        use_fp16=(precision == "fp16"),
         device=device,
         data_dir=data_dir,
         base_dir=checkpoints_dir,
@@ -83,7 +89,8 @@ def run_glide_finetune(
     if use_lora:
         glide_model, glide_diffusion, glide_options = load_model_with_lora(
             glide_path=resume_ckpt,
-            use_fp16=use_fp16,
+            use_fp16=False,  # Use precision parameter instead
+            precision=precision,
             freeze_transformer=freeze_transformer,
             freeze_diffusion=freeze_diffusion,
             activation_checkpointing=activation_checkpointing,
@@ -99,7 +106,8 @@ def run_glide_finetune(
     else:
         glide_model, glide_diffusion, glide_options = load_model(
             glide_path=resume_ckpt,
-            use_fp16=use_fp16,
+            use_fp16=False,  # Use precision parameter instead
+            precision=precision,
             freeze_transformer=freeze_transformer,
             freeze_diffusion=freeze_diffusion,
             activation_checkpointing=activation_checkpointing,
@@ -239,8 +247,8 @@ def run_glide_finetune(
             prompt=test_prompt,
             sample_bs=sample_bs,
             sample_gs=sample_gs,
-            sample_captions_file=sample_captions_file,
-            num_captions_sample=num_captions_sample,
+            prompt_file=prompt_file,
+            sample_batch_size=sample_batch_size,
             eval_base_sampler=args.eval_base_sampler,
             eval_sr_sampler=args.eval_sr_sampler,
             eval_base_sampler_steps=args.eval_base_sampler_steps,
@@ -254,7 +262,7 @@ def run_glide_finetune(
             log_frequency=log_frequency,
             sample_interval=sample_interval,
             epoch=epoch,
-            gradient_accumualation_steps=1,
+            gradient_accumulation_steps=gradient_accumulation_steps,
             train_upsample=enable_upsample,
             use_lora=use_lora,
             lora_save_steps=lora_save_steps,
@@ -296,7 +304,14 @@ def parse_args():
     parser.add_argument(
         "--checkpoints_dir", "-ckpt", type=str, default="./glide_checkpoints/"
     )
-    parser.add_argument("--use_fp16", "-fp16", action="store_true")
+    parser.add_argument("--use_fp16", "-fp16", action="store_true", help="[Deprecated] Use --precision fp16 instead")
+    parser.add_argument(
+        "--precision",
+        type=str,
+        default="fp32",
+        choices=["fp32", "fp16", "bf16"],
+        help="Precision for training: fp32 (default), fp16 (unstable), bf16 (recommended for mixed precision)",
+    )
     parser.add_argument("--device", "-dev", type=str, default="")
     parser.add_argument("--log_frequency", "-freq", type=int, default=100)
     parser.add_argument(
@@ -316,6 +331,13 @@ def parse_args():
         help="Project name for wandb logging",
     )
     parser.add_argument("--activation_checkpointing", "-grad_ckpt", action="store_true")
+    parser.add_argument(
+        "--gradient_accumulation_steps",
+        "-grad_acc",
+        type=int,
+        default=1,
+        help="Number of gradient accumulation steps (effective batch size = batch_size * gradient_accumulation_steps)",
+    )
     parser.add_argument("--use_captions", "-txt", action="store_true")
     parser.add_argument("--epochs", "-epochs", type=int, default=20)
     parser.add_argument(
@@ -388,16 +410,16 @@ def parse_args():
         help="Use full pipeline (base + superres) for evaluation sampling during training",
     )
     parser.add_argument(
-        "--sample_captions_file",
+        "--prompt_file",
         type=str,
         default="eval_captions.txt",
-        help="Path to file containing captions to randomly sample from during evaluation",
+        help="Path to file containing prompts to randomly sample from during evaluation (one per line)",
     )
     parser.add_argument(
-        "--num_captions_sample",
+        "--sample_batch_size",
         type=int,
-        default=1,
-        help="Number of captions to sample and generate images for (should be power of 2 for grid)",
+        default=8,
+        help="Number of prompts to randomly sample and generate images for at each sample interval",
     )
     parser.add_argument(
         "--eval_base_sampler",
@@ -504,6 +526,14 @@ def parse_args():
 if __name__ == "__main__":
     # CUDA/CPU setup
     args = parse_args()
+    
+    # Check for deprecated test_prompt argument
+    if args.test_prompt != "a group of skiers are preparing to ski down a mountain.":
+        print("ERROR: --test_prompt is deprecated.")
+        print("Please use --prompt_file instead to specify a file containing prompts (one per line).")
+        print("Example: --prompt_file prompts.txt")
+        exit(1)
+    
     if len(args.device) > 0:
         device = th.device(args.device)
     else:
@@ -557,6 +587,7 @@ if __name__ == "__main__":
         resume_ckpt=args.resume_ckpt,
         checkpoints_dir=args.checkpoints_dir,
         use_fp16=args.use_fp16,
+        precision=args.precision,
         device=device,
         log_frequency=args.log_frequency,
         sample_interval=args.sample_interval,
@@ -577,8 +608,8 @@ if __name__ == "__main__":
         upsample_factor=args.upscale_factor,
         image_to_upsample=args.image_to_upsample,
         use_sr_eval=args.use_sr_eval,
-        sample_captions_file=args.sample_captions_file,
-        num_captions_sample=args.num_captions_sample,
+        prompt_file=args.prompt_file,
+        sample_batch_size=args.sample_batch_size,
         use_lora=args.use_lora,
         lora_rank=args.lora_rank,
         lora_alpha=args.lora_alpha,
@@ -587,4 +618,5 @@ if __name__ == "__main__":
         lora_save_steps=args.lora_save_steps,
         lora_resume=args.lora_resume,
         save_checkpoint_interval=args.save_checkpoint_interval,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
     )

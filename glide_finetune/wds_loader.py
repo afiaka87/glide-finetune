@@ -138,6 +138,18 @@ def glide_wds_loader(
                 )
             return False
         return True
+    
+    def filter_dataset_synthetic(item):
+        # Filter for synthetic DALL-E 3 dataset with JSON metadata
+        if enable_image and image_key not in item:
+            if debug:
+                print(f"DEBUG: Item missing image key '{image_key}'. Keys: {list(item.keys())}")
+            return False
+        if enable_text and "json" not in item:
+            if debug:
+                print(f"DEBUG: Item missing json key. Keys: {list(item.keys())}")
+            return False
+        return True
 
     if debug:
         print(f"DEBUG: Using dataset filter for '{dataset_name}'")
@@ -151,9 +163,11 @@ def glide_wds_loader(
         filtered_dataset = dataset.select(filter_dataset_alamy)
     elif dataset_name == "simple":
         filtered_dataset = dataset.select(filter_dataset_simple)
+    elif dataset_name == "synthetic":
+        filtered_dataset = dataset.select(filter_dataset_synthetic)
     else:
         raise ValueError(
-            f"Unknown dataset: {dataset_name}. Must be one of 'laion', 'alamy', or 'simple'."
+            f"Unknown dataset: {dataset_name}. Must be one of 'laion', 'alamy', 'simple', or 'synthetic'."
         )
 
     # Add a counter to track processed items (only if debugging)
@@ -173,7 +187,13 @@ def glide_wds_loader(
         if not enable_text or random() < uncond_p:
             tokens, mask = get_uncond_tokens_mask(tokenizer)
         else:
-            caption = item[caption_key].decode("utf-8")
+            # Handle synthetic dataset with JSON metadata
+            if dataset_name == "synthetic":
+                json_data = json.loads(item["json"].decode("utf-8"))
+                # Use short_caption for training (or long_caption if preferred)
+                caption = json_data.get("short_caption", json_data.get("long_caption", ""))
+            else:
+                caption = item[caption_key].decode("utf-8")
             tokens, mask = get_tokens_and_mask(tokenizer, caption)
 
         image_data = item[image_key]

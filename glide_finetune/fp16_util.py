@@ -78,9 +78,19 @@ def convert_module_to_f16(module):
             module.bias.data = module.bias.data.half()
 
 
+def convert_module_to_bf16(module):
+    """
+    Convert primitive modules to bfloat16.
+    """
+    if isinstance(module, (nn.Conv1d, nn.Conv2d, nn.Conv3d)):
+        module.weight.data = module.weight.data.bfloat16()
+        if module.bias is not None:
+            module.bias.data = module.bias.data.bfloat16()
+
+
 def convert_module_to_f32(module):
     """
-    Convert primitive modules to float32, undoing convert_module_to_f16().
+    Convert primitive modules to float32, undoing convert_module_to_f16() or convert_module_to_bf16().
     """
     if isinstance(module, (nn.Conv1d, nn.Conv2d, nn.Conv3d)):
         module.weight.data = module.weight.data.float()
@@ -218,11 +228,13 @@ class MixedPrecisionTrainer:
         *,
         model,
         use_fp16=False,
+        use_bf16=False,
         fp16_scale_growth=1e-3,
         initial_lg_loss_scale=INITIAL_LOG_LOSS_SCALE,
     ):
         self.model = model
         self.use_fp16 = use_fp16
+        self.use_bf16 = use_bf16
         self.fp16_scale_growth = fp16_scale_growth
 
         self.model_params = list(self.model.parameters())
@@ -236,6 +248,9 @@ class MixedPrecisionTrainer:
             )
             self.master_params = make_master_params(self.param_groups_and_shapes)
             self.model.convert_to_fp16()
+        elif self.use_bf16:
+            # BF16 doesn't need master params or loss scaling
+            self.model.convert_to_bf16()
 
     def zero_grad(self):
         zero_grad(self.model_params)
@@ -248,12 +263,14 @@ class MixedPrecisionTrainer:
             # loss.backward()
             # oss * loss_scale).backward()
         else:
+            # BF16 and FP32 don't need loss scaling
             loss.backward()
 
     def optimize(self, opt: th.optim.Optimizer):
         if self.use_fp16:
             return self._optimize_fp16(opt)
         else:
+            # BF16 and FP32 use the same optimization path
             return self._optimize_normal(opt)
 
     def _optimize_fp16(self, opt: th.optim.Optimizer):
