@@ -387,8 +387,6 @@ def sample(
         ]
         half_eps = uncond_eps + guidance_scale * (cond_eps - uncond_eps)
         eps = th.cat([half_eps, half_eps], dim=0)
-        current_prediction_pil = pred_to_pil((x_t - eps * (beta**0.5))[:batch_size])
-        current_prediction_pil.save("current_prediction.png")
         return th.cat([eps, rest], dim=1)
 
     model_fn = cfg_model_fn  # so we use CFG for the base model.

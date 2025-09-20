@@ -244,8 +244,10 @@ def run_glide_finetune_epoch(
             )
 
             # Generate images for all prompts
-            all_images = []
-            wandb_images = []
+            all_images_64 = []  # 64x64 base images
+            all_images_256 = []  # 256x256 SR images (if enabled)
+            wandb_images_64 = []
+            wandb_images_256 = []
 
             for idx, sample_prompt in enumerate(sample_prompts):
                 print(
@@ -254,17 +256,41 @@ def run_glide_finetune_epoch(
                     else f"  [{idx + 1}/{len(sample_prompts)}] {sample_prompt}"
                 )
 
-                # Use full pipeline if requested and we're training base model
+                # Map 'standard' to appropriate sampler
+                base_sampler = (
+                    "plms" if eval_base_sampler == "standard" else eval_base_sampler
+                )
+
+                # First, always generate 64x64 base images
+                samples_64 = glide_util.sample(
+                    glide_model=glide_model,
+                    glide_options=glide_options,
+                    side_x=side_x,
+                    side_y=side_y,
+                    prompt=sample_prompt,
+                    batch_size=sample_bs,
+                    guidance_scale=sample_gs,
+                    device=device,
+                    prediction_respacing=str(eval_base_sampler_steps),
+                    sampler=base_sampler,  # type: ignore
+                    image_to_upsample=image_to_upsample if train_upsample else None,
+                )
+
+                # Convert 64x64 to PIL and store
+                pil_image_64 = train_util.pred_to_pil(samples_64)
+                all_images_64.append(pil_image_64)
+                wandb_images_64.append(wandb.Image(pil_image_64, caption=f"{sample_prompt} (64x64)"))
+
+                # Generate 256x256 with SR if requested and we're training base model
                 if use_sr_eval and not train_upsample and upsampler_model is not None:
-                    # Map 'standard' to appropriate samplers
-                    base_sampler = (
-                        "plms" if eval_base_sampler == "standard" else eval_base_sampler
-                    )
+                    print(f"    Generating 256x256 with super-resolution...")
+
                     sr_sampler = (
                         "plms" if eval_sr_sampler == "standard" else eval_sr_sampler
                     )
 
-                    samples = glide_util.sample_with_superres(
+                    # Use the 64x64 samples as input to upsampler
+                    samples_256 = glide_util.sample_with_superres(
                         base_model=glide_model,
                         base_options=glide_options,
                         upsampler_model=upsampler_model,
@@ -276,73 +302,96 @@ def run_glide_finetune_epoch(
                         base_respacing=str(eval_base_sampler_steps),
                         upsampler_respacing=str(eval_sr_sampler_steps),
                         upsample_temp=0.997,
-                        base_sampler=base_sampler,  # type: ignore  # Use specific sampler for base model
-                        upsampler_sampler=sr_sampler,  # type: ignore  # Use specific sampler for upsampler
-                    )
-                else:
-                    # Use regular sampling
-                    # Map 'standard' to appropriate sampler
-                    sampler_to_use = (
-                        "plms" if eval_base_sampler == "standard" else eval_base_sampler
+                        base_sampler=base_sampler,  # type: ignore
+                        upsampler_sampler=sr_sampler,  # type: ignore
                     )
 
-                    samples = glide_util.sample(
-                        glide_model=glide_model,
-                        glide_options=glide_options,
-                        side_x=side_x,
-                        side_y=side_y,
-                        prompt=sample_prompt,
-                        batch_size=sample_bs,
-                        guidance_scale=sample_gs,
-                        device=device,
-                        prediction_respacing=str(eval_base_sampler_steps),
-                        sampler=sampler_to_use,  # type: ignore
-                        image_to_upsample=image_to_upsample,
-                    )
+                    # Convert 256x256 to PIL and store
+                    pil_image_256 = train_util.pred_to_pil(samples_256)
+                    all_images_256.append(pil_image_256)
+                    wandb_images_256.append(wandb.Image(pil_image_256, caption=f"{sample_prompt} (256x256)"))
 
-                # Convert to PIL image
-                pil_image = train_util.pred_to_pil(samples)
-                all_images.append(pil_image)
+            # Create and save grid images for 64x64
+            wandb_log_dict = {"iter": train_idx}
 
-                # Add to wandb gallery
-                wandb_images.append(wandb.Image(pil_image, caption=sample_prompt))
-
-            # Create and save grid image
-            if len(all_images) > 1:
-                grid_size = int(np.ceil(np.sqrt(len(all_images))))
-                grid_image = train_util.make_grid(all_images, grid_size=grid_size)
-
-                # Save grid
-                suffix = "_256px" if (use_sr_eval and not train_upsample) else ""
-                grid_save_path = os.path.join(
-                    outputs_dir, f"{train_idx}_grid{suffix}.png"
+            if len(all_images_64) > 1:
+                # Use auto mode for optimal grid layout
+                grid_image_64 = train_util.make_grid(
+                    all_images_64,
+                    mode='auto',
+                    pad_to_power_of_2=False,
+                    background_color=(0, 0, 0)
                 )
-                grid_image.save(grid_save_path)
-                print(f"Saved grid with {len(all_images)} images to {grid_save_path}")
 
-                # Log to wandb with both grid and gallery
-                wandb_run.log(
-                    {
-                        "iter": train_idx,
-                        f"sample_grid{suffix}": wandb.Image(
-                            grid_save_path, caption=f"Grid of {len(all_images)} samples"
-                        ),
-                        f"sample_gallery{suffix}": wandb_images,
-                    }
+                # Save 64x64 grid
+                grid_save_path_64 = os.path.join(
+                    outputs_dir, f"{train_idx}_grid_64px.png"
                 )
+                grid_image_64.save(grid_save_path_64)
+                # Also save as current_grid.png for easy monitoring
+                grid_image_64.save("current_grid.png")
+                print(f"Saved 64x64 grid with {len(all_images_64)} images to {grid_save_path_64}")
+
+                # Add to wandb log dict
+                wandb_log_dict.update({
+                    "sample_grid_64px": wandb.Image(
+                        grid_save_path_64, caption=f"Grid of {len(all_images_64)} samples (64x64)"
+                    ),
+                    "sample_gallery_64px": wandb_images_64,
+                })
             else:
-                # Single image case
-                suffix = "_256px" if (use_sr_eval and not train_upsample) else ""
-                sample_save_path = os.path.join(outputs_dir, f"{train_idx}{suffix}.png")
-                all_images[0].save(sample_save_path)
-                print(f"Saved sample {sample_save_path}")
+                # Single 64x64 image case
+                sample_save_path_64 = os.path.join(outputs_dir, f"{train_idx}_64px.png")
+                all_images_64[0].save(sample_save_path_64)
+                # Also save as current_grid.png for easy monitoring (single image)
+                all_images_64[0].save("current_grid.png")
+                print(f"Saved 64x64 sample {sample_save_path_64}")
 
-                wandb_run.log(
-                    {
-                        "iter": train_idx,
-                        f"samples{suffix}": wandb_images[0],
-                    }
-                )
+                wandb_log_dict.update({
+                    "samples_64px": wandb_images_64[0],
+                })
+
+            # Create and save grid images for 256x256 if SR evaluation is enabled
+            if all_images_256:
+                if len(all_images_256) > 1:
+                    # Use auto mode for optimal grid layout
+                    grid_image_256 = train_util.make_grid(
+                        all_images_256,
+                        mode='auto',
+                        pad_to_power_of_2=False,
+                        background_color=(0, 0, 0)
+                    )
+
+                    # Save 256x256 grid
+                    grid_save_path_256 = os.path.join(
+                        outputs_dir, f"{train_idx}_grid_256px.png"
+                    )
+                    grid_image_256.save(grid_save_path_256)
+                    # Save as current_grid.png for easy monitoring (prefer 256px version)
+                    grid_image_256.save("current_grid.png")
+                    print(f"Saved 256x256 grid with {len(all_images_256)} images to {grid_save_path_256}")
+
+                    # Add to wandb log dict
+                    wandb_log_dict.update({
+                        "sample_grid_256px": wandb.Image(
+                            grid_save_path_256, caption=f"Grid of {len(all_images_256)} samples (256x256)"
+                        ),
+                        "sample_gallery_256px": wandb_images_256,
+                    })
+                else:
+                    # Single 256x256 image case
+                    sample_save_path_256 = os.path.join(outputs_dir, f"{train_idx}_256px.png")
+                    all_images_256[0].save(sample_save_path_256)
+                    # Save as current_grid.png for easy monitoring (prefer 256px version)
+                    all_images_256[0].save("current_grid.png")
+                    print(f"Saved 256x256 sample {sample_save_path_256}")
+
+                    wandb_log_dict.update({
+                        "samples_256px": wandb_images_256[0],
+                    })
+
+            # Log everything to wandb
+            wandb_run.log(wandb_log_dict)
         # Save LoRA adapter if enabled and at save interval
         if (
             use_lora

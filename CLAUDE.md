@@ -2,487 +2,258 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Recent Work (September 2025)
-
-### Completed Enhancements
-- ✅ **CLI Interface**: Implemented modern Typer-based CLI with `glide train` and `glide eval` commands
-- ✅ **Gradient Accumulation**: Added proper gradient accumulation with loss scaling
-- ✅ **WebDataset Integration**: Fixed WebDataset epoch tracking and batch handling for LAION training
-- ✅ **WandB Logging**: Corrected to log metrics at every step for granular tracking
-- ✅ **CLIP Re-ranking**: Fixed OpenCLIP model naming (ViT-L-14 not ViT-L/14)
-- ✅ **Rich UI**: Added beautiful console output with progress bars and status panels
-
-### Key Files Modified
-- `glide_finetune/cli/` - New CLI module with train and eval subcommands
-- `train_from_scratch.py` - Fixed WebDataset integration and gradient accumulation
-- `eval_glide.sh` - Updated CLIP model naming to OpenCLIP format
-- `pyproject.toml` - Added CLI entry points and Typer dependency
-
 ## Commands
 
-### Setup and Environment
+### Development Setup
 
 ```bash
-# Clone required dependency (crowsonkb fork for compatibility)
-git clone https://github.com/crowsonkb/glide-text2im
-cd glide-text2im
-pip install -e .
-cd ..
-
 # Install dependencies with uv (Python 3.12+)
 uv sync
+uv pip install -e .
 
-# Install glide-text2im in uv environment if not already installed
+# Install glide-text2im dependency (crowsonkb fork required)
+git clone https://github.com/crowsonkb/glide-text2im
+cd glide-text2im && pip install -e . && cd ..
 uv pip install -e glide-text2im
-
-# Run commands with uv
-uv run python train_glide.py [args]
 ```
 
-### Common Development Tasks
+### Linting and Type Checking
 
 ```bash
-# Run training with wandb logging
-uv run python train_glide.py --data_dir /path/to/data --wandb_project_name my_project
+# Run ruff linting
+uv run ruff check .
+uv run ruff format .
 
-# Quick test of samplers
-uv run python quick_test_samplers.py
-
-# Run evaluation on compiled models
-./eval_glide.sh
-
-# Launch Gradio web interface
-uv run python gradio_app.py
-
-# Run shell scripts in scripts/ directory
-bash scripts/run-finetune.sh
-bash scripts/run-docker.sh
+# Run mypy type checking
+uv run mypy .
 ```
 
-### Training Commands
+### Training with Local Datasets
 
-#### Train base model (64x64 text-to-image)
 ```bash
+# Train GLIDE on local datasets (found at ~/laion2b_en_aesthetic_wds/)
+uv run python train_glide.py \
+  --data_dir ~/laion2b_en_aesthetic_wds/ \
+  --use_webdataset \
+  --wds_caption_key 'txt' \
+  --wds_image_key 'jpg' \
+  --wds_dataset_name 'laion' \
+  --use_captions \
+  --batch_size 4 \
+  --learning_rate 1e-04 \
+  --precision bf16 \
+  --wandb_project_name 'glide-laion'
+
+# Alternative: Use the shell script
+bash run_train_glide.sh
+```
+
+### Core Training Scripts
+
+```bash
+# Base model training (64x64)
 uv run python train_glide.py \
   --data_dir '/path/to/dataset' \
   --train_upsample False \
   --batch_size 4 \
   --learning_rate 1e-04 \
-  --side_x 64 \
-  --side_y 64 \
+  --precision bf16 \
   --uncond_p 0.2 \
-  --checkpoints_dir 'checkpoint_directory' \
-  --wandb_project_name 'my_project' \
-  --sample_interval 500 \
-  --log_frequency 100 \
-  --save_checkpoint_interval 5000
-```
+  --gradient_accumulation_steps 2
 
-#### Train upsampler model (64x64 → 256x256)
-```bash
+# Upsampler training (64→256)
 uv run python train_glide.py \
   --data_dir '/path/to/dataset' \
   --train_upsample True \
-  --side_x 64 \
-  --side_y 64 \
-  --uncond_p 0.0 \
   --upscale_factor 4 \
-  --image_to_upsample 'low_res_image.png' \
-  --checkpoints_dir 'checkpoint_directory'
-```
+  --uncond_p 0.0 \
+  --precision bf16
 
-#### Train with LoRA (efficient finetuning)
-```bash
+# LoRA fine-tuning (parameter-efficient)
 uv run python train_glide.py \
   --data_dir '/path/to/dataset' \
   --use_lora \
-  --lora_rank 4 \
+  --lora_rank 8 \
   --lora_alpha 32 \
-  --lora_dropout 0.1 \
   --lora_target_mode 'attention' \
   --freeze_transformer \
   --freeze_diffusion
 ```
 
-#### Train on webdataset (LAION/Alamy/Custom)
+### Evaluation and Generation
+
 ```bash
-# Using a directory with tar files
-uv run python train_glide.py \
-  --data_dir '/folder/with/tars/' \
-  --use_webdataset \
-  --wds_caption_key 'txt' \
-  --wds_image_key 'jpg' \
-  --wds_dataset_name 'laion' \
-  --use_captions
-
-# Using glob patterns
-uv run python train_glide.py \
-  --data_dir '/path/to/dataset/*.tar' \
-  --use_webdataset \
-  --wds_caption_key 'txt' \
-  --wds_image_key 'png' \
-  --wds_dataset_name 'simple' \
-  --use_captions
-
-# Using brace expansion for numbered shards
-uv run python train_glide.py \
-  --data_dir '/path/to/dataset/shard_{00000..00115}.tar' \
-  --use_webdataset \
-  --wds_caption_key 'txt' \
-  --wds_image_key 'png' \
-  --wds_dataset_name 'simple' \
-  --use_captions
-```
-
-### Gradio Web Interface
-
-#### Running the Interactive Web App
-```bash
-# Start the Gradio interface
-./run_gradio.sh
-
-# Or with custom port
-PORT=8080 ./run_gradio.sh
-
-# Enable public sharing (generates a public URL)
-SHARE=true ./run_gradio.sh
-
-# Direct Python execution
-uv run python gradio_app.py
-```
-
-The web interface provides:
-- Single prompt text input with batch generation
-- Adjustable parameters (batch size, sampler, steps, CFG scale)
-- Model selection and optimization options
-- Real-time progress updates
-- Image gallery with download options
-- GPU memory monitoring
-- Example prompts for quick testing
-
-Access at: http://localhost:7860
-
-### Testing and Evaluation
-
-#### Batch Evaluation with Rich UI
-```bash
-# Basic evaluation from file
+# Batch evaluation with CLIP re-ranking
 uv run python evaluate_glide.py \
   --prompt_file prompts.txt \
-  --base_model checkpoints/base.pt \
-  --sr_model checkpoints/sr.pt
-
-# Direct prompts via command line (must be power of 2)
-uv run python evaluate_glide.py \
-  --prompts "a cat playing piano|a dog reading newspaper" \
-  --base_model checkpoints/base.pt \
-  --sr_model checkpoints/sr.pt
-
-# With CLIP re-ranking (generates 32 candidates, selects best 8)
-uv run python evaluate_glide.py \
-  --prompts "a beautiful landscape|a futuristic city" \
   --base_model checkpoints/base.pt \
   --sr_model checkpoints/sr.pt \
   --use_clip_rerank \
   --clip_candidates 32 \
   --clip_top_k 8 \
-  --clip_model "ViT-L/14"
-
-# Advanced options
-uv run python evaluate_glide.py \
-  --prompt_file prompts.txt \
-  --base_model checkpoints/base.pt \
-  --sr_model checkpoints/sr.pt \
   --sampler euler \
-  --base_steps 30 \
-  --sr_steps 30 \
-  --cfg 4.0 \
-  --batch_size 4 \
-  --save_grid \
-  --seed 42 \
-  --wandb_project my-evaluation
+  --cfg 4.0
 
-# With torch.compile for optimized inference
-uv run python evaluate_glide.py \
-  --prompt_file prompts.txt \
-  --base_model checkpoints/base.pt \
-  --sr_model checkpoints/sr.pt \
-  --use_torch_compile \
-  --batch_size 4
-
-# Dry run to test configuration
-uv run python evaluate_glide.py \
-  --prompt_file prompts.txt \
-  --base_model checkpoints/base.pt \
-  --sr_model checkpoints/sr.pt \
-  --dry_run
-```
-
-**Note**: Prompt file must contain a power-of-2 number of prompts (1, 2, 4, 8, 16, 32, 64, 128, 256, 512, or 1024).
-
-#### Quick smoke test
-```bash
-./smoke_test.sh
-```
-
-#### Test with compiled models
-```bash
-./smoke_test_compiled.sh
-```
-
-#### Dry run test
-```bash
-./smoke_test_dry.sh
+# Interactive Gradio interface
+uv run python gradio_app.py
+# Access at http://localhost:7860
 ```
 
 ## Architecture
 
-This repository implements finetuning for GLIDE (Guided Language to Image Diffusion for Generation and Editing), a text-to-image generation model based on diffusion. The codebase consists of two main training modes:
+### Training Pipeline
 
-### Core Components
+The repository implements GLIDE (Guided Language to Image Diffusion) fine-tuning with two distinct training modes:
 
-- **Base Model Training** (`train_upsample=False`): Trains the 64x64 text-to-image generation model with classifier-free guidance (randomly replacing captions with empty tokens ~20% of the time via `uncond_p`)
+1. **Base Model** (`train_upsample=False`): 64x64 text-to-image generation with classifier-free guidance
+   - Uses `uncond_p=0.2` to randomly replace captions with empty tokens for CFG training
+   - Generates low-resolution images from text prompts
 
-- **Upsampler Training** (`train_upsample=True`): Trains the prompt-aware super-resolution model that upscales 64x64 images to 256x256
+2. **Upsampler Model** (`train_upsample=True`): 64→256 super-resolution with prompt awareness
+   - Uses `uncond_p=0.0` - always conditioned on text
+   - Upscales base model outputs to high resolution
 
-### Important Technical Details
+### Key Implementation Details
 
-#### WebDataset Integration
-- WebDatasets with `resampled=True` create infinite iterators - epochs must be manually tracked
-- LAION tar files typically contain ~10,000 samples each
-- Glob patterns in data paths must be expanded before passing to WebDataset
-- The dataloader wraps the WebDataset iterator for proper batching
+#### WebDataset Loading (for LAION-scale training)
+- Located at `~/laion2b_en_aesthetic_wds/` (1,219 tar files, 241GB total)
+- Each tar contains ~10,000 image-text pairs
+- WebDataset with `resampled=True` creates infinite iterators requiring manual epoch tracking
+- Dataloader wraps WebDataset iterator: `DataLoader(wds.WebDataset(...).batched(batch_size))`
+- Steps per epoch: `(num_tars * samples_per_tar) // batch_size`
 
-#### Gradient Accumulation
-- Loss is scaled by accumulation steps during backward pass
-- Optimizer step only occurs after accumulating specified number of gradients  
-- WandB metrics are logged only after weight updates with averaged loss
-- Learning rate scheduler steps only after weight updates
+#### Gradient Accumulation and Training Loop
+- Loss scaled by `1/accumulation_steps` during backward pass
+- Optimizer step only after accumulating gradients: `if (step + 1) % grad_acc_steps == 0`
+- Global step increments only on weight updates, not every batch
+- WandB logs metrics after optimizer.step() with averaged loss
+- LR scheduler steps after weight updates only
 
-#### Memory Management
-- Use gradient accumulation to achieve larger effective batch sizes with limited GPU memory
-- Activation checkpointing (`--activation_checkpointing`) trades compute for memory
-- Mixed precision training (`--use_fp16`) reduces memory usage
-- CLIP re-ranking offloads GLIDE models to CPU while scoring
+#### Memory Optimization
+- **BF16 Training** (`--precision bf16`): Recommended for stability over FP16
+- **Gradient Checkpointing** (`--activation_checkpointing`): Trade compute for memory
+- **LoRA** (`--use_lora`): Reduces trainable parameters by 90%+
+- **CLIP Re-ranking**: Offloads GLIDE to CPU during CLIP scoring
 
-### Key Modules
+### Module Structure
 
-- `glide_finetune/`: Main training logic and model utilities
-  - `glide_finetune.py`: Core training loop implementation with wandb integration
-  - `glide_util.py`: Model loading, tokenization, and sampling utilities
-  - `loader.py`: Standard dataset loader for image-caption pairs
-  - `wds_loader.py`: WebDataset loader for large-scale datasets (LAION2B, Alamy, custom)
-  - `train_util.py`: Training utilities including wandb integration
-  - `fp16_util.py`: Mixed precision training utilities
-  - `enhanced_samplers.py`: Advanced sampling methods (Euler, Euler-A, DPM++)
-  - `lora_wrapper.py`: LoRA (Low-Rank Adaptation) implementation for efficient finetuning
-  - `clip_rerank.py`: CLIP-based image re-ranking for quality selection
-  - `cli_utils.py`: Command-line interface utilities
+```
+glide_finetune/
+├── glide_finetune.py      # Core training loop with wandb integration
+├── glide_util.py          # Model loading, tokenization, sampling
+├── loader.py              # Standard image-caption dataset loader
+├── wds_loader.py          # WebDataset loader for LAION/Alamy
+├── train_util.py          # Training utilities, wandb setup
+├── fp16_util.py           # Mixed precision (FP16/BF16) utilities
+├── enhanced_samplers.py   # Euler, Euler-A, DPM++ implementations
+├── lora_wrapper.py        # LoRA adaptation layers
+├── clip_rerank.py         # CLIP-based quality selection
+└── cli/                   # Typer CLI implementation
+    ├── __init__.py        # Main CLI app entry point
+    ├── train.py           # Training subcommands
+    └── eval.py            # Evaluation subcommands
+```
 
-- `train_glide.py`: Main training script with CLI argument parsing
-- `evaluate_glide.py`: Batch evaluation script with rich progress UI and CLIP re-ranking support
-- `gradio_app.py`: Web interface for interactive generation
+### Sampling Methods
 
-### Data Loading
+Available samplers with performance characteristics:
+- **PLMS** (default): Baseline quality/speed balance
+- **Euler**: 15-20% faster than PLMS, deterministic
+- **Euler Ancestral** (`euler_a`): Stochastic variant with eta parameter
+- **DPM++**: Advanced solver, good quality with 20-30 steps
+- **DDIM**: Flexible deterministic/stochastic via eta
 
-The system supports two data loading modes:
-1. **Standard datasets**: Image-caption pairs from local directories
-2. **WebDatasets**: TAR-based datasets for efficient large-scale training
-   - Supports glob patterns, brace expansion, and directory scanning
-   - Configurable image/caption keys for different dataset formats
-   - Dataset presets: 'laion', 'alamy', 'simple'
-
-### Training Configuration
-
-#### Key Parameters
-- `--uncond_p`: Probability of unconditional training (0.2 for base, 0.0 for upsampler)
-- `--sample_interval`: How often to generate sample images (default: 500 steps)
-- `--save_checkpoint_interval`: How often to save model checkpoints (default: 5000 steps)
-- `--log_frequency`: Console logging frequency (default: 100 steps)
-- `--wandb_project_name`: W&B project name for experiment tracking
-- `--use_captions`: Enable text conditioning (required for text-to-image)
-- `--activation_checkpointing`: Reduce memory usage via gradient checkpointing
-- `--use_fp16`: Enable mixed precision training
-- `--freeze_transformer`: Freeze transformer weights during training
-- `--freeze_diffusion`: Freeze diffusion model weights during training
-- `--use_lora`: Enable LoRA for parameter-efficient finetuning
-
-#### Training Notes
-- Metrics are logged to wandb every step for smooth monitoring
-- Sample images use random captions from `eval_captions.txt` if available
-- Checkpoints saved at specified intervals in numbered directories
-- Default sampler during training: Euler with 30 steps
-- The `glide_text2im` package must be installed from the crowsonkb fork
-
-## Sampling Methods
-
-The repository supports multiple advanced sampling algorithms beyond the default PLMS and DDIM:
-
-### Available Samplers
-
-1. **PLMS** (default): Pseudo Linear Multi-Step method - good balance of quality and speed
-2. **DDIM**: Denoising Diffusion Implicit Models - deterministic or stochastic via eta parameter
-3. **Euler**: Deterministic ODE solver - faster convergence than DDPM
-4. **Euler Ancestral**: Stochastic variant of Euler with controllable noise (eta parameter)
-5. **DPM++**: DPM-Solver++ - advanced multi-step solver with order 1 or 2
-
-### Using Different Samplers
-
-In Python code:
+Usage in code:
 ```python
-from glide_finetune.glide_util import load_model, sample
-
-# Load model
-model, diffusion, options = load_model(model_type="base")
-
-# Generate with different samplers
-sample_euler = sample(
-    model, options, 64, 64,
-    prompt="a painting of a cat",
-    sampler="euler",  # Choose: "plms", "ddim", "euler", "euler_a", "dpm++"
-    sampler_eta=0.0,  # For stochastic samplers (euler_a, ddim)
-    dpm_order=2,      # For DPM++ (1 or 2)
-)
+from glide_finetune.glide_util import sample
+samples = sample(model, options, 64, 64,
+                 prompt="...", sampler="euler",
+                 sampler_eta=0.0, dpm_order=2)
 ```
 
-### Performance Characteristics
+## Critical Configuration Notes
 
-- **Euler**: ~15-20% faster than PLMS, deterministic
-- **Euler Ancestral**: Similar speed to Euler, adds controlled stochasticity
-- **DPM++**: Can achieve good quality with fewer steps (20-30 vs 50-100)
-- **DDIM**: Flexible deterministic/stochastic balance via eta parameter
+### WebDataset Training
+- Token mismatch: LAION uses 128 tokens, GLIDE expects 77 - handled in tokenizer
+- Empty batches: Ensure glob patterns are expanded and tar files accessible
+- Epoch boundaries: Manually track with `samples_seen // dataset_size`
 
-### Enhanced Samplers with Upsampling
+### Training Parameters
+- `uncond_p`: 0.2 for base model, 0.0 for upsampler (critical for proper CFG)
+- `gradient_accumulation_steps`: Effective batch = batch_size * grad_acc_steps
+- `save_checkpoint_interval`: Based on global_step (weight updates) not iterations
+- `log_frequency`: Console output frequency (WandB logs every step)
 
-The enhanced samplers (Euler, Euler Ancestral, DPM++) work with the upsampling pipeline in `sample_with_superres`:
+### CLIP Re-ranking
+- Model format: Use `ViT-L-14` (hyphen) not `ViT-L/14` (slash) for OpenCLIP
+- Memory management: Automatic GPU offloading during ranking phase
+- Output structure: Images saved as `image_rank_001.jpg` with metadata.json
 
-```python
-from glide_finetune.glide_util import load_model, sample_with_superres
-
-# Load base and upsampler models
-base_model, _, base_options = load_model(model_type="base")
-upsampler_model, _, upsampler_options = load_model(model_type="upsample")
-
-# Generate with full pipeline using enhanced samplers
-samples = sample_with_superres(
-    base_model, base_options,
-    upsampler_model, upsampler_options,
-    prompt="a beautiful landscape",
-    sampler="euler",  # Works for both base and upsampler
-    base_respacing="27",
-    upsampler_respacing="17",
-)
-```
-
-**Upsampler Performance**: Testing shows ~1.5x speedup when using Euler/DPM++ vs PLMS for the upsampling stage.
-
-## CLIP Re-ranking
-
-The evaluation script supports CLIP-based re-ranking to select the best generated images:
-
-### How It Works
-
-1. **Generate Multiple Candidates**: For each prompt, generate N candidates (e.g., 32 images)
-2. **Memory-Efficient Processing**: Offload GLIDE models from GPU before loading CLIP
-3. **CLIP Scoring**: Score all candidates against the text prompt using CLIP ViT-L/14
-4. **Select Best Images**: Keep only the top-K images (e.g., best 8) based on CLIP scores
-5. **Organized Output**: Save ranked images with metadata including CLIP scores
-
-### Usage
-
-```bash
-# Generate 32 candidates per prompt, keep best 8
-uv run python evaluate_glide.py \
-  --prompts "a majestic mountain landscape|a cozy coffee shop" \
-  --base_model checkpoints/base.pt \
-  --sr_model checkpoints/sr.pt \
-  --use_clip_rerank \
-  --clip_candidates 32 \
-  --clip_top_k 8 \
-  --clip_model "ViT-L/14" \
-  --clip_batch_size 16
-```
-
-### Output Structure with Re-ranking
-
-```
-glide-outputs/
-├── prompt_000/
-│   ├── image_rank_001.jpg  # Best CLIP score
-│   ├── image_rank_002.jpg  # 2nd best
-│   ├── ...
-│   ├── image_rank_008.jpg  # 8th best
-│   ├── metadata.json        # CLIP scores and prompt
-│   └── prompt.txt           # Original prompt
-└── prompt_001/
-    └── ...
-```
-
-### Supported CLIP Models
-
-- `ViT-L/14` (default) - Best balance of quality and speed
-- `ViT-B/32` - Faster but lower quality
-- `ViT-B/16` - Good compromise
-- Other OpenCLIP models available
-
-### Memory Management
-
-The system automatically manages GPU memory by:
-- Offloading GLIDE models to CPU during CLIP ranking
-- Loading CLIP model only when needed
-- Clearing CUDA cache between phases
-- Reloading GLIDE models for next prompt
+### LoRA Configuration
+- `lora_target_mode`: 'attention' (fastest), 'mlp', 'all' (most parameters)
+- `lora_rank`: 4-8 for most tasks, 16+ for complex adaptations
+- `lora_alpha`: Typically 2x-4x the rank value
 
 ## Common Issues and Solutions
 
-### WebDataset Training
-- **Empty epoch_metrics**: WebDataset may not yield batches if glob patterns aren't expanded or tar files are inaccessible
-- **Token length mismatch**: LAION uses 128 tokens while GLIDE expects 77 - ensure tokenizer compatibility
-- **Infinite iteration**: WebDataset with `resampled=True` requires manual epoch tracking
-- **Steps per epoch calculation**: For WebDataset, calculate as `(num_tars * samples_per_tar) // batch_size`
+### WebDataset Issues
+```bash
+# Problem: Empty epoch_metrics, no batches yielded
+# Solution: Check tar file accessibility and glob expansion
+ls -la ~/laion2b_en_aesthetic_wds/*.tar | head -5
 
-### Training Configuration
-- **WandB logging frequency**: Metrics should be logged to WandB at every step for granular tracking, not just at log_frequency intervals
-- **Gradient accumulation**: Ensure global_step only increments when weights are updated, not on every batch
-- **Checkpoint saving**: Checkpoints should be saved based on global_step (weight updates) not raw batch iterations
-- **Effective batch size**: With gradient accumulation, effective batch = `batch_size * gradient_accumulation_steps`
-
-### Model Loading  
-- **Compiled models**: Use torch.compile for inference speedup, models are saved as `.compiled.pt`
-- **LoRA weights**: When using LoRA, ensure target_mode matches model architecture (attention, mlp, or all)
-- **Mixed precision**: Some operations may need to remain in fp32 for stability
-
-### CLIP Re-ranking
-- **Model naming**: OpenCLIP uses hyphen format (e.g., `ViT-L-14`) not slash format (`ViT-L/14`)
-- **Pretrained weights**: Specify both model and weights (e.g., `ViT-L-14/laion2b_s32b_b82k`)
-- **Memory management**: GLIDE models are offloaded to CPU during CLIP scoring to save GPU memory
-
-## CLI Development
-
-### Typer CLI Structure
-The codebase now includes a modern CLI built with Typer:
-
-```
-glide/
-├── train/
-│   ├── base        # Train 64x64 base model
-│   └── upsampler   # Train 64→256 upsampler
-└── eval/
-    ├── generate    # Generate images from prompts
-    ├── batch       # Batch evaluation
-    └── compare     # Compare model outputs
+# Problem: Steps per epoch incorrect
+# Solution: Calculate as (num_tars * 10000) // batch_size for LAION
 ```
 
-### CLI Implementation Notes
-- **Import paths**: CLI modules need to add parent directory to sys.path to import original scripts
-- **Enum types**: Use Typer Enums for choices (e.g., SamplerType, OutputFormat)
-- **Rich integration**: Use Rich console for beautiful output with panels and progress bars
-- **Entry points**: Defined in `pyproject.toml` under `[project.scripts]`
-- **Package discovery**: Must explicitly list packages in `[tool.setuptools]` to avoid flat-layout issues
+### Training Issues
+```bash
+# Problem: OOM errors
+# Solution: Use gradient accumulation or reduce batch size
+--gradient_accumulation_steps 4 --batch_size 1
 
-### Best Practices
-- **No args is help**: Set `no_args_is_help=True` for better UX
-- **Type hints**: Leverage Python type hints for automatic CLI argument parsing
-- **Subcommands**: Use `app.add_typer()` to organize related commands
-- **Documentation**: Include examples in docstrings for help text
-- **Error handling**: Check for required inputs early with clear error messages
+# Problem: FP16 training unstable
+# Solution: Use BF16 instead
+--precision bf16
+
+# Problem: Checkpoints not saving
+# Solution: Ensure save_checkpoint_interval aligns with global_step increments
+```
+
+### CLIP Re-ranking Issues
+```bash
+# Problem: "Model ViT-L/14 not found"
+# Solution: Use correct OpenCLIP format
+--clip_model "ViT-L-14"  # Correct
+--clip_model "ViT-L/14"  # Wrong
+```
+
+## CLI Development Notes
+
+### Entry Points
+Defined in `pyproject.toml`:
+```toml
+[project.scripts]
+glide = "glide_finetune.cli:app"
+```
+
+### Package Structure
+Must explicitly list packages to avoid flat-layout detection:
+```toml
+[tool.setuptools]
+packages = ["glide_finetune", "glide_finetune.cli"]
+```
+
+### Import Paths
+CLI modules add parent directory to sys.path:
+```python
+sys.path.append(str(Path(__file__).parent.parent.parent))
+```
+
+### Type System
+Use Typer Enums for choices:
+```python
+class SamplerType(str, Enum):
+    plms = "plms"
+    euler = "euler"
+```

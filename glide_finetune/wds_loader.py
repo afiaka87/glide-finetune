@@ -1,12 +1,48 @@
 import io
 import json
 from random import random
+import tarfile
+import traceback
 
 import PIL
 import webdataset as wds
 
 from glide_finetune.glide_util import get_tokens_and_mask, get_uncond_tokens_mask
 from glide_finetune.train_util import pil_image_to_norm_tensor
+
+
+def handle_wds_errors(exc):
+    """
+    Custom error handler for WebDataset that gracefully handles corrupted data.
+
+    Returns:
+        True to skip the sample, False to re-raise the exception
+    """
+    # Handle tar file corruption errors
+    if isinstance(exc, (tarfile.ReadError, EOFError)):
+        print(f"Warning: Corrupted data encountered in WebDataset, skipping sample...")
+        print(f"  Error type: {type(exc).__name__}")
+        return True  # Skip this sample and continue
+
+    # Handle PIL image errors
+    if isinstance(exc, (PIL.UnidentifiedImageError, PIL.Image.DecompressionBombError)):
+        print(f"Warning: Invalid image encountered, skipping sample...")
+        return True  # Skip this sample
+
+    # Handle JSON decode errors
+    if isinstance(exc, (json.JSONDecodeError, UnicodeDecodeError)):
+        print(f"Warning: Invalid JSON/text data encountered, skipping sample...")
+        return True  # Skip this sample
+
+    # Handle KeyError for missing keys in data
+    if isinstance(exc, KeyError):
+        print(f"Warning: Missing key in data sample: {exc}, skipping...")
+        return True  # Skip this sample
+
+    # For other exceptions, print details but re-raise
+    print(f"Unhandled exception in WebDataset: {type(exc).__name__}: {exc}")
+    traceback.print_exc()
+    return False  # Re-raise the exception
 
 
 def glide_wds_loader(
@@ -50,12 +86,12 @@ def glide_wds_loader(
 
     base_image_shape = (base_x, base_y)
     upsample_image_shape = (int(base_x * upscale_factor), int(base_y * upscale_factor))
-    # Create WebDataset with optimizations
+    # Create WebDataset with optimizations and custom error handler
     dataset = wds.WebDataset(
         urls,
         cache_dir=cache_path,
         cache_size=10**10,
-        handler=wds.handlers.reraise_exception,
+        handler=handle_wds_errors,  # Use custom error handler for robustness
         shardshuffle=False,  # Disabled when using resampled=True to avoid warning
         resampled=True,  # Infinite iteration to avoid exhaustion
     )
@@ -221,7 +257,7 @@ def glide_wds_loader(
     # Apply transformations with optimizations
     transformed_dataset = (
         filtered_dataset.shuffle(buffer_size).map(  # Add shuffling with buffer
-            preprocess_dataset, handler=wds.handlers.reraise_exception
+            preprocess_dataset, handler=handle_wds_errors  # Use custom error handler
         )
         # Note: batched() creates an extra dimension, skip it for now
         # The DataLoader will handle batching
