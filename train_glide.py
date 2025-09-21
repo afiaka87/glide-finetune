@@ -446,6 +446,9 @@ def run_glide_finetune(
             f"DEBUG: Number of tar files: {len(data_dir) if isinstance(data_dir, list) else 'N/A'}"
         )
 
+    # Move model to device before creating EMA (ensures both models are on same device)
+    glide_model = glide_model.to(device)
+
     # Optimizer setup - GLIDE paper uses AdamW with default betas (0.9, 0.999)
     optimizer = th.optim.AdamW(
         [x for x in glide_model.parameters() if x.requires_grad],

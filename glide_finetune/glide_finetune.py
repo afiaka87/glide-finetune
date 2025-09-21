@@ -141,7 +141,7 @@ def run_glide_finetune_epoch(
     else:
         print(f"No {prompt_file} found, using fixed prompt: {prompt}")
 
-    glide_model.to(device)
+    # Model should already be on correct device - moved in load_model_with_lora or before EMA creation
     glide_model.train()
     log: dict = {}
 
