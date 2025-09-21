@@ -29,11 +29,11 @@ uv run python train_glide.py \
     --gradient_accumulation_steps 1 \
     --use_captions \
     --epochs 10 \
-    --sample_batch_size 8 \
+    --sample_batch_size 16 \
     --eval_base_sampler "euler_a" \
-    --eval_sr_sampler "euler_a" \
-    --eval_base_sampler_steps 25 \
-    --eval_sr_sampler_steps 25 \
+    --eval_sr_sampler "euler" \
+    --eval_base_sampler_steps 30 \
+    --eval_sr_sampler_steps 20 \
     --test_guidance_scale 4.0 \
     --use_webdataset \
     --wds_image_key jpg \
@@ -43,11 +43,18 @@ uv run python train_glide.py \
     --cudnn_benchmark \
     --num_workers 8 \
     --wds_buffer_size 1000 \
+<<<<<<< Updated upstream
     --save_checkpoint_interval 2500 \
     --prompt_file 'data/generated-captions-1k.txt' \
     --use_sr_eval \
     --validation_workers 8
+=======
+    --save_checkpoint_interval 5000 \
+    --prompt_file eval_captions_persons_aesthetic.txt \
+    --validation_workers 32
+>>>>>>> Stashed changes
 
+#--use_sr_eval \
 # Note: SR evaluation will generate both 64x64 and 256x256 images during training
 # Both resolutions will be logged to WandB for comparison
 
