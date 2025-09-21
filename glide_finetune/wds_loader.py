@@ -72,6 +72,7 @@ def glide_wds_loader(
     buffer_size=1000,  # Shuffle buffer size
     initial_prefetch=10,  # Initial prefetch size
     debug=False,  # Enable debug printing
+    random_hflip=False,  # Random horizontal flip augmentation
 ):
     if debug:
         print("\nDEBUG: glide_wds_loader called with:")
@@ -234,6 +235,10 @@ def glide_wds_loader(
 
         image_data = item[image_key]
         original_pil_image = PIL.Image.open(io.BytesIO(image_data))
+
+        # Apply random horizontal flip if enabled
+        if random_hflip and random() < 0.5:
+            original_pil_image = original_pil_image.transpose(PIL.Image.FLIP_LEFT_RIGHT)
 
         base_pil_image = original_pil_image.resize(
             base_image_shape, resample=PIL.Image.BICUBIC

@@ -291,6 +291,7 @@ def run_glide_finetune(
     lora_resume="",
     save_checkpoint_interval=5000,
     gradient_accumulation_steps=1,
+    random_hflip=False,
 ):
     if "~" in data_dir:
         data_dir = os.path.expanduser(data_dir)
@@ -405,6 +406,7 @@ def run_glide_finetune(
             buffer_size=args.wds_buffer_size,
             initial_prefetch=args.wds_initial_prefetch,
             debug=args.wds_debug,
+            random_hflip=random_hflip,
         )
     else:
         dataset = TextImageDataset(
@@ -419,6 +421,7 @@ def run_glide_finetune(
             use_captions=use_captions,
             enable_glide_upsample=enable_upsample,
             upscale_factor=upsample_factor,  # TODO: make this a parameter
+            random_hflip=random_hflip,
         )
 
     # Data loader setup
@@ -521,6 +524,11 @@ def parse_args():
     parser.add_argument("--side_y", "-y", type=int, default=64)
     parser.add_argument(
         "--resize_ratio", "-crop", type=float, default=0.8, help="Crop ratio"
+    )
+    parser.add_argument(
+        "--random_hflip",
+        action="store_true",
+        help="Apply random horizontal flip augmentation during training (50% probability)",
     )
     parser.add_argument(
         "--uncond_p",
@@ -910,4 +918,5 @@ if __name__ == "__main__":
         lora_resume=args.lora_resume,
         save_checkpoint_interval=args.save_checkpoint_interval,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
+        random_hflip=args.random_hflip,
     )

@@ -61,6 +61,7 @@ class TextImageDataset(Dataset):
         use_captions=False,
         enable_glide_upsample=False,
         upscale_factor=4,
+        random_hflip=False,
     ):
         super().__init__()
         folder = Path(folder)
@@ -89,6 +90,7 @@ class TextImageDataset(Dataset):
         self.uncond_p = uncond_p
         self.enable_upsample = enable_glide_upsample
         self.upscale_factor = upscale_factor
+        self.random_hflip = random_hflip
 
     def __len__(self):
         return len(self.keys)
@@ -133,6 +135,11 @@ class TextImageDataset(Dataset):
             print(f"An exception occurred trying to load file {image_file}.")
             print(f"Skipping index {ind}")
             return self.skip_sample(ind)
+
+        # Apply random horizontal flip if enabled
+        if self.random_hflip and random() < 0.5:
+            original_pil_image = original_pil_image.transpose(PIL.Image.FLIP_LEFT_RIGHT)
+
         if self.enable_upsample:  # the base image used should be derived from the cropped high-resolution image.
             upsample_pil_image = random_resized_crop(
                 original_pil_image,
