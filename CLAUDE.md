@@ -28,42 +28,31 @@ uv run ruff format .
 uv run mypy .
 ```
 
-### Training with Local Datasets
+### Training Commands
 
 ```bash
-# Train GLIDE on local datasets (found at ~/laion2b_en_aesthetic_wds/)
+# Train base model (64x64) on LAION dataset
+bash run_train_glide.sh
+
+# Alternative: Direct training command
 uv run python train_glide.py \
-  --data_dir ~/laion2b_en_aesthetic_wds/ \
+  --data_dir /mnt/usb_nvme_2tb/Data/laion-2b-en-aesthetic-subset \
   --use_webdataset \
-  --wds_caption_key 'txt' \
-  --wds_image_key 'jpg' \
-  --wds_dataset_name 'laion' \
+  --wds_caption_key txt \
+  --wds_image_key jpg \
+  --wds_dataset_name laion \
   --use_captions \
   --batch_size 4 \
-  --learning_rate 1e-04 \
-  --precision bf16 \
-  --wandb_project_name 'glide-laion'
-
-# Alternative: Use the shell script
-bash run_train_glide.sh
-```
-
-### Core Training Scripts
-
-```bash
-# Base model training (64x64)
-uv run python train_glide.py \
-  --data_dir '/path/to/dataset' \
-  --train_upsample False \
-  --batch_size 4 \
-  --learning_rate 1e-04 \
+  --learning_rate 3e-4 \
+  --adam_weight_decay 0.01 \
   --precision bf16 \
   --uncond_p 0.2 \
-  --gradient_accumulation_steps 2
+  --gradient_accumulation_steps 1 \
+  --wandb_project_name 'glide-laion-finetune'
 
 # Upsampler training (64→256)
 uv run python train_glide.py \
-  --data_dir '/path/to/dataset' \
+  --data_dir /path/to/dataset \
   --train_upsample True \
   --upscale_factor 4 \
   --uncond_p 0.0 \
@@ -71,11 +60,11 @@ uv run python train_glide.py \
 
 # LoRA fine-tuning (parameter-efficient)
 uv run python train_glide.py \
-  --data_dir '/path/to/dataset' \
+  --data_dir /path/to/dataset \
   --use_lora \
   --lora_rank 8 \
   --lora_alpha 32 \
-  --lora_target_mode 'attention' \
+  --lora_target_mode attention \
   --freeze_transformer \
   --freeze_diffusion
 ```
@@ -85,7 +74,7 @@ uv run python train_glide.py \
 ```bash
 # Batch evaluation with CLIP re-ranking
 uv run python evaluate_glide.py \
-  --prompt_file prompts.txt \
+  --prompt_file eval_captions_persons_aesthetic.txt \
   --base_model checkpoints/base.pt \
   --sr_model checkpoints/sr.pt \
   --use_clip_rerank \
@@ -108,19 +97,23 @@ The repository implements GLIDE (Guided Language to Image Diffusion) fine-tuning
 1. **Base Model** (`train_upsample=False`): 64x64 text-to-image generation with classifier-free guidance
    - Uses `uncond_p=0.2` to randomly replace captions with empty tokens for CFG training
    - Generates low-resolution images from text prompts
+   - Default hyperparameters: AdamW optimizer with lr=3e-4, weight_decay=0.01, EMA=0.9999
 
 2. **Upsampler Model** (`train_upsample=True`): 64→256 super-resolution with prompt awareness
    - Uses `uncond_p=0.0` - always conditioned on text
    - Upscales base model outputs to high resolution
+   - Typically uses same optimizer settings as base model
 
 ### Key Implementation Details
 
 #### WebDataset Loading (for LAION-scale training)
-- Located at `~/laion2b_en_aesthetic_wds/` (1,219 tar files, 241GB total)
+- Default dataset location: `/mnt/usb_nvme_2tb/Data/laion-2b-en-aesthetic-subset`
+- Alternative location: `~/laion2b_en_aesthetic_wds/`
 - Each tar contains ~10,000 image-text pairs
 - WebDataset with `resampled=True` creates infinite iterators requiring manual epoch tracking
 - Dataloader wraps WebDataset iterator: `DataLoader(wds.WebDataset(...).batched(batch_size))`
 - Steps per epoch: `(num_tars * samples_per_tar) // batch_size`
+- Automatic tar file validation with caching in `./cache/valid_tars_*.json`
 
 #### Gradient Accumulation and Training Loop
 - Loss scaled by `1/accumulation_steps` during backward pass
@@ -148,10 +141,7 @@ glide_finetune/
 ├── enhanced_samplers.py   # Euler, Euler-A, DPM++ implementations
 ├── lora_wrapper.py        # LoRA adaptation layers
 ├── clip_rerank.py         # CLIP-based quality selection
-└── cli/                   # Typer CLI implementation
-    ├── __init__.py        # Main CLI app entry point
-    ├── train.py           # Training subcommands
-    └── eval.py            # Evaluation subcommands
+└── cli_utils.py           # CLI utilities for evaluation and generation
 ```
 
 ### Sampling Methods
@@ -181,8 +171,11 @@ samples = sample(model, options, 64, 64,
 ### Training Parameters
 - `uncond_p`: 0.2 for base model, 0.0 for upsampler (critical for proper CFG)
 - `gradient_accumulation_steps`: Effective batch = batch_size * grad_acc_steps
-- `save_checkpoint_interval`: Based on global_step (weight updates) not iterations
+- `save_checkpoint_interval`: Default 2500 steps (based on global_step/weight updates)
 - `log_frequency`: Console output frequency (WandB logs every step)
+- `sample_interval`: Generate sample images every N steps (default 250)
+- `learning_rate`: Default 3e-4 (GLIDE paper uses 1e-4)
+- `adam_weight_decay`: Default 0.01 (GLIDE paper uses 0.0)
 
 ### CLIP Re-ranking
 - Model format: Use `ViT-L-14` (hyphen) not `ViT-L/14` (slash) for OpenCLIP
@@ -200,7 +193,7 @@ samples = sample(model, options, 64, 64,
 ```bash
 # Problem: Empty epoch_metrics, no batches yielded
 # Solution: Check tar file accessibility and glob expansion
-ls -la ~/laion2b_en_aesthetic_wds/*.tar | head -5
+ls -la /mnt/usb_nvme_2tb/Data/laion-2b-en-aesthetic-subset/*.tar | head -5
 
 # Problem: Steps per epoch incorrect
 # Solution: Calculate as (num_tars * 10000) // batch_size for LAION
@@ -228,32 +221,18 @@ ls -la ~/laion2b_en_aesthetic_wds/*.tar | head -5
 --clip_model "ViT-L/14"  # Wrong
 ```
 
-## CLI Development Notes
+## Key Training Scripts
 
-### Entry Points
-Defined in `pyproject.toml`:
-```toml
-[project.scripts]
-glide = "glide_finetune.cli:app"
-```
+### Main Scripts
+- `train_glide.py`: Primary training script with WebDataset support and tar validation
+- `evaluate_glide.py`: Batch generation with CLIP re-ranking and Rich UI
+- `gradio_app.py`: Interactive web interface for generation
+- `run_train_glide.sh`: Configured training script for LAION dataset
 
-### Package Structure
-Must explicitly list packages to avoid flat-layout detection:
-```toml
-[tool.setuptools]
-packages = ["glide_finetune", "glide_finetune.cli"]
-```
+### Utility Scripts
+- `test_bf16.py`: Test BF16 mixed precision training
+- `example_samplers.py`: Demonstrate different sampling methods
+- `quick_test_samplers.py`: Quick sampler testing
 
-### Import Paths
-CLI modules add parent directory to sys.path:
-```python
-sys.path.append(str(Path(__file__).parent.parent.parent))
-```
-
-### Type System
-Use Typer Enums for choices:
-```python
-class SamplerType(str, Enum):
-    plms = "plms"
-    euler = "euler"
-```
+### Evaluation Prompts
+- `eval_captions_persons_aesthetic.txt`: Human-focused evaluation prompts for testing model quality

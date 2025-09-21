@@ -21,6 +21,20 @@ def save_model(
     )
 
 
+def save_ema_model(
+    ema_model, checkpoints_dir: str, train_idx: int, epoch: int, ema_rate: float
+):
+    """Save EMA model checkpoint matching OpenAI's naming convention."""
+    ema_path = os.path.join(checkpoints_dir, f"ema_{ema_rate}_{epoch}x{train_idx:06d}.pt")
+    th.save(
+        ema_model.state_dict(),
+        ema_path,
+    )
+    tqdm.write(
+        f"Saved EMA checkpoint to {ema_path}"
+    )
+
+
 def pred_to_pil(pred: th.Tensor) -> Image.Image:
     """Convert model prediction tensor to PIL Image.
 

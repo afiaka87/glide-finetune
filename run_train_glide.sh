@@ -11,10 +11,11 @@ echo "      Validation results are cached in ./cache/ for faster restarts"
 echo ""
 
 uv run python train_glide.py \
-    --data_dir ~/laion2b_en_aesthetic_wds/ \
-    --batch_size 32 \
-    --learning_rate 3e-4 \
+    --data_dir /mnt/usb_nvme_2tb/Data/laion-2b-en-aesthetic-subset \
+    --batch_size 4 \
+    --learning_rate 1e-4 \
     --adam_weight_decay 0.0 \
+    --ema_rate 0.9999 \
     --side_x 64 \
     --side_y 64 \
     --resize_ratio 1.0 \
@@ -22,17 +23,17 @@ uv run python train_glide.py \
     --checkpoints_dir ./checkpoints \
     --precision bf16 \
     --log_frequency 1 \
-    --sample_interval 50 \
+    --sample_interval 250 \
     --wandb_project_name 'glide-laion-finetune' \
     --activation_checkpointing \
     --gradient_accumulation_steps 1 \
     --use_captions \
     --epochs 10 \
-    --sample_batch_size 32 \
+    --sample_batch_size 8 \
     --eval_base_sampler "euler_a" \
     --eval_sr_sampler "euler_a" \
-    --eval_base_sampler_steps 30 \
-    --eval_sr_sampler_steps 27 \
+    --eval_base_sampler_steps 25 \
+    --eval_sr_sampler_steps 25 \
     --test_guidance_scale 4.0 \
     --use_webdataset \
     --wds_image_key jpg \
@@ -42,10 +43,10 @@ uv run python train_glide.py \
     --cudnn_benchmark \
     --num_workers 8 \
     --wds_buffer_size 1000 \
-    --save_checkpoint_interval 5000 \
+    --save_checkpoint_interval 2500 \
     --prompt_file eval_captions_persons_aesthetic.txt \
     --use_sr_eval \
-    --validation_workers 32
+    --validation_workers 8
 
 # Note: SR evaluation will generate both 64x64 and 256x256 images during training
 # Both resolutions will be logged to WandB for comparison
@@ -66,10 +67,14 @@ uv run python train_glide.py \
 # --lora_target_mode attention \    # LoRA target modules
 
 echo ""
-echo "Training configuration:"
+echo "Training configuration (GLIDE paper hyperparameters):"
 echo "  - Batch size: 4"
-echo "  - Gradient accumulation: 4 steps (effective batch size: 16)"
-echo "  - Learning rate: 1e-4"
+echo "  - Gradient accumulation: 1 step"
+echo "  - Learning rate: 1e-4 (GLIDE paper value)"
+echo "  - Weight decay: 0.0 (GLIDE paper value)"
+echo "  - EMA rate: 0.9999 (GLIDE paper value)"
+echo "  - Optimizer: AdamW with default betas (0.9, 0.999)"
+echo "  - Gradient clipping: None (as per GLIDE)"
 echo "  - Mixed precision: BF16"
 echo "  - Unconditional probability: 0.2 (for classifier-free guidance)"
 echo "  - Dataset: LAION-2B English Aesthetic"
@@ -77,3 +82,4 @@ echo "  - Validation: Parallel tar file validation with caching"
 echo "  - Cache location: ./cache/valid_tars_*.json"
 echo "  - SR Evaluation: Enabled (generates both 64x64 and 256x256 images)"
 echo "  - WandB logging: Both resolutions will be logged separately"
+echo "  - EMA checkpoints: Saved as ema_0.9999_*.pt files"

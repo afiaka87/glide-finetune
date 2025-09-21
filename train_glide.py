@@ -249,8 +249,8 @@ def validate_tar_files(tar_files, skip_validation=False, use_cache=True, cache_d
 def run_glide_finetune(
     data_dir="./data",
     batch_size=1,
-    learning_rate=1e-5,
-    adam_weight_decay=0.0,
+    learning_rate=1e-4,  # GLIDE paper value
+    adam_weight_decay=0.0,  # GLIDE paper value
     side_x=64,
     side_y=64,
     resize_ratio=1.0,
@@ -292,6 +292,7 @@ def run_glide_finetune(
     save_checkpoint_interval=5000,
     gradient_accumulation_steps=1,
     random_hflip=False,
+    ema_rate=0.9999,  # GLIDE paper value for EMA decay
 ):
     if "~" in data_dir:
         data_dir = os.path.expanduser(data_dir)
@@ -445,12 +446,20 @@ def run_glide_finetune(
             f"DEBUG: Number of tar files: {len(data_dir) if isinstance(data_dir, list) else 'N/A'}"
         )
 
-    # Optimizer setup
+    # Optimizer setup - GLIDE paper uses AdamW with default betas (0.9, 0.999)
     optimizer = th.optim.AdamW(
         [x for x in glide_model.parameters() if x.requires_grad],
         lr=learning_rate,
         weight_decay=adam_weight_decay,
+        # Using PyTorch default betas=(0.9, 0.999) as per GLIDE paper
     )
+
+    # EMA setup - GLIDE paper uses EMA decay of 0.9999
+    ema_model = None
+    if ema_rate > 0:
+        from glide_finetune.ema_util import SimpleEMA
+        print(f"Setting up EMA with decay rate {ema_rate}")
+        ema_model = SimpleEMA(glide_model, decay=ema_rate)
 
     # Note: Freezing is already handled in load_model/load_model_with_lora
     # No need for additional requires_grad_ modifications here
@@ -484,6 +493,7 @@ def run_glide_finetune(
             glide_diffusion=glide_diffusion,
             glide_options=glide_options,
             optimizer=optimizer,
+            ema_model=ema_model,  # Pass EMA model for updates
             upsampler_model=upsampler_model,
             upsampler_options=upsampler_options,
             use_sr_eval=use_sr_eval,
@@ -518,8 +528,9 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data_dir", "-data", type=str, default="./data")
     parser.add_argument("--batch_size", "-bs", type=int, default=1)
-    parser.add_argument("--learning_rate", "-lr", type=float, default=2e-5)
-    parser.add_argument("--adam_weight_decay", "-adam_wd", type=float, default=0.0)
+    parser.add_argument("--learning_rate", "-lr", type=float, default=1e-4)  # GLIDE paper value
+    parser.add_argument("--adam_weight_decay", "-adam_wd", type=float, default=0.0)  # GLIDE paper value
+    parser.add_argument("--ema_rate", type=float, default=0.9999, help="EMA decay rate (GLIDE uses 0.9999)")
     parser.add_argument("--side_x", "-x", type=int, default=64)
     parser.add_argument("--side_y", "-y", type=int, default=64)
     parser.add_argument(
@@ -919,4 +930,5 @@ if __name__ == "__main__":
         save_checkpoint_interval=args.save_checkpoint_interval,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         random_hflip=args.random_hflip,
+        ema_rate=args.ema_rate,
     )

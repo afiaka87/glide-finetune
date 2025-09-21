@@ -95,7 +95,8 @@ def run_glide_finetune_epoch(
     glide_options: dict,
     dataloader: th.utils.data.DataLoader,
     optimizer: th.optim.Optimizer,
-    sample_bs: int,  # batch size for inference
+    ema_model=None,  # EMA model wrapper
+    sample_bs: int = 1,  # batch size for inference
     sample_gs: float = 4.0,  # guidance scale for inference
     sample_respacing: str = "30",  # respacing for inference - using 30 steps with Euler
     sample_sampler: str = "euler",  # sampler for inference - Euler is fast and deterministic
@@ -188,6 +189,10 @@ def run_glide_finetune_epoch(
         if (train_idx + 1) % gradient_accumulation_steps == 0:
             optimizer.step()
             optimizer.zero_grad()
+
+            # Update EMA after optimizer step (as per OpenAI's guided-diffusion)
+            if ema_model is not None:
+                ema_model.update()
 
             # Calculate the averaged loss for this accumulation
             avg_accumulated_loss = accumulated_loss / gradient_accumulation_steps
@@ -443,6 +448,11 @@ def run_glide_finetune_epoch(
                 print(
                     f"Saved checkpoint {train_idx} to {checkpoints_dir}/glide-ft-{train_idx}.pt"
                 )
+
+                # Save EMA model if available
+                if ema_model is not None:
+                    train_util.save_ema_model(ema_model, checkpoints_dir, train_idx, epoch, ema_model.decay)
+                    print(f"Saved EMA checkpoint with decay {ema_model.decay}")
         wandb_run.log(log)
 
     print("Finished training, saving final checkpoint")
@@ -462,3 +472,7 @@ def run_glide_finetune_epoch(
         print(f"Saved final LoRA adapter to {final_lora_path}")
     else:
         train_util.save_model(glide_model, checkpoints_dir, train_idx, epoch)
+        # Save final EMA model if available
+        if ema_model is not None:
+            train_util.save_ema_model(ema_model, checkpoints_dir, train_idx, epoch, ema_model.decay)
+            print(f"Saved final EMA checkpoint with decay {ema_model.decay}")
