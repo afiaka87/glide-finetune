@@ -17,7 +17,7 @@ uv run python train_glide.py \
     --wandb_project_name glide_synth_dalle3 \
     --activation_checkpointing \
     --epochs 10 \
-    --prompt_file pixel_art_prompts.txt \
+    --prompt_file data/generated-captions-1k.txt \
     --sample_batch_size 8 \
     --use_sr_eval \
     --gradient_accumulation_steps 4 \

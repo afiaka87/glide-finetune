@@ -14,6 +14,6 @@ uv run python train_glide.py \
     --wandb_project_name glide_pixelart_nomenus \
     --activation_checkpointing \
     --epochs 10 \
-    --prompt_file pixel_art_prompts.txt \
+    --prompt_file data/generated-captions-1k.txt \
     --use_sr_eval \
     --precision bf16

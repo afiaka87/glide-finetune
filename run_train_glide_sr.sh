@@ -44,7 +44,7 @@ uv run python train_glide.py \
     --num_workers 8 \
     --wds_buffer_size 1000 \
     --save_checkpoint_interval 5000 \
-    --prompt_file eval_captions_persons_aesthetic.txt \
+    --prompt_file 'data/generated-captions-1k.txt' \
     --validation_workers 32
 
 # Note: Upsampler evaluation will generate 256x256 images during training

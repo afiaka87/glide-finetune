@@ -63,7 +63,7 @@ uv run python train_glide.py \
     --num_workers 8 \
     --wds_buffer_size 1000 \
     --save_checkpoint_interval 2500 \
-    --prompt_file eval_captions_persons_aesthetic.txt \
+    --prompt_file 'data/generated-captions-1k.txt' \
     --use_sr_eval \
     --validation_workers 8 \
     --random_hflip
