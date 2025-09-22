@@ -279,7 +279,7 @@ def run_glide_finetune(
     dataset_name="laion",
     enable_upsample=False,
     upsample_factor=4,
-    image_to_upsample="low_res_face.png",
+    eval_sr_base_images="data/images/base_64x64",
     use_sr_eval=False,
     sr_model_path=None,
     use_lora=False,
@@ -665,7 +665,10 @@ def parse_args():
         help="Upscale factor for training the upsampling model only",
     )
     parser.add_argument(
-        "--image_to_upsample", "-lowres", type=str, default="low_res_face.png"
+        "--eval_sr_base_images",
+        type=str,
+        default="data/images/base_64x64",
+        help="Directory containing base 64x64 images for SR evaluation during training"
     )
     parser.add_argument(
         "--use_sr_eval",
@@ -918,7 +921,7 @@ if __name__ == "__main__":
         dataset_name=args.wds_dataset_name,
         enable_upsample=args.train_upsample,
         upsample_factor=args.upscale_factor,
-        image_to_upsample=args.image_to_upsample,
+        eval_sr_base_images=args.eval_sr_base_images,
         use_sr_eval=args.use_sr_eval,
         sr_model_path=args.sr_model_path,
         prompt_file=args.prompt_file,

@@ -1,6 +1,7 @@
 import os
 import random
 import time
+import glob
 from typing import Tuple
 
 import numpy as np
@@ -119,7 +120,7 @@ def run_glide_finetune_epoch(
     epoch: int = 0,
     train_upsample: bool = False,
     upsample_factor=4,
-    image_to_upsample="low_res_face.png",
+    eval_sr_base_images="data/images/base_64x64",
     upsampler_model=None,
     upsampler_options=None,
     use_sr_eval: bool = False,
@@ -258,6 +259,26 @@ def run_glide_finetune_epoch(
             all_images_256 = []  # 256x256 SR images (if enabled)
             wandb_images_64 = []
             wandb_images_256 = []
+            wandb_images_input_64 = []  # Input base images for SR training
+            wandb_images_reference_256 = []  # Reference SR images for comparison
+
+            # For upsampler training, load base images from directory
+            if train_upsample and os.path.exists(eval_sr_base_images):
+                base_image_files = sorted(glob.glob(os.path.join(eval_sr_base_images, "*.png")))
+                base_caption_files = sorted(glob.glob(os.path.join(eval_sr_base_images, "*.txt")))
+
+                # Limit to available images or sample_prompts, whichever is smaller
+                num_to_eval = min(len(sample_prompts), len(base_image_files))
+                sample_prompts = sample_prompts[:num_to_eval]
+                base_image_files = base_image_files[:num_to_eval]
+
+                # Load corresponding captions if available
+                if len(base_caption_files) >= num_to_eval:
+                    loaded_captions = []
+                    for caption_file in base_caption_files[:num_to_eval]:
+                        with open(caption_file, 'r') as f:
+                            loaded_captions.append(f.read().strip())
+                    sample_prompts = loaded_captions
 
             for idx, sample_prompt in enumerate(sample_prompts):
                 print(
@@ -271,7 +292,25 @@ def run_glide_finetune_epoch(
                     "plms" if eval_base_sampler == "standard" else eval_base_sampler
                 )
 
-                # First, always generate 64x64 base images
+                # For upsampler training, use specific base image
+                current_image_to_upsample = None
+                if train_upsample and os.path.exists(eval_sr_base_images):
+                    if idx < len(base_image_files):
+                        current_image_to_upsample = base_image_files[idx]
+
+                        # Load and log the input base image
+                        from PIL import Image
+                        input_base_img = Image.open(current_image_to_upsample).convert("RGB")
+                        wandb_images_input_64.append(wandb.Image(input_base_img, caption=f"Input: {sample_prompt[:50]}..."))
+
+                        # Load reference SR image if it exists
+                        base_name = os.path.splitext(os.path.basename(current_image_to_upsample))[0]
+                        ref_sr_path = os.path.join("data/images/sr_256x256", f"{base_name}.png")
+                        if os.path.exists(ref_sr_path):
+                            ref_sr_img = Image.open(ref_sr_path).convert("RGB")
+                            wandb_images_reference_256.append(wandb.Image(ref_sr_img, caption=f"Reference: {sample_prompt[:50]}..."))
+
+                # First, always generate 64x64 base images (or upsample if training SR)
                 samples_64 = glide_util.sample(
                     glide_model=glide_model,
                     glide_options=glide_options,
@@ -283,13 +322,21 @@ def run_glide_finetune_epoch(
                     device=device,
                     prediction_respacing=str(eval_base_sampler_steps),
                     sampler=base_sampler,  # type: ignore
-                    image_to_upsample=image_to_upsample if train_upsample else None,
+                    upsample_enabled=train_upsample,
+                    image_to_upsample=current_image_to_upsample if train_upsample else None,
                 )
 
-                # Convert 64x64 to PIL and store
-                pil_image_64 = train_util.pred_to_pil(samples_64)
-                all_images_64.append(pil_image_64)
-                wandb_images_64.append(wandb.Image(pil_image_64, caption=f"{sample_prompt} (64x64)"))
+                # For upsampler training, samples_64 is actually 256x256 output
+                if train_upsample:
+                    # samples_64 is 256x256 when upsampling
+                    pil_image_256 = train_util.pred_to_pil(samples_64)
+                    all_images_256.append(pil_image_256)
+                    wandb_images_256.append(wandb.Image(pil_image_256, caption=f"Generated: {sample_prompt[:50]}..."))
+                else:
+                    # Normal 64x64 base model output
+                    pil_image_64 = train_util.pred_to_pil(samples_64)
+                    all_images_64.append(pil_image_64)
+                    wandb_images_64.append(wandb.Image(pil_image_64, caption=f"{sample_prompt} (64x64)"))
 
                 # Generate 256x256 with SR if requested and we're training base model
                 if use_sr_eval and not train_upsample and upsampler_model is not None:
@@ -321,10 +368,30 @@ def run_glide_finetune_epoch(
                     all_images_256.append(pil_image_256)
                     wandb_images_256.append(wandb.Image(pil_image_256, caption=f"{sample_prompt} (256x256)"))
 
-            # Create and save grid images for 64x64
+            # Create and save grid images
             wandb_log_dict = {"iter": train_idx}
 
-            if len(all_images_64) > 1:
+            # For upsampler training, create comparison galleries
+            if train_upsample:
+                # Log input base images, generated SR, and reference SR
+                if wandb_images_input_64:
+                    wandb_log_dict["input_base_64px"] = wandb_images_input_64
+                if wandb_images_256:
+                    wandb_log_dict["generated_sr_256px"] = wandb_images_256
+                if wandb_images_reference_256:
+                    wandb_log_dict["reference_sr_256px"] = wandb_images_reference_256
+
+                # Create comparison table for easy viewing
+                if len(wandb_images_input_64) > 0 and len(wandb_images_256) > 0:
+                    comparison_images = []
+                    for i in range(min(len(wandb_images_input_64), len(wandb_images_256))):
+                        comparison_images.append(wandb_images_input_64[i])
+                        comparison_images.append(wandb_images_256[i])
+                        if i < len(wandb_images_reference_256):
+                            comparison_images.append(wandb_images_reference_256[i])
+                    wandb_log_dict["sr_comparison"] = comparison_images
+
+            # Skip 64x64 grid for upsampler training (we have 256x256 instead)\n            if not train_upsample and len(all_images_64) > 1:
                 # Use auto mode for optimal grid layout
                 grid_image_64 = train_util.make_grid(
                     all_images_64,
@@ -349,7 +416,7 @@ def run_glide_finetune_epoch(
                     ),
                     "sample_gallery_64px": wandb_images_64,
                 })
-            else:
+            elif not train_upsample and len(all_images_64) == 1:
                 # Single 64x64 image case
                 sample_save_path_64 = os.path.join(outputs_dir, f"{train_idx}_64px.png")
                 all_images_64[0].save(sample_save_path_64)
