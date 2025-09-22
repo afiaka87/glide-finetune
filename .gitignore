@@ -51,3 +51,5 @@ glide-ft-0x60000.compiled.pt
 glide_finetune.egg-info/
 glide_finetune/cli/
 upsample.compiled.pt
+
+checkpoints_ema_sr/
