@@ -143,6 +143,11 @@ def run_glide_finetune_epoch(
 
     # Model should already be on correct device - moved in load_model_with_lora or before EMA creation
     glide_model.train()
+
+    # Move EMA model to the same device if it exists
+    if ema_model is not None:
+        ema_model.to(device)
+
     log: dict = {}
 
     # Initialize timing for samples/sec calculation

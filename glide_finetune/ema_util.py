@@ -35,11 +35,18 @@ class SimpleEMA:
         """
         self.decay = decay
         self.model = model
+
         # Create a deep copy for EMA parameters
         self.ema_model = deepcopy(model)
+
         # Detach all parameters to avoid gradients
         for p in self.ema_model.parameters():
             p.detach_()
+
+    def to(self, device):
+        """Move EMA model to specified device."""
+        self.ema_model = self.ema_model.to(device)
+        return self
 
     def update(self):
         """Update EMA parameters using current model parameters."""
