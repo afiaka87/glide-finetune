@@ -381,15 +381,154 @@ def run_glide_finetune_epoch(
                 if wandb_images_reference_256:
                     wandb_log_dict["reference_sr_256px"] = wandb_images_reference_256
 
-                # Create comparison table for easy viewing
+                # Create comparison table for easy viewing - using WandB Table for better display
                 if len(wandb_images_input_64) > 0 and len(wandb_images_256) > 0:
-                    comparison_images = []
-                    for i in range(min(len(wandb_images_input_64), len(wandb_images_256))):
-                        comparison_images.append(wandb_images_input_64[i])
-                        comparison_images.append(wandb_images_256[i])
+                    print(f"Creating comparison table with {len(wandb_images_input_64)} input images and {len(wandb_images_256)} generated images")
+
+                    # Create a table to show all comparisons
+                    comparison_table = wandb.Table(columns=["Sample #", "Prompt", "Input (64px)", "Generated (256px)", "Reference (256px)"])
+
+                    # Add all samples to the table
+                    num_samples = min(len(wandb_images_input_64), len(wandb_images_256))
+                    for i in range(num_samples):
+                        # Get prompt text
+                        prompt_text = ""
+                        if i < len(sample_prompts):
+                            prompt_text = sample_prompts[i][:100] if sample_prompts[i] else ""
+
+                        # Get reference image if available
+                        ref_image = None
                         if i < len(wandb_images_reference_256):
-                            comparison_images.append(wandb_images_reference_256[i])
-                    wandb_log_dict["sr_comparison"] = comparison_images
+                            ref_image = wandb_images_reference_256[i]
+
+                        row_data = [
+                            i + 1,  # Sample number
+                            prompt_text,  # Truncated prompt
+                            wandb_images_input_64[i],  # Input image
+                            wandb_images_256[i],  # Generated image
+                            ref_image  # Reference image (can be None)
+                        ]
+                        comparison_table.add_data(*row_data)
+
+                    print(f"Added {num_samples} rows to comparison table")
+                    wandb_log_dict["sr_comparison_table"] = comparison_table
+
+                    # Also create a comparison grid image for quick viewing
+                    # This will show input, generated, reference side by side for all samples
+                    if len(wandb_images_input_64) > 0:
+                        try:
+                            from PIL import Image
+                            import numpy as np
+
+                            # Create side-by-side comparisons
+                            comparison_rows = []
+                            for i in range(min(len(wandb_images_input_64), len(wandb_images_256))):
+                                row_images = []
+
+                                # Get input image (resize to 256x256 for display)
+                                # wandb.Image objects store the PIL image in the _image attribute
+                                try:
+                                    # Try to get the underlying PIL image
+                                    if hasattr(wandb_images_input_64[i], '_image'):
+                                        input_img = wandb_images_input_64[i]._image
+                                    else:
+                                        # If it's already a PIL image or path, handle it
+                                        input_img = wandb_images_input_64[i]
+
+                                    # Convert to PIL Image if needed
+                                    if isinstance(input_img, str):
+                                        input_img = Image.open(input_img)
+                                    elif isinstance(input_img, np.ndarray):
+                                        input_img = Image.fromarray(input_img)
+
+                                    if isinstance(input_img, Image.Image):
+                                        input_resized = input_img.resize((256, 256), Image.LANCZOS)
+                                        row_images.append(input_resized)
+                                except Exception as e:
+                                    print(f"Warning: Could not process input image {i}: {e}")
+
+                                # Get generated image
+                                try:
+                                    if hasattr(wandb_images_256[i], '_image'):
+                                        gen_img = wandb_images_256[i]._image
+                                    else:
+                                        gen_img = wandb_images_256[i]
+
+                                    if isinstance(gen_img, str):
+                                        gen_img = Image.open(gen_img)
+                                    elif isinstance(gen_img, np.ndarray):
+                                        gen_img = Image.fromarray(gen_img)
+
+                                    if isinstance(gen_img, Image.Image):
+                                        row_images.append(gen_img)
+                                except Exception as e:
+                                    print(f"Warning: Could not process generated image {i}: {e}")
+
+                                # Get reference image if available
+                                if i < len(wandb_images_reference_256):
+                                    try:
+                                        if hasattr(wandb_images_reference_256[i], '_image'):
+                                            ref_img = wandb_images_reference_256[i]._image
+                                        else:
+                                            ref_img = wandb_images_reference_256[i]
+
+                                        if isinstance(ref_img, str):
+                                            ref_img = Image.open(ref_img)
+                                        elif isinstance(ref_img, np.ndarray):
+                                            ref_img = Image.fromarray(ref_img)
+
+                                        if isinstance(ref_img, Image.Image):
+                                            row_images.append(ref_img)
+                                    except Exception as e:
+                                        print(f"Warning: Could not process reference image {i}: {e}")
+
+                                # Concatenate images horizontally if we have them
+                                if len(row_images) >= 2:
+                                    # Ensure all images are same height
+                                    height = 256
+                                    resized_row = []
+                                    for img in row_images:
+                                        if img.height != height:
+                                            aspect = img.width / img.height
+                                            new_width = int(height * aspect)
+                                            img = img.resize((new_width, height), Image.LANCZOS)
+                                        resized_row.append(img)
+
+                                    # Concatenate horizontally with 5px spacing
+                                    spacing = 5
+                                    total_width = sum(img.width for img in resized_row) + spacing * (len(resized_row) - 1)
+                                    row_img = Image.new('RGB', (total_width, height), (128, 128, 128))
+                                    x_offset = 0
+                                    for img in resized_row:
+                                        row_img.paste(img, (x_offset, 0))
+                                        x_offset += img.width + spacing
+
+                                    comparison_rows.append(row_img)
+
+                            # Stack all rows vertically
+                            if comparison_rows:
+                                spacing = 5
+                                total_height = sum(img.height for img in comparison_rows) + spacing * (len(comparison_rows) - 1)
+                                max_width = max(img.width for img in comparison_rows)
+
+                                full_comparison = Image.new('RGB', (max_width, total_height), (128, 128, 128))
+                                y_offset = 0
+                                for row_img in comparison_rows:
+                                    # Center each row horizontally
+                                    x_offset = (max_width - row_img.width) // 2
+                                    full_comparison.paste(row_img, (x_offset, y_offset))
+                                    y_offset += row_img.height + spacing
+
+                                # Save and log the comparison grid
+                                comparison_grid_path = os.path.join(outputs_dir, f"{train_idx}_comparison_grid.png")
+                                full_comparison.save(comparison_grid_path)
+                                wandb_log_dict["sr_comparison_grid"] = wandb.Image(
+                                    full_comparison,
+                                    caption=f"Comparison grid: Input (64px upscaled) | Generated (256px) | Reference (256px) - {len(comparison_rows)} samples"
+                                )
+                                print(f"Created comparison grid with {len(comparison_rows)} samples")
+                        except Exception as e:
+                            print(f"Warning: Could not create comparison grid: {e}")
 
             # Skip 64x64 grid for upsampler training (we have 256x256 instead)\n            if not train_upsample and len(all_images_64) > 1:
                 # Use auto mode for optimal grid layout

@@ -31,38 +31,13 @@ echo "Note: EMA checkpoints saved as 'ema_0.9999_sr_*.pt' for inference"
 echo "================================================================================"
 echo ""
 
-# Generate base images for evaluation if they don't exist
-if [ ! -d "data/images/base_64x64" ] || [ -z "$(ls -A data/images/base_64x64 2>/dev/null)" ]; then
-    echo "Generating 32 base images for SR evaluation..."
-    echo "This ensures consistent evaluation during training"
-    echo ""
-    uv run python generate_base_images.py \
-        --base_model_path glide_model_cache/base.pt \
-        --prompt_file data/generated-captions-1k.txt \
-        --output_dir data/images/base_64x64 \
-        --num_images 32 \
-        --batch_size 4 \
-        --guidance_scale 4.0 \
-        --sampler euler \
-        --sampler_steps 50 \
-        --seed 42 \
-        --use_bf16
-    echo ""
-    echo "Base images generated successfully!"
-    echo "================================================================================"
-    echo ""
-else
-    echo "Base images already exist in data/images/base_64x64, skipping generation."
-    echo ""
-fi
-
 # Main training command with EMA for super-resolution
 uv run python train_glide.py \
     --data_dir /mnt/usb_nvme_2tb/Data/laion-2b-en-aesthetic-subset \
     --resume_ckpt glide_model_cache/upsample.pt \
     --train_upsample \
     --upscale_factor 4 \
-    --batch_size 2 \
+    --batch_size 1 \
     --learning_rate 5e-5 \
     --adam_weight_decay 0.0 \
     --ema_rate 0.9999 \
@@ -76,10 +51,10 @@ uv run python train_glide.py \
     --sample_interval 500 \
     --wandb_project_name 'glide-laion-ema-sr' \
     --activation_checkpointing \
-    --gradient_accumulation_steps 8 \
+    --gradient_accumulation_steps 1 \
     --use_captions \
     --epochs 10 \
-    --sample_batch_size 4 \
+    --sample_batch_size 32 \
     --eval_sr_sampler "euler" \
     --eval_sr_sampler_steps 27 \
     --test_guidance_scale 0.0 \
