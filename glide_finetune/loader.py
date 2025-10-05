@@ -62,6 +62,9 @@ class TextImageDataset(Dataset):
         enable_glide_upsample=False,
         upscale_factor=4,
         random_hflip=False,
+        random_brightness=False,
+        random_contrast=False,
+        random_color_jitter=False,
     ):
         super().__init__()
         folder = Path(folder)
@@ -91,6 +94,9 @@ class TextImageDataset(Dataset):
         self.enable_upsample = enable_glide_upsample
         self.upscale_factor = upscale_factor
         self.random_hflip = random_hflip
+        self.random_brightness = random_brightness
+        self.random_contrast = random_contrast
+        self.random_color_jitter = random_color_jitter
 
     def __len__(self):
         return len(self.keys)
@@ -140,6 +146,24 @@ class TextImageDataset(Dataset):
         if self.random_hflip and random() < 0.5:
             original_pil_image = original_pil_image.transpose(PIL.Image.FLIP_LEFT_RIGHT)
 
+        # Apply color augmentations if enabled
+        if self.random_brightness and random() < 0.5:
+            from torchvision.transforms import functional as TF
+            brightness_factor = 0.5 + random() * 1.0  # 0.5 to 1.5
+            original_pil_image = TF.adjust_brightness(original_pil_image, brightness_factor)
+
+        if self.random_contrast and random() < 0.5:
+            from torchvision.transforms import functional as TF
+            contrast_factor = 0.5 + random() * 1.0  # 0.5 to 1.5
+            original_pil_image = TF.adjust_contrast(original_pil_image, contrast_factor)
+
+        if self.random_color_jitter and random() < 0.5:
+            from torchvision.transforms import functional as TF
+            saturation_factor = 0.5 + random() * 1.0  # 0.5 to 1.5
+            hue_factor = -0.1 + random() * 0.2  # -0.1 to 0.1
+            original_pil_image = TF.adjust_saturation(original_pil_image, saturation_factor)
+            original_pil_image = TF.adjust_hue(original_pil_image, hue_factor)
+
         if self.enable_upsample:  # the base image used should be derived from the cropped high-resolution image.
             upsample_pil_image = random_resized_crop(
                 original_pil_image,
@@ -152,8 +176,8 @@ class TextImageDataset(Dataset):
             )
             base_tensor = pil_image_to_norm_tensor(base_pil_image)
             return (
-                th.tensor(tokens),
-                th.tensor(mask, dtype=th.bool),
+                tokens.clone(),
+                mask.clone(),
                 base_tensor,
                 upsample_tensor,
             )
@@ -164,4 +188,4 @@ class TextImageDataset(Dataset):
             resize_ratio=self.resize_ratio,
         )
         base_tensor = pil_image_to_norm_tensor(base_pil_image)
-        return th.tensor(tokens), th.tensor(mask, dtype=th.bool), base_tensor
+        return tokens.clone(), mask.clone(), base_tensor
