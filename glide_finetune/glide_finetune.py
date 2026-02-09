@@ -8,6 +8,7 @@ import numpy as np
 import torch as th
 from glide_text2im.respace import SpacedDiffusion
 from glide_text2im.text2im_model import Text2ImUNet
+from tqdm import tqdm
 import wandb
 
 from glide_finetune import glide_util, train_util
@@ -30,7 +31,8 @@ def base_train_step(
         Returns:
             The loss.
     """
-    tokens, masks, reals = [x.to(device) for x in batch]
+    tokens, masks = batch[0].to(device, non_blocking=True), batch[1].to(device, non_blocking=True)
+    reals = batch[2].to(device, non_blocking=True, memory_format=th.channels_last)
     timesteps = th.randint(
         0, len(glide_diffusion.betas) - 1, (reals.shape[0],), device=device
     )
@@ -68,7 +70,9 @@ def upsample_train_step(
         Returns:
             The loss.
     """
-    tokens, masks, low_res_image, high_res_image = [x.to(device) for x in batch]
+    tokens, masks = batch[0].to(device, non_blocking=True), batch[1].to(device, non_blocking=True)
+    low_res_image = batch[2].to(device, non_blocking=True, memory_format=th.channels_last)
+    high_res_image = batch[3].to(device, non_blocking=True, memory_format=th.channels_last)
     timesteps = th.randint(
         0, len(glide_diffusion.betas) - 1, (low_res_image.shape[0],), device=device
     )
@@ -127,6 +131,8 @@ def run_glide_finetune_epoch(
     use_lora: bool = False,
     lora_save_steps: int = 1000,
     save_checkpoint_interval: int = 5000,
+    eval_interval: int = 5000,
+    reference_stats: str = "",
 ):
     if train_upsample:
         train_step = upsample_train_step  # type: ignore
@@ -143,7 +149,15 @@ def run_glide_finetune_epoch(
         print(f"No {prompt_file} found, using fixed prompt: {prompt}")
 
     # Model should already be on correct device - moved in load_model_with_lora or before EMA creation
+    glide_model.to(memory_format=th.channels_last)
     glide_model.train()
+
+    # torch.compile for training speedup
+    if th.cuda.is_available() and not getattr(glide_model, "_compiled", False):
+        th.set_float32_matmul_precision("high")
+        print("Compiling model with torch.compile...")
+        glide_model = th.compile(glide_model)
+        glide_model._compiled = True  # type: ignore
 
     # Move EMA model to the same device if it exists
     if ema_model is not None:
@@ -157,11 +171,12 @@ def run_glide_finetune_epoch(
     samples_processed = 0
     accumulated_loss = 0.0
     current_loss = 0.0  # For logging the most recent loss
-    
+
     # Zero gradients at the start
     optimizer.zero_grad()
 
-    for train_idx, batch in enumerate(dataloader):
+    pbar = tqdm(enumerate(dataloader), desc=f"Epoch {epoch}", unit="step", dynamic_ncols=True)
+    for train_idx, batch in pbar:
         # Compute loss
         loss = train_step(
             glide_model=glide_model,
@@ -183,13 +198,24 @@ def run_glide_finetune_epoch(
             batch[0].shape[0] if isinstance(batch, (list, tuple)) else batch.shape[0]
         )
         samples_processed += batch_size
-        
+
         # Calculate current time and average samples/sec (needed for logging)
         current_time = time.time()
         total_elapsed = current_time - start_time
         avg_samples_per_sec = (
             samples_processed / total_elapsed if total_elapsed > 0 else 0
         )
+
+        # Log loss to wandb every step
+        wandb_run.log({
+            "loss_step": current_loss,
+            "iter": train_idx,
+            "samples_per_sec": avg_samples_per_sec,
+            "total_samples": samples_processed,
+        })
+
+        # Update tqdm bar with current loss every step
+        pbar.set_postfix(loss=f"{current_loss:.4f}", sps=f"{avg_samples_per_sec:.1f}")
 
         # Update weights every gradient_accumulation_steps
         if (train_idx + 1) % gradient_accumulation_steps == 0:
@@ -202,50 +228,28 @@ def run_glide_finetune_epoch(
 
             # Calculate the averaged loss for this accumulation
             avg_accumulated_loss = accumulated_loss / gradient_accumulation_steps
-            
-            # Log the averaged loss
+
+            # Log the averaged (per-optimizer-step) loss
             log = {
                 **log,
-                "iter": train_idx,
                 "loss": avg_accumulated_loss,
-                "samples_per_sec": avg_samples_per_sec,
-                "total_samples": samples_processed,
             }
-
-            # Log metrics to wandb every optimizer step
             wandb_run.log(log)
-            
-            # Print to console at log_frequency (only after optimizer steps)
-            if train_idx > 0 and ((train_idx + 1) // gradient_accumulation_steps) % log_frequency == 0:
-                # Calculate interval samples/sec since last log
-                interval_time = current_time - last_log_time
-                interval_samples = batch_size * gradient_accumulation_steps * log_frequency
-                interval_samples_per_sec = (
-                    interval_samples / interval_time if interval_time > 0 else 0
-                )
 
-                # Add interval samples/sec to wandb log
-                wandb_run.log({"interval_samples_per_sec": interval_samples_per_sec})
-
-                print(
-                    f"Step {train_idx}: loss: {avg_accumulated_loss:.4f}, "
-                    f"samples/sec: {interval_samples_per_sec:.1f} (interval), "
-                    f"{avg_samples_per_sec:.1f} (avg), "
-                    f"total samples: {samples_processed}"
-                )
-
-                last_log_time = current_time
-            
             # Reset accumulated loss
             accumulated_loss = 0.0
 
         # Sample from the model at sample_interval
         if train_idx > 0 and train_idx % sample_interval == 0:
+            glide_model.eval()
+            # Swap in EMA weights for evaluation
+            if ema_model is not None:
+                ema_model.swap()
+
             # Select prompts for sampling
             if eval_prompts:
-                # Sample multiple prompts randomly
-                n_prompts = min(sample_batch_size, len(eval_prompts))
-                sample_prompts = random.sample(eval_prompts, n_prompts)
+                # Use all eval prompts in order for consistent tracking
+                sample_prompts = eval_prompts
             else:
                 # Use the fixed prompt multiple times
                 sample_prompts = [prompt] * sample_batch_size
@@ -530,7 +534,8 @@ def run_glide_finetune_epoch(
                         except Exception as e:
                             print(f"Warning: Could not create comparison grid: {e}")
 
-            # Skip 64x64 grid for upsampler training (we have 256x256 instead)\n            if not train_upsample and len(all_images_64) > 1:
+            # Skip 64x64 grid for upsampler training (we have 256x256 instead)
+            if not train_upsample and len(all_images_64) > 1:
                 # Use auto mode for optimal grid layout
                 grid_image_64 = train_util.make_grid(
                     all_images_64,
@@ -606,8 +611,86 @@ def run_glide_finetune_epoch(
                         "samples_256px": wandb_images_256[0],
                     })
 
+            # Compute CLIP scores on generated samples
+            clip_images = all_images_64 if all_images_64 else all_images_256
+            if clip_images and sample_prompts:
+                try:
+                    from glide_finetune.metrics import compute_clip_scores
+
+                    clip_results = compute_clip_scores(
+                        clip_images[:len(sample_prompts)],
+                        sample_prompts[:len(clip_images)],
+                        device=device,
+                    )
+                    wandb_log_dict["clip_score_mean"] = clip_results["clip_score_mean"]
+                    wandb_log_dict["clip_score_std"] = clip_results["clip_score_std"]
+                    print(
+                        f"CLIP score: {clip_results['clip_score_mean']:.4f} "
+                        f"(+/- {clip_results['clip_score_std']:.4f})"
+                    )
+                except Exception as e:
+                    print(f"Warning: CLIP score computation failed: {e}")
+
             # Log everything to wandb
             wandb_run.log(wandb_log_dict)
+
+            # Swap training weights back in
+            if ema_model is not None:
+                ema_model.swap()
+            glide_model.train()
+
+        # FID/KID evaluation at eval_interval
+        if (
+            eval_interval > 0
+            and reference_stats
+            and train_idx > 0
+            and train_idx % eval_interval == 0
+        ):
+            glide_model.eval()
+            # Swap in EMA weights for evaluation
+            if ema_model is not None:
+                ema_model.swap()
+            try:
+                from glide_finetune.metrics import compute_fid_kid
+
+                # Use eval prompts if available, else use default human prompts
+                fid_prompts = eval_prompts if eval_prompts else [prompt] * 100
+                print(f"\nComputing FID/KID at step {train_idx}...")
+                fid_kid_results = compute_fid_kid(
+                    glide_model=glide_model,
+                    glide_diffusion=glide_diffusion,
+                    glide_options=glide_options,
+                    eval_prompts=fid_prompts,
+                    reference_stats_path=reference_stats,
+                    device=device,
+                    num_samples=500,
+                    guidance_scale=sample_gs,
+                    sampler=eval_base_sampler,
+                    sampler_steps=eval_base_sampler_steps,
+                    side_x=side_x,
+                    side_y=side_y,
+                )
+                wandb_run.log({
+                    "fid": fid_kid_results["fid"],
+                    "kid_mean": fid_kid_results["kid_mean"],
+                    "kid_std": fid_kid_results["kid_std"],
+                    "iter": train_idx,
+                })
+                print(
+                    f"FID: {fid_kid_results['fid']:.2f}, "
+                    f"KID: {fid_kid_results['kid_mean']:.4f} "
+                    f"(+/- {fid_kid_results['kid_std']:.4f})"
+                )
+            except Exception as e:
+                print(f"Warning: FID/KID computation failed: {e}")
+                import traceback
+                traceback.print_exc()
+            finally:
+                # Swap training weights back in
+                if ema_model is not None:
+                    ema_model.swap()
+                glide_model.train()
+
         # Save LoRA adapter if enabled and at save interval
         if (
             use_lora
@@ -656,15 +739,20 @@ def run_glide_finetune_epoch(
             else:
                 # Save full model if not using LoRA
                 train_util.save_model(glide_model, checkpoints_dir, train_idx, epoch)
-                print(
-                    f"Saved checkpoint {train_idx} to {checkpoints_dir}/glide-ft-{train_idx}.pt"
-                )
 
                 # Save EMA model if available
                 if ema_model is not None:
                     train_util.save_ema_model(ema_model, checkpoints_dir, train_idx, epoch, ema_model.decay)
                     print(f"Saved EMA checkpoint with decay {ema_model.decay}")
-        wandb_run.log(log)
+
+    pbar.close()
+
+    # Flush any remaining accumulated gradients from a partial accumulation
+    if (train_idx + 1) % gradient_accumulation_steps != 0:
+        optimizer.step()
+        optimizer.zero_grad()
+        if ema_model is not None:
+            ema_model.update()
 
     print("Finished training, saving final checkpoint")
     if use_lora:
