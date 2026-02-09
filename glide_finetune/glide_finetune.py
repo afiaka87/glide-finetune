@@ -646,7 +646,7 @@ def run_glide_finetune_epoch(
                     )
                     wandb_log_dict["clip_score_mean"] = clip_results["clip_score_mean"]
                     wandb_log_dict["clip_score_std"] = clip_results["clip_score_std"]
-                    print(
+                    tqdm.write(
                         f"CLIP score: {clip_results['clip_score_mean']:.4f} "
                         f"(+/- {clip_results['clip_score_std']:.4f})"
                     )
