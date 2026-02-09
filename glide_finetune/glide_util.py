@@ -124,6 +124,9 @@ def load_model(
     if len(glide_path) > 0:  # user provided checkpoint
         assert os.path.exists(glide_path), "glide path does not exist"
         weights = th.load(glide_path, map_location="cpu")
+        # Strip _orig_mod. prefix from torch.compile'd checkpoints
+        if any(k.startswith("_orig_mod.") for k in weights):
+            weights = {k.removeprefix("_orig_mod."): v for k, v in weights.items()}
         glide_model.load_state_dict(weights)
     else:  # use default checkpoint from openai
         glide_model.load_state_dict(
