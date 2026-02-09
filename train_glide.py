@@ -293,6 +293,9 @@ def run_glide_finetune(
     gradient_accumulation_steps=1,
     random_hflip=False,
     ema_rate=0.9999,  # GLIDE paper value for EMA decay
+    reinit_transformer=False,
+    eval_interval=5000,
+    reference_stats="",
 ):
     if "~" in data_dir:
         data_dir = os.path.expanduser(data_dir)
@@ -348,6 +351,34 @@ def run_glide_finetune(
             activation_checkpointing=activation_checkpointing,
             model_type="base" if not enable_upsample else "upsample",
         )
+    # Reinitialize transformer from scratch if requested (keeps pretrained UNet)
+    if reinit_transformer:
+        print("Reinitializing transformer/text encoder from scratch...")
+        reinit_components = [
+            ("transformer", True),
+            ("transformer_proj", True),
+            ("token_embedding", True),
+            ("final_ln", True),
+        ]
+        reinit_count = 0
+        for name, is_module in reinit_components:
+            if hasattr(glide_model, name):
+                module = getattr(glide_model, name)
+                for p in module.parameters():
+                    if p.dim() >= 2:
+                        th.nn.init.xavier_uniform_(p)
+                    else:
+                        th.nn.init.zeros_(p)
+                    reinit_count += p.numel()
+        # Reinit parameter-type embeddings
+        for name in ["padding_embedding", "positional_embedding"]:
+            if hasattr(glide_model, name):
+                p = getattr(glide_model, name)
+                if isinstance(p, th.nn.Parameter):
+                    th.nn.init.normal_(p, std=0.02)
+                    reinit_count += p.numel()
+        print(f"Reinitialized {reinit_count:,} transformer parameters")
+
     glide_model.train()
     number_of_params = sum(x.numel() for x in glide_model.parameters())
     print(f"Number of parameters: {number_of_params}")
@@ -524,6 +555,8 @@ def run_glide_finetune(
             use_lora=use_lora,
             lora_save_steps=lora_save_steps,
             save_checkpoint_interval=save_checkpoint_interval,
+            eval_interval=eval_interval,
+            reference_stats=reference_stats,
         )
 
 
@@ -586,6 +619,11 @@ def parse_args():
     )
     parser.add_argument("--freeze_transformer", "-fz_xt", action="store_true")
     parser.add_argument("--freeze_diffusion", "-fz_unet", action="store_true")
+    parser.add_argument(
+        "--reinit_transformer",
+        action="store_true",
+        help="Reinitialize transformer/text encoder from scratch (use with --freeze_diffusion to train only text encoder)",
+    )
     parser.add_argument(
         "--wandb_project_name",
         "-wname",
@@ -810,6 +848,18 @@ def parse_args():
         default=5000,
         help="Save full model checkpoint every N steps (default: 5000)",
     )
+    parser.add_argument(
+        "--eval_interval",
+        type=int,
+        default=5000,
+        help="Compute FID/KID metrics every N steps (default: 5000, 0 to disable)",
+    )
+    parser.add_argument(
+        "--reference_stats",
+        type=str,
+        default="",
+        help="Path to pre-computed reference stats .pt file for FID/KID evaluation",
+    )
 
     args = parser.parse_args()
 
@@ -937,4 +987,7 @@ if __name__ == "__main__":
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         random_hflip=args.random_hflip,
         ema_rate=args.ema_rate,
+        reinit_transformer=args.reinit_transformer,
+        eval_interval=args.eval_interval,
+        reference_stats=args.reference_stats,
     )
