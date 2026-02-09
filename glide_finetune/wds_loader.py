@@ -106,7 +106,6 @@ def glide_wds_loader(
         if enable_metadata and metadata_key not in item:
             return False
 
-        return True
         # Decode metadata once
         try:
             metadata = json.loads(item[metadata_key].decode("utf-8"))
