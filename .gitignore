@@ -53,3 +53,18 @@ glide_finetune/cli/
 upsample.compiled.pt
 
 checkpoints_ema_sr/
+
+# Runtime artifacts
+current_grid.png
+cache/
+glide_checkpoints/
+*.log
+*.pt
+pixel_art_prompts.txt
+pixelart-v7-large-no-menus/
+
+# Personal run scripts
+run.sh
+run_datacomp.sh
+run_textenc.sh
+resume.sh
