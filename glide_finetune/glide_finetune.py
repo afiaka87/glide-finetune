@@ -155,15 +155,18 @@ def run_glide_finetune_epoch(
     # torch.compile for training speedup
     if th.cuda.is_available() and not getattr(glide_model, "_compiled", False):
         th.set_float32_matmul_precision("high")
-        print("Compiling model with torch.compile...")
+        print("torch.compile: wrapping model...")
+        compile_t0 = time.time()
         glide_model = th.compile(glide_model)
         glide_model._compiled = True  # type: ignore
+        print(f"torch.compile: wrapped in {time.time() - compile_t0:.1f}s (compilation deferred to first forward/backward)")
 
     # Move EMA model to the same device if it exists
     if ema_model is not None:
         ema_model.to(device)
 
     log: dict = {}
+    needs_warmup = getattr(glide_model, "_compiled", False)
 
     # Initialize timing for samples/sec calculation
     start_time = time.time()
@@ -175,19 +178,38 @@ def run_glide_finetune_epoch(
     # Zero gradients at the start
     optimizer.zero_grad()
 
+    print("Waiting for first batch from dataloader (workers are loading tar files)...")
+    dl_t0 = time.time()
     pbar = tqdm(enumerate(dataloader), desc=f"Epoch {epoch}", unit="step", dynamic_ncols=True)
     for train_idx, batch in pbar:
+        if train_idx == 0:
+            print(f"First batch received in {time.time() - dl_t0:.1f}s")
+
         # Compute loss
+        if needs_warmup:
+            print("torch.compile: compiling forward pass (this may take ~40s)...")
+            fwd_t0 = time.time()
+
         loss = train_step(
             glide_model=glide_model,
             glide_diffusion=glide_diffusion,
             batch=batch,
             device=device,
         )
-        
+
+        if needs_warmup:
+            print(f"torch.compile: forward compiled in {time.time() - fwd_t0:.1f}s")
+            print("torch.compile: compiling backward pass (this may take ~40s)...")
+            bwd_t0 = time.time()
+
         # Scale loss by gradient accumulation steps
         scaled_loss = loss / gradient_accumulation_steps
         scaled_loss.backward()
+
+        if needs_warmup:
+            print(f"torch.compile: backward compiled in {time.time() - bwd_t0:.1f}s")
+            print(f"torch.compile: warmup complete, total {time.time() - fwd_t0:.1f}s")
+            needs_warmup = False
         
         # Accumulate the loss for logging
         accumulated_loss += loss.item()
