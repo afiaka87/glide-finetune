@@ -64,8 +64,8 @@ def glide_wds_loader(
     min_original_height=256,
     min_original_width=256,
     enable_upsample=False,
-    similarity_threshold_upper=0.0,
-    similarity_threshold_lower=0.5,
+    similarity_threshold_lower=0.0,
+    similarity_threshold_upper=1.0,
     words_to_skip=[],
     dataset_name="laion",  # can be laion, alamy, or simple.
     upscale_factor=4,
