@@ -113,6 +113,12 @@ def load_model(
         if hasattr(glide_model, "out"):
             glide_model.out.requires_grad_(False)
 
+        # Unfreeze cross-attention encoder_kv layers so the UNet can adapt
+        # to new text representations when training the text encoder
+        for name, param in glide_model.named_parameters():
+            if "encoder_kv" in name:
+                param.requires_grad = True
+
         # Note: label_emb doesn't exist in base model but might in other variants
 
     if len(glide_path) > 0:  # user provided checkpoint
