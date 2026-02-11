@@ -196,22 +196,19 @@ class AttentionResblock(nn.Module):
         q = q.view([q.shape[0], -1, self.attn_fn.n_heads, self.n_head_state]).permute((0, 2, 1, 3))
         k = k.view([k.shape[0], -1, self.attn_fn.n_heads, self.n_head_state]).permute((0, 2, 1, 3))
         v = v.view([v.shape[0], -1, self.attn_fn.n_heads, self.n_head_state]).permute((0, 2, 1, 3))
-        w = torch.einsum(
-            "bhcd,bhkd->bhck", q * math.sqrt(self.qk_scale), k * math.sqrt(self.qk_scale)
-        )
 
+        # Use fused SDPA kernel. qk_scale = 1/head_dim matches SDPA default.
+        # Pass pytorch_attn_bias as additive attn_mask if present.
+        attn_mask = None
         if hasattr(self.attn_fn, "pytorch_attn_bias"):
             bias = self.attn_fn.pytorch_attn_bias
             assert len(bias.shape) in {2, 3}
-
             if len(bias.shape) == 2:
-                w = torch.softmax(w + self.attn_fn.pytorch_attn_bias[None, None], dim=-1)
+                attn_mask = bias[None, None]
             elif len(bias.shape) == 3:
-                w = torch.softmax(w + self.attn_fn.pytorch_attn_bias[None], dim=-1)
-        else:
-            w = torch.softmax(w, dim=-1)
+                attn_mask = bias[None]
 
-        r = torch.einsum("bhck,bhkd->bhcd", w, v)
+        r = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
         r = r.permute((0, 2, 1, 3)).reshape((r.shape[0], -1, self.n_state))
 
         if n_query_pad != 0:
