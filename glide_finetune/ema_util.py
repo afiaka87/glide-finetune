@@ -67,6 +67,4 @@ class SimpleEMA:
     def swap(self):
         """Swap EMA weights into the live model (and vice versa) for evaluation."""
         for ema_p, model_p in zip(self.ema_model.parameters(), self.model.parameters()):
-            tmp = model_p.data.clone()
-            model_p.data.copy_(ema_p.data)
-            ema_p.data.copy_(tmp)
+            model_p.data, ema_p.data = ema_p.data, model_p.data
