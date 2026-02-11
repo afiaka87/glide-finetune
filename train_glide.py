@@ -294,6 +294,7 @@ def run_glide_finetune(
     random_hflip=False,
     ema_rate=0.9999,  # GLIDE paper value for EMA decay
     reinit_transformer=False,
+    random_init=False,
     eval_interval=5000,
     reference_stats="",
 ):
@@ -350,6 +351,7 @@ def run_glide_finetune(
             freeze_diffusion=freeze_diffusion,
             activation_checkpointing=activation_checkpointing,
             model_type="base" if not enable_upsample else "upsample",
+            random_init=random_init,
         )
     # Reinitialize transformer from scratch if requested (keeps pretrained UNet)
     if reinit_transformer:
@@ -463,7 +465,7 @@ def run_glide_finetune(
         shuffle=not use_webdataset,
         num_workers=args.num_workers,
         pin_memory=(device == "cuda"),
-        prefetch_factor=2 if args.num_workers > 0 else None,
+        prefetch_factor=4 if args.num_workers > 0 else None,
         persistent_workers=True if args.num_workers > 0 else False,
     )
 
@@ -485,6 +487,7 @@ def run_glide_finetune(
         [x for x in glide_model.parameters() if x.requires_grad],
         lr=learning_rate,
         weight_decay=adam_weight_decay,
+        fused=th.cuda.is_available() and str(device) != "cpu",
         # Using PyTorch default betas=(0.9, 0.999) as per GLIDE paper
     )
 
@@ -623,6 +626,11 @@ def parse_args():
         "--reinit_transformer",
         action="store_true",
         help="Reinitialize transformer/text encoder from scratch (use with --freeze_diffusion to train only text encoder)",
+    )
+    parser.add_argument(
+        "--random_init",
+        action="store_true",
+        help="Skip loading any pretrained weights, train from random initialization",
     )
     parser.add_argument(
         "--wandb_project_name",
@@ -988,6 +996,7 @@ if __name__ == "__main__":
         random_hflip=args.random_hflip,
         ema_rate=args.ema_rate,
         reinit_transformer=args.reinit_transformer,
+        random_init=args.random_init,
         eval_interval=args.eval_interval,
         reference_stats=args.reference_stats,
     )
