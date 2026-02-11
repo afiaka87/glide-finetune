@@ -22,6 +22,7 @@ eval_captions_persons_aesthetic_256.txt
 run-finetune-laion.sh
 run-finetune-wds.sh
 scripts/run-finetune-wds.sh
+*.sh
 
 # Logs and temporary files
 test.log
