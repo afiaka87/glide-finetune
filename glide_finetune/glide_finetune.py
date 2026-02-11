@@ -37,16 +37,16 @@ def base_train_step(
         0, len(glide_diffusion.betas) - 1, (reals.shape[0],), device=device
     )
     noise = th.randn_like(reals, device=device)
-    x_t = glide_diffusion.q_sample(reals, timesteps, noise=noise).to(device)
+    x_t = glide_diffusion.q_sample(reals, timesteps, noise=noise)
     _, C = x_t.shape[:2]
     model_output = glide_model(
-        x_t.to(device),
-        timesteps.to(device),
-        tokens=tokens.to(device),
-        mask=masks.to(device),
+        x_t,
+        timesteps,
+        tokens=tokens,
+        mask=masks,
     )
     epsilon, _ = th.split(model_output, C, dim=1)
-    return th.nn.functional.mse_loss(epsilon, noise.to(device).detach())
+    return th.nn.functional.mse_loss(epsilon, noise.detach())
 
 
 def upsample_train_step(
@@ -81,17 +81,17 @@ def upsample_train_step(
     )  # Noise should be shape of output i think
     noised_high_res_image = glide_diffusion.q_sample(
         high_res_image, timesteps, noise=noise
-    ).to(device)
+    )
     _, C = noised_high_res_image.shape[:2]
     model_output = glide_model(
-        noised_high_res_image.to(device),
-        timesteps.to(device),
-        low_res=low_res_image.to(device),
-        tokens=tokens.to(device),
-        mask=masks.to(device),
+        noised_high_res_image,
+        timesteps,
+        low_res=low_res_image,
+        tokens=tokens,
+        mask=masks,
     )
     epsilon, _ = th.split(model_output, C, dim=1)
-    return th.nn.functional.mse_loss(epsilon, noise.to(device).detach())
+    return th.nn.functional.mse_loss(epsilon, noise.detach())
 
 
 def run_glide_finetune_epoch(
@@ -172,11 +172,11 @@ def run_glide_finetune_epoch(
     start_time = time.time()
     last_log_time = start_time
     samples_processed = 0
-    accumulated_loss = 0.0
-    current_loss = 0.0  # For logging the most recent loss
+    accumulated_loss_gpu = th.tensor(0.0, device=device)  # Accumulate on GPU to avoid sync
+    current_loss = 0.0  # For logging (only updated at accumulation boundaries)
 
     # Zero gradients at the start
-    optimizer.zero_grad()
+    optimizer.zero_grad(set_to_none=True)
 
     print("Waiting for first batch from dataloader (workers are loading tar files)...")
     dl_t0 = time.time()
@@ -211,9 +211,8 @@ def run_glide_finetune_epoch(
             print(f"torch.compile: warmup complete, total {time.time() - fwd_t0:.1f}s")
             needs_warmup = False
         
-        # Accumulate the loss for logging
-        accumulated_loss += loss.item()
-        current_loss = loss.item()  # Store current loss for immediate logging
+        # Accumulate loss on GPU (no sync)
+        accumulated_loss_gpu += loss.detach()
 
         # Calculate samples per second
         batch_size = (
@@ -221,48 +220,43 @@ def run_glide_finetune_epoch(
         )
         samples_processed += batch_size
 
-        # Calculate current time and average samples/sec (needed for logging)
-        current_time = time.time()
-        total_elapsed = current_time - start_time
-        avg_samples_per_sec = (
-            samples_processed / total_elapsed if total_elapsed > 0 else 0
-        )
-
-        # Log loss to wandb every step
-        wandb_run.log({
-            "loss_step": current_loss,
-            "iter": train_idx,
-            "samples_per_sec": avg_samples_per_sec,
-            "total_samples": samples_processed,
-        })
-
-        # Update tqdm bar with current loss every step
-        pbar.set_postfix(loss=f"{current_loss:.4f}", sps=f"{avg_samples_per_sec:.1f}")
-
         # Update weights every gradient_accumulation_steps
         if (train_idx + 1) % gradient_accumulation_steps == 0:
             optimizer.step()
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
 
             # Update EMA after optimizer step (as per OpenAI's guided-diffusion)
             if ema_model is not None:
                 ema_model.update()
 
-            # Calculate the averaged loss for this accumulation
-            avg_accumulated_loss = accumulated_loss / gradient_accumulation_steps
+            # Only call .item() at accumulation boundaries (single GPU sync)
+            avg_accumulated_loss = (accumulated_loss_gpu / gradient_accumulation_steps).item()
+            current_loss = avg_accumulated_loss
+            accumulated_loss_gpu.zero_()
 
-            # Log the averaged (per-optimizer-step) loss
+            # Calculate current time and average samples/sec
+            current_time = time.time()
+            total_elapsed = current_time - start_time
+            avg_samples_per_sec = (
+                samples_processed / total_elapsed if total_elapsed > 0 else 0
+            )
+
+            # Log everything to wandb at accumulation boundaries
             log = {
                 **log,
                 "loss": avg_accumulated_loss,
+                "loss_step": avg_accumulated_loss,
+                "iter": train_idx,
+                "samples_per_sec": avg_samples_per_sec,
+                "total_samples": samples_processed,
             }
             wandb_run.log(log)
 
-            # Reset accumulated loss
-            accumulated_loss = 0.0
+            # Update tqdm bar
+            pbar.set_postfix(loss=f"{current_loss:.4f}", sps=f"{avg_samples_per_sec:.1f}")
 
-        # Sample from the model at sample_interval
-        if train_idx > 0 and train_idx % sample_interval == 0:
+        # Sample from the model at sample_interval (including step 0 for compile warmup)
+        if train_idx % sample_interval == 0:
             glide_model.eval()
             # Swap in EMA weights for evaluation
             if ema_model is not None:
@@ -772,7 +766,7 @@ def run_glide_finetune_epoch(
     # Flush any remaining accumulated gradients from a partial accumulation
     if (train_idx + 1) % gradient_accumulation_steps != 0:
         optimizer.step()
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)
         if ema_model is not None:
             ema_model.update()
 
