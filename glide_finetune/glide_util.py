@@ -47,6 +47,7 @@ def load_model(
     freeze_diffusion: bool = False,
     activation_checkpointing: bool = False,
     model_type: str = "base",
+    random_init: bool = False,
 ):
     assert model_type in MODEL_TYPES, f"Model must be one of {MODEL_TYPES}. Exiting."
     if model_type in ["base", "base-inpaint"]:
@@ -121,7 +122,9 @@ def load_model(
 
         # Note: label_emb doesn't exist in base model but might in other variants
 
-    if len(glide_path) > 0:  # user provided checkpoint
+    if random_init:
+        print("Using random initialization (no pretrained weights)")
+    elif len(glide_path) > 0:  # user provided checkpoint
         assert os.path.exists(glide_path), "glide path does not exist"
         weights = th.load(glide_path, map_location="cpu")
         # Strip _orig_mod. prefix from torch.compile'd checkpoints
