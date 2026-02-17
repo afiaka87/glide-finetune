@@ -4,7 +4,6 @@ from random import randint, choice, random
 
 import PIL
 
-import torch as th
 from torch.utils.data import Dataset
 from torchvision import transforms as T
 from glide_finetune.glide_util import get_tokens_and_mask, get_uncond_tokens_mask

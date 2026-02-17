@@ -1,6 +1,7 @@
 """
 Simple EMA implementation matching OpenAI's guided-diffusion approach.
 """
+
 import torch
 from copy import deepcopy
 
@@ -53,7 +54,7 @@ class SimpleEMA:
         update_ema(
             list(self.ema_model.parameters()),
             list(self.model.parameters()),
-            rate=self.decay
+            rate=self.decay,
         )
 
     def state_dict(self):

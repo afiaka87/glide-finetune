@@ -3,7 +3,6 @@ from typing import Tuple
 
 import numpy as np
 from PIL import Image
-import PIL
 import torch as th
 import wandb
 from tqdm import tqdm
@@ -25,14 +24,14 @@ def save_ema_model(
     ema_model, checkpoints_dir: str, train_idx: int, epoch: int, ema_rate: float
 ):
     """Save EMA model checkpoint matching OpenAI's naming convention."""
-    ema_path = os.path.join(checkpoints_dir, f"ema_{ema_rate}_{epoch}x{train_idx:06d}.pt")
+    ema_path = os.path.join(
+        checkpoints_dir, f"ema_{ema_rate}_{epoch}x{train_idx:06d}.pt"
+    )
     th.save(
         ema_model.state_dict(),
         ema_path,
     )
-    tqdm.write(
-        f"Saved EMA checkpoint to {ema_path}"
-    )
+    tqdm.write(f"Saved EMA checkpoint to {ema_path}")
 
 
 def pred_to_pil(pred: th.Tensor) -> Image.Image:
@@ -52,7 +51,9 @@ def pred_to_pil(pred: th.Tensor) -> Image.Image:
 
     # Only process first image if batch size > 1
     if pred.shape[0] > 1:
-        print(f"Warning: pred_to_pil received batch of {pred.shape[0]} images, only converting first one")
+        print(
+            f"Warning: pred_to_pil received batch of {pred.shape[0]} images, only converting first one"
+        )
         pred = pred[:1]
 
     # Scale from [-1, 1] to [0, 255]
@@ -89,8 +90,8 @@ def find_optimal_grid_dims(n: int) -> Tuple[int, int]:
 
     # Find factors that minimize empty space
     best_cols, best_rows = n, 1
-    min_empty = float('inf')
-    min_ratio_diff = float('inf')  # Prefer grids closer to square aspect ratio
+    min_empty = float("inf")
+    min_ratio_diff = float("inf")  # Prefer grids closer to square aspect ratio
 
     for rows in range(1, int(np.sqrt(n)) + 2):
         cols = (n + rows - 1) // rows  # Ceiling division
@@ -122,11 +123,13 @@ def next_power_of_2(n: int) -> int:
     return power
 
 
-def make_grid(images: list,
-              grid_size: int | None = None,
-              mode: str = 'auto',
-              pad_to_power_of_2: bool = False,
-              background_color: Tuple[int, int, int] = (0, 0, 0)) -> Image.Image:
+def make_grid(
+    images: list,
+    grid_size: int | None = None,
+    mode: str = "auto",
+    pad_to_power_of_2: bool = False,
+    background_color: Tuple[int, int, int] = (0, 0, 0),
+) -> Image.Image:
     """
     Create a grid of images from a list of PIL images.
 
@@ -150,20 +153,20 @@ def make_grid(images: list,
     img_width, img_height = images[0].size
 
     # Determine grid dimensions based on mode
-    if mode == 'auto':
+    if mode == "auto":
         cols, rows = find_optimal_grid_dims(n)
-    elif mode == 'square':
+    elif mode == "square":
         size = int(np.ceil(np.sqrt(n)))
         cols, rows = size, size
-    elif mode == 'wide':
+    elif mode == "wide":
         # Prefer more columns than rows
         rows = max(1, int(np.sqrt(n / 2)))
         cols = (n + rows - 1) // rows
-    elif mode == 'tall':
+    elif mode == "tall":
         # Prefer more rows than columns
         cols = max(1, int(np.sqrt(n / 2)))
         rows = (n + cols - 1) // cols
-    elif mode == 'fixed' and grid_size is not None:
+    elif mode == "fixed" and grid_size is not None:
         cols = grid_size
         rows = (n + cols - 1) // cols
     else:

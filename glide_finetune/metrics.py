@@ -9,7 +9,7 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 from PIL import Image
-from typing import List, Optional
+from typing import List
 from tqdm import tqdm
 
 # Lazy imports to avoid loading heavy models at import time
@@ -123,7 +123,6 @@ def compute_fid_kid(
     from torchmetrics.image.fid import FrechetInceptionDistance
     from torchmetrics.image.kid import KernelInceptionDistance
     from glide_finetune.glide_util import sample
-    from glide_finetune.train_util import pred_to_pil
 
     # Load reference stats
     ref_data = torch.load(reference_stats_path, map_location="cpu", weights_only=True)
