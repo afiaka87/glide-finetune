@@ -166,13 +166,17 @@ def init_latent_from_pixel(
             transferred += 1
         elif name == "out.2.weight":
             # Output conv weight: pixel has [6, in, kH, kW], latent needs [8, in, kH, kW]
+            # Pixel layout: [eps0, eps1, eps2, var0, var1, var2]
+            # Latent layout: [eps0, eps1, eps2, eps3, var0, var1, var2, var3]
             param.zero_()
-            param[:6] = src
+            param[:3] = src[:3]  # epsilon channels
+            param[4:7] = src[3:]  # variance channels
             transferred += 1
         elif name == "out.2.bias":
             # Output conv bias: pixel has [6], latent needs [8]
             param.zero_()
-            param[:6] = src
+            param[:3] = src[:3]  # epsilon channels
+            param[4:7] = src[3:]  # variance channels
             transferred += 1
         else:
             skipped_shape += 1
