@@ -1,5 +1,6 @@
 import io
 import json
+from pathlib import Path
 from random import random
 import tarfile
 import traceback
@@ -11,6 +12,44 @@ from glide_finetune.glide_util import get_tokens_and_mask, get_uncond_tokens_mas
 from glide_finetune.train_util import pil_image_to_norm_tensor
 
 
+_IMAGE_KEYS = ("jpg", "jpeg", "png", "webp", "bmp", "tiff")
+
+
+def load_captions_jsonl(jsonl_path: str | Path) -> dict[str, str]:
+    """Load a JSONL captions file into a dict mapping sample key to caption.
+
+    Streams the file line-by-line to handle multi-GB files without loading the
+    entire file into memory at once.
+    """
+    captions: dict[str, str] = {}
+    jsonl_path = Path(jsonl_path)
+    print(f"Loading captions from {jsonl_path} ...")
+    with open(jsonl_path, "r", encoding="utf-8") as f:
+        for i, line in enumerate(f):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+                key = obj["key"]
+                caption = obj["caption"]
+                captions[key] = caption
+            except (json.JSONDecodeError, KeyError):
+                continue
+            if (i + 1) % 1_000_000 == 0:
+                print(f"  ... loaded {i + 1:,} captions")
+    print(f"Loaded {len(captions):,} captions from {jsonl_path.name}")
+    return captions
+
+
+def _find_image_key(item):
+    """Return the first matching image key in the item, or None."""
+    for k in _IMAGE_KEYS:
+        if k in item:
+            return k
+    return None
+
+
 def handle_wds_errors(exc):
     """
     Custom error handler for WebDataset that gracefully handles corrupted data.
@@ -20,18 +59,18 @@ def handle_wds_errors(exc):
     """
     # Handle tar file corruption errors
     if isinstance(exc, (tarfile.ReadError, EOFError)):
-        print(f"Warning: Corrupted data encountered in WebDataset, skipping sample...")
+        print("Warning: Corrupted data encountered in WebDataset, skipping sample...")
         print(f"  Error type: {type(exc).__name__}")
         return True  # Skip this sample and continue
 
     # Handle PIL image errors
     if isinstance(exc, (PIL.UnidentifiedImageError, PIL.Image.DecompressionBombError)):
-        print(f"Warning: Invalid image encountered, skipping sample...")
+        print("Warning: Invalid image encountered, skipping sample...")
         return True  # Skip this sample
 
     # Handle JSON decode errors
     if isinstance(exc, (json.JSONDecodeError, UnicodeDecodeError)):
-        print(f"Warning: Invalid JSON/text data encountered, skipping sample...")
+        print("Warning: Invalid JSON/text data encountered, skipping sample...")
         return True  # Skip this sample
 
     # Handle KeyError for missing keys in data
@@ -67,12 +106,14 @@ def glide_wds_loader(
     similarity_threshold_lower=0.0,
     similarity_threshold_upper=1.0,
     words_to_skip=[],
-    dataset_name="laion",  # can be laion, alamy, or simple.
+    dataset_name="laion",  # can be laion, alamy, simple, synthetic, datacomp-synthetic, or datacomp-real.
     upscale_factor=4,
     buffer_size=1000,  # Shuffle buffer size
     initial_prefetch=10,  # Initial prefetch size
     debug=False,  # Enable debug printing
     random_hflip=False,  # Random horizontal flip augmentation
+    captions_jsonl_path=None,  # Path to external JSONL captions (required for datacomp-synthetic)
+    latent_mode=False,  # Latent diffusion mode: resize to 256x256, return caption strings
 ):
     if debug:
         print("\nDEBUG: glide_wds_loader called with:")
@@ -167,23 +208,61 @@ def glide_wds_loader(
                     f"DEBUG: Item missing caption key '{caption_key}'. Keys: {list(item.keys())}"
                 )
             return False
+        if enable_image and _find_image_key(item) is None:
+            if debug:
+                print(f"DEBUG: Item missing any image key. Keys: {list(item.keys())}")
+            return False
+        return True
+
+    def filter_dataset_synthetic(item):
+        # Filter for synthetic DALL-E 3 dataset with JSON metadata
         if enable_image and image_key not in item:
             if debug:
                 print(
                     f"DEBUG: Item missing image key '{image_key}'. Keys: {list(item.keys())}"
                 )
             return False
-        return True
-    
-    def filter_dataset_synthetic(item):
-        # Filter for synthetic DALL-E 3 dataset with JSON metadata
-        if enable_image and image_key not in item:
-            if debug:
-                print(f"DEBUG: Item missing image key '{image_key}'. Keys: {list(item.keys())}")
-            return False
         if enable_text and "json" not in item:
             if debug:
                 print(f"DEBUG: Item missing json key. Keys: {list(item.keys())}")
+            return False
+        return True
+
+    # Load external captions for datacomp dataset
+    _captions_map: dict[str, str] | None = None
+    if dataset_name == "datacomp-synthetic":
+        if captions_jsonl_path is None:
+            raise ValueError(
+                "captions_jsonl_path is required for dataset_name='datacomp-synthetic'"
+            )
+        _captions_map = load_captions_jsonl(captions_jsonl_path)
+
+    def filter_dataset_datacomp_synthetic(item):
+        # Require an image
+        if enable_image and _find_image_key(item) is None:
+            if debug:
+                print(f"DEBUG: Item missing any image key. Keys: {list(item.keys())}")
+            return False
+        # Require that the sample key has a caption in the external JSONL
+        if enable_text:
+            sample_key = item.get("__key__")
+            if sample_key is None or (
+                _captions_map is not None and sample_key not in _captions_map
+            ):
+                if debug:
+                    print(f"DEBUG: No external caption for key '{sample_key}'")
+                return False
+        return True
+
+    def filter_dataset_datacomp_real(item):
+        # Require an image and a txt caption in the tar
+        if enable_image and _find_image_key(item) is None:
+            if debug:
+                print(f"DEBUG: Item missing any image key. Keys: {list(item.keys())}")
+            return False
+        if enable_text and "txt" not in item:
+            if debug:
+                print(f"DEBUG: Item missing txt key. Keys: {list(item.keys())}")
             return False
         return True
 
@@ -201,13 +280,27 @@ def glide_wds_loader(
         filtered_dataset = dataset.select(filter_dataset_simple)
     elif dataset_name == "synthetic":
         filtered_dataset = dataset.select(filter_dataset_synthetic)
+    elif dataset_name == "datacomp-synthetic":
+        filtered_dataset = dataset.select(filter_dataset_datacomp_synthetic)
+    elif dataset_name == "datacomp-real":
+        filtered_dataset = dataset.select(filter_dataset_datacomp_real)
     else:
         raise ValueError(
-            f"Unknown dataset: {dataset_name}. Must be one of 'laion', 'alamy', 'simple', or 'synthetic'."
+            f"Unknown dataset: {dataset_name}. Must be one of 'laion', 'alamy', 'simple', 'synthetic', 'datacomp-synthetic', or 'datacomp-real'."
         )
 
     # Add a counter to track processed items (only if debugging)
     processed_count = [0] if debug else None
+
+    def _extract_caption(item):
+        """Extract caption string from an item based on dataset_name."""
+        if dataset_name == "synthetic":
+            json_data = json.loads(item["json"].decode("utf-8"))
+            return json_data.get("short_caption", json_data.get("long_caption", ""))
+        elif dataset_name == "datacomp-synthetic" and _captions_map is not None:
+            return _captions_map[item["__key__"]]
+        else:
+            return item[caption_key].decode("utf-8")
 
     def preprocess_dataset(item):
         if debug and processed_count is not None:
@@ -218,26 +311,32 @@ def glide_wds_loader(
 
         tokens, mask, base_tensor, upsample_tensor = None, None, None, None
 
-        # 20%, the empty token is used to represent the unconditional token.
-        # This lets classifier-free guidance work after training.
-        if not enable_text or random() < uncond_p:
+        # Extract caption text (needed for both tokenization and latent CLIP)
+        is_uncond = not enable_text or random() < uncond_p
+        caption_text = ""
+        if not is_uncond:
+            caption_text = _extract_caption(item)
+
+        # Tokenize for the GLIDE text transformer
+        if is_uncond:
             tokens, mask = get_uncond_tokens_mask(tokenizer)
         else:
-            # Handle synthetic dataset with JSON metadata
-            if dataset_name == "synthetic":
-                json_data = json.loads(item["json"].decode("utf-8"))
-                # Use short_caption for training (or long_caption if preferred)
-                caption = json_data.get("short_caption", json_data.get("long_caption", ""))
-            else:
-                caption = item[caption_key].decode("utf-8")
-            tokens, mask = get_tokens_and_mask(tokenizer, caption)
+            tokens, mask = get_tokens_and_mask(tokenizer, caption_text)
 
-        image_data = item[image_key]
+        image_data = item[_find_image_key(item) or image_key]
         original_pil_image = PIL.Image.open(io.BytesIO(image_data))
 
         # Apply random horizontal flip if enabled
         if random_hflip and random() < 0.5:
             original_pil_image = original_pil_image.transpose(PIL.Image.FLIP_LEFT_RIGHT)
+
+        # Latent mode: resize to 256x256 for VAE encoding, return caption string for CLIP
+        if latent_mode:
+            latent_pil = original_pil_image.resize(
+                (256, 256), resample=PIL.Image.BICUBIC
+            ).convert("RGB")
+            latent_tensor = pil_image_to_norm_tensor(latent_pil)
+            return tokens, mask, latent_tensor, caption_text
 
         base_pil_image = original_pil_image.resize(
             base_image_shape, resample=PIL.Image.BICUBIC
@@ -261,7 +360,8 @@ def glide_wds_loader(
     # Apply transformations with optimizations
     transformed_dataset = (
         filtered_dataset.shuffle(buffer_size).map(  # Add shuffling with buffer
-            preprocess_dataset, handler=handle_wds_errors  # Use custom error handler
+            preprocess_dataset,
+            handler=handle_wds_errors,  # Use custom error handler
         )
         # Note: batched() creates an extra dimension, skip it for now
         # The DataLoader will handle batching
@@ -273,3 +373,19 @@ def glide_wds_loader(
         print(f"  Pipeline: WebDataset -> Filter -> Shuffle({buffer_size}) -> Map")
 
     return transformed_dataset
+
+
+def latent_collate_fn(batch):
+    """Custom collate function for latent mode batches.
+
+    Each sample is (tokens_tensor, mask_tensor, image_tensor, caption_string).
+    Default collation can't handle the string element, so we stack tensors
+    and collect strings into a list.
+    """
+    import torch as th
+
+    tokens = th.stack([b[0] for b in batch])
+    masks = th.stack([b[1] for b in batch])
+    images = th.stack([b[2] for b in batch])
+    captions = [b[3] for b in batch]
+    return tokens, masks, images, captions

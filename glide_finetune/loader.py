@@ -65,6 +65,7 @@ class TextImageDataset(Dataset):
         random_brightness=False,
         random_contrast=False,
         random_color_jitter=False,
+        latent_mode=False,
     ):
         super().__init__()
         folder = Path(folder)
@@ -97,6 +98,7 @@ class TextImageDataset(Dataset):
         self.random_brightness = random_brightness
         self.random_contrast = random_contrast
         self.random_color_jitter = random_color_jitter
+        self.latent_mode = latent_mode
 
     def __len__(self):
         return len(self.keys)
@@ -121,7 +123,8 @@ class TextImageDataset(Dataset):
         descriptions = list(filter(lambda t: len(t) > 0, descriptions))
         try:
             description = choice(descriptions).strip()
-            return get_tokens_and_mask(tokenizer=self.tokenizer, prompt=description)
+            tokens, mask = get_tokens_and_mask(tokenizer=self.tokenizer, prompt=description)
+            return tokens, mask, description
         except IndexError:
             print(f"An exception occurred trying to load file {text_file}.")
             print(f"Skipping index {ind}")
@@ -130,10 +133,11 @@ class TextImageDataset(Dataset):
     def __getitem__(self, ind):
         key = self.keys[ind]
         image_file = self.image_files[key]
+        caption_text = ""
         if self.text_files is None or random() < self.uncond_p:
             tokens, mask = get_uncond_tokens_mask(self.tokenizer)
         else:
-            tokens, mask = self.get_caption(ind)
+            tokens, mask, caption_text = self.get_caption(ind)
 
         try:
             original_pil_image = PIL.Image.open(image_file).convert("RGB")
@@ -163,6 +167,13 @@ class TextImageDataset(Dataset):
             hue_factor = -0.1 + random() * 0.2  # -0.1 to 0.1
             original_pil_image = TF.adjust_saturation(original_pil_image, saturation_factor)
             original_pil_image = TF.adjust_hue(original_pil_image, hue_factor)
+
+        if self.latent_mode:
+            latent_pil = original_pil_image.resize(
+                (256, 256), resample=PIL.Image.BICUBIC
+            )
+            latent_tensor = pil_image_to_norm_tensor(latent_pil)
+            return tokens.clone(), mask.clone(), latent_tensor, caption_text
 
         if self.enable_upsample:  # the base image used should be derived from the cropped high-resolution image.
             upsample_pil_image = random_resized_crop(
