@@ -289,9 +289,7 @@ def run_glide_finetune(
     activation_checkpointing=False,
     use_captions=True,
     num_epochs=100,
-    log_frequency=100,
     sample_interval=500,
-    test_prompt="a group of skiers are preparing to ski down a mountain.",
     sample_bs=1,
     sample_gs=8.0,
     prompt_file="eval_captions.txt",
@@ -302,7 +300,6 @@ def run_glide_finetune(
     dataset_name="laion",
     enable_upsample=False,
     upsample_factor=4,
-    eval_sr_base_images="data/images/base_64x64",
     use_sr_eval=False,
     sr_model_path=None,
     use_lora=False,
@@ -612,7 +609,6 @@ def run_glide_finetune(
             upsampler_options=upsampler_options,
             use_sr_eval=use_sr_eval,
             dataloader=dataloader,
-            prompt=test_prompt,
             sample_bs=sample_bs,
             sample_gs=sample_gs,
             prompt_file=prompt_file,
@@ -627,7 +623,6 @@ def run_glide_finetune(
             side_y=side_y,
             device=device,
             wandb_run=wandb_run,
-            log_frequency=log_frequency,
             sample_interval=sample_interval,
             epoch=epoch,
             gradient_accumulation_steps=gradient_accumulation_steps,
@@ -667,7 +662,7 @@ def parse_args():
     parser.add_argument(
         "--random_hflip",
         action="store_true",
-        help="Apply random horizontal flip augmentation during training (50% probability)",
+        help="Apply random horizontal flip augmentation during training (50%% probability)",
     )
     parser.add_argument(
         "--uncond_p",
@@ -706,7 +701,6 @@ def parse_args():
         help="Precision for training: fp32 (default), fp16 (unstable), bf16 (recommended for mixed precision)",
     )
     parser.add_argument("--device", "-dev", type=str, default="")
-    parser.add_argument("--log_frequency", "-freq", type=int, default=100)
     parser.add_argument(
         "--sample_interval",
         "-sample_freq",
@@ -743,12 +737,6 @@ def parse_args():
     )
     parser.add_argument("--use_captions", "-txt", action="store_true")
     parser.add_argument("--epochs", "-epochs", type=int, default=20)
-    parser.add_argument(
-        "--test_prompt",
-        "-prompt",
-        type=str,
-        default="a group of skiers are preparing to ski down a mountain.",
-    )
     parser.add_argument(
         "--test_batch_size",
         "-tbs",
@@ -809,12 +797,6 @@ def parse_args():
         type=int,
         default=4,
         help="Upscale factor for training the upsampling model only",
-    )
-    parser.add_argument(
-        "--eval_sr_base_images",
-        type=str,
-        default="data/images/base_64x64",
-        help="Directory containing base 64x64 images for SR evaluation during training",
     )
     parser.add_argument(
         "--use_sr_eval",
@@ -1009,15 +991,6 @@ if __name__ == "__main__":
     # CUDA/CPU setup
     args = parse_args()
 
-    # Check for deprecated test_prompt argument
-    if args.test_prompt != "a group of skiers are preparing to ski down a mountain.":
-        print("ERROR: --test_prompt is deprecated.")
-        print(
-            "Please use --prompt_file instead to specify a file containing prompts (one per line)."
-        )
-        print("Example: --prompt_file prompts.txt")
-        exit(1)
-
     if len(args.device) > 0:
         device = th.device(args.device)
     else:
@@ -1095,7 +1068,6 @@ if __name__ == "__main__":
         use_fp16=args.use_fp16,
         precision=args.precision,
         device=device,
-        log_frequency=args.log_frequency,
         sample_interval=args.sample_interval,
         freeze_transformer=args.freeze_transformer,
         freeze_diffusion=args.freeze_diffusion,
@@ -1103,7 +1075,6 @@ if __name__ == "__main__":
         activation_checkpointing=args.activation_checkpointing,
         use_captions=args.use_captions,
         num_epochs=args.epochs,
-        test_prompt=args.test_prompt,
         sample_bs=args.test_batch_size,
         sample_gs=args.test_guidance_scale,
         use_webdataset=args.use_webdataset,
@@ -1112,7 +1083,6 @@ if __name__ == "__main__":
         dataset_name=args.wds_dataset_name,
         enable_upsample=args.train_upsample,
         upsample_factor=args.upscale_factor,
-        eval_sr_base_images=args.eval_sr_base_images,
         use_sr_eval=args.use_sr_eval,
         sr_model_path=args.sr_model_path,
         prompt_file=args.prompt_file,

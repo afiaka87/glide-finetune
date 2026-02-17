@@ -163,7 +163,6 @@ def run_glide_finetune_epoch(
     eval_sr_sampler: str = "euler",  # sampler for super-resolution evaluation
     eval_base_sampler_steps: int = 30,  # number of steps for base model evaluation
     eval_sr_sampler_steps: int = 17,  # number of steps for super-resolution evaluation
-    prompt: str = "",  # prompt for inference, not training
     prompt_file: str = "eval_captions.txt",  # file with prompts to sample from
     sample_batch_size: int = 8,  # number of prompts to randomly sample at each interval
     side_x: int = 64,
@@ -171,7 +170,6 @@ def run_glide_finetune_epoch(
     outputs_dir: str = "./outputs",
     checkpoints_dir: str = "./finetune_checkpoints",
     device: str = "cpu",
-    log_frequency: int = 100,
     sample_interval: int = 500,
     wandb_run=None,
     gradient_accumulation_steps=1,
@@ -205,7 +203,7 @@ def run_glide_finetune_epoch(
             eval_prompts = [line.strip() for line in f.readlines() if line.strip()]
         print(f"Loaded {len(eval_prompts)} eval prompts from {prompt_file}")
     else:
-        print(f"No {prompt_file} found, using fixed prompt: {prompt}")
+        print(f"Warning: {prompt_file} not found, sampling will use empty prompts")
 
     # Model should already be on correct device - moved in load_model_with_lora or before EMA creation
     glide_model.to(memory_format=th.channels_last)
@@ -333,8 +331,8 @@ def run_glide_finetune_epoch(
                 # Use all eval prompts in order for consistent tracking
                 sample_prompts = eval_prompts
             else:
-                # Use the fixed prompt multiple times
-                sample_prompts = [prompt] * sample_batch_size
+                # No prompt file — generate unconditional samples
+                sample_prompts = [""] * sample_batch_size
 
             print(
                 f"Sampling {len(sample_prompts)} images from model at iteration {train_idx}"
@@ -850,7 +848,7 @@ def run_glide_finetune_epoch(
                 from glide_finetune.metrics import compute_fid_kid
 
                 # Use eval prompts if available, else use default human prompts
-                fid_prompts = eval_prompts if eval_prompts else [prompt] * 100
+                fid_prompts = eval_prompts if eval_prompts else [""] * 100
                 print(f"\nComputing FID/KID at step {train_idx}...")
                 fid_kid_results = compute_fid_kid(
                     glide_model=glide_model,
