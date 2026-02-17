@@ -172,7 +172,6 @@ samples = sample(model, options, 64, 64,
 - `uncond_p`: 0.2 for base model, 0.0 for upsampler (critical for proper CFG)
 - `gradient_accumulation_steps`: Effective batch = batch_size * grad_acc_steps
 - `save_checkpoint_interval`: Default 2500 steps (based on global_step/weight updates)
-- `log_frequency`: Console output frequency (WandB logs every step)
 - `sample_interval`: Generate sample images every N steps (default 250)
 - `learning_rate`: Default 3e-4 (GLIDE paper uses 1e-4)
 - `adam_weight_decay`: Default 0.01 (GLIDE paper uses 0.0)
