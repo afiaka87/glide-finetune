@@ -94,6 +94,49 @@ def upsample_train_step(
     return th.nn.functional.mse_loss(epsilon, noise.detach())
 
 
+def latent_train_step(
+    glide_model,
+    glide_diffusion: SpacedDiffusion,
+    batch,
+    device: str,
+    vae=None,
+    clip_encoder=None,
+):
+    """
+    Perform a single latent-space training step.
+
+    Args:
+        glide_model: LatentText2ImUNet to train.
+        glide_diffusion: The diffusion to use.
+        batch: (tokens, masks, images_256, captions) where images_256 is
+               [B, 3, 256, 256] in [-1, 1] and captions is a list of strings.
+        device: The device.
+        vae: LatentVAE for encoding images to latents.
+        clip_encoder: LatentCLIP for encoding caption strings.
+    """
+    tokens = batch[0].to(device, non_blocking=True)
+    masks = batch[1].to(device, non_blocking=True)
+    images_256 = batch[2].to(device, non_blocking=True)
+    captions = batch[3]  # list of strings
+
+    latents = vae.encode(images_256)  # [B, 4, 32, 32], no_grad inside
+    clip_emb = clip_encoder.encode_text_batch(captions)  # [B, 768], no_grad inside
+    clip_emb = clip_emb.to(device)
+
+    timesteps = th.randint(
+        0, len(glide_diffusion.betas) - 1, (latents.shape[0],), device=device
+    )
+    noise = th.randn_like(latents)
+    x_t = glide_diffusion.q_sample(latents, timesteps, noise=noise)
+
+    _, C = x_t.shape[:2]  # C = 4
+    model_output = glide_model(
+        x_t, timesteps, tokens=tokens, mask=masks, clip_emb=clip_emb
+    )
+    epsilon, _ = th.split(model_output, C, dim=1)
+    return th.nn.functional.mse_loss(epsilon, noise.detach())
+
+
 def run_glide_finetune_epoch(
     glide_model: Text2ImUNet,
     glide_diffusion: SpacedDiffusion,
@@ -133,8 +176,13 @@ def run_glide_finetune_epoch(
     save_checkpoint_interval: int = 5000,
     eval_interval: int = 5000,
     reference_stats: str = "",
+    latent_mode: bool = False,
+    vae=None,
+    clip_encoder=None,
 ):
-    if train_upsample:
+    if latent_mode:
+        train_step = latent_train_step  # type: ignore
+    elif train_upsample:
         train_step = upsample_train_step  # type: ignore
     else:
         train_step = base_train_step  # type: ignore
@@ -190,12 +238,16 @@ def run_glide_finetune_epoch(
             print("torch.compile: compiling forward pass (this may take ~40s)...")
             fwd_t0 = time.time()
 
-        loss = train_step(
+        train_kwargs = dict(
             glide_model=glide_model,
             glide_diffusion=glide_diffusion,
             batch=batch,
             device=device,
         )
+        if latent_mode:
+            train_kwargs["vae"] = vae
+            train_kwargs["clip_encoder"] = clip_encoder
+        loss = train_step(**train_kwargs)
 
         if needs_warmup:
             print(f"torch.compile: forward compiled in {time.time() - fwd_t0:.1f}s")
@@ -330,33 +382,52 @@ def run_glide_finetune_epoch(
                             ref_sr_img = Image.open(ref_sr_path).convert("RGB")
                             wandb_images_reference_256.append(wandb.Image(ref_sr_img, caption=f"Reference: {sample_prompt[:50]}..."))
 
-                # First, always generate 64x64 base images (or upsample if training SR)
-                samples_64 = glide_util.sample(
-                    glide_model=glide_model,
-                    glide_options=glide_options,
-                    side_x=side_x,
-                    side_y=side_y,
-                    prompt=sample_prompt,
-                    batch_size=sample_bs,
-                    guidance_scale=sample_gs,
-                    device=device,
-                    prediction_respacing=str(eval_base_sampler_steps),
-                    sampler=base_sampler,  # type: ignore
-                    upsample_enabled=train_upsample,
-                    image_to_upsample=current_image_to_upsample if train_upsample else None,
-                )
-
-                # For upsampler training, samples_64 is actually 256x256 output
-                if train_upsample:
-                    # samples_64 is 256x256 when upsampling
-                    pil_image_256 = train_util.pred_to_pil(samples_64)
+                # Generate samples
+                if latent_mode:
+                    samples = glide_util.sample(
+                        glide_model=glide_model,
+                        glide_options=glide_options,
+                        side_x=side_x,
+                        side_y=side_y,
+                        prompt=sample_prompt,
+                        batch_size=sample_bs,
+                        guidance_scale=sample_gs,
+                        device=device,
+                        prediction_respacing=str(eval_base_sampler_steps),
+                        sampler=base_sampler,  # type: ignore
+                        latent_mode=True,
+                        vae=vae,
+                        clip_encoder=clip_encoder,
+                    )
+                    # samples are decoded pixel images [B, 3, 256, 256]
+                    pil_image_256 = train_util.pred_to_pil(samples)
                     all_images_256.append(pil_image_256)
-                    wandb_images_256.append(wandb.Image(pil_image_256, caption=f"Generated: {sample_prompt[:50]}..."))
+                    wandb_images_256.append(wandb.Image(pil_image_256, caption=f"{sample_prompt[:50]}... (latent 256x256)"))
                 else:
-                    # Normal 64x64 base model output
-                    pil_image_64 = train_util.pred_to_pil(samples_64)
-                    all_images_64.append(pil_image_64)
-                    wandb_images_64.append(wandb.Image(pil_image_64, caption=f"{sample_prompt} (64x64)"))
+                    samples_64 = glide_util.sample(
+                        glide_model=glide_model,
+                        glide_options=glide_options,
+                        side_x=side_x,
+                        side_y=side_y,
+                        prompt=sample_prompt,
+                        batch_size=sample_bs,
+                        guidance_scale=sample_gs,
+                        device=device,
+                        prediction_respacing=str(eval_base_sampler_steps),
+                        sampler=base_sampler,  # type: ignore
+                        upsample_enabled=train_upsample,
+                        image_to_upsample=current_image_to_upsample if train_upsample else None,
+                    )
+
+                    # For upsampler training, samples_64 is actually 256x256 output
+                    if train_upsample:
+                        pil_image_256 = train_util.pred_to_pil(samples_64)
+                        all_images_256.append(pil_image_256)
+                        wandb_images_256.append(wandb.Image(pil_image_256, caption=f"Generated: {sample_prompt[:50]}..."))
+                    else:
+                        pil_image_64 = train_util.pred_to_pil(samples_64)
+                        all_images_64.append(pil_image_64)
+                        wandb_images_64.append(wandb.Image(pil_image_64, caption=f"{sample_prompt} (64x64)"))
 
                 # Generate 256x256 with SR if requested and we're training base model
                 if use_sr_eval and not train_upsample and upsampler_model is not None:

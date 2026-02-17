@@ -14,6 +14,7 @@ from glide_text2im.model_creation import (
     create_gaussian_diffusion,
     create_model_and_diffusion,
     model_and_diffusion_defaults,
+    model_and_diffusion_defaults_latent,
     model_and_diffusion_defaults_upsampler,
 )
 from glide_text2im.tokenizer.bpe import Encoder
@@ -326,6 +327,86 @@ def load_model_with_lora(
     return glide_model, glide_diffusion, options
 
 
+def load_latent_model(
+    glide_path: str = "",
+    precision: str = "fp32",
+    freeze_transformer: bool = False,
+    freeze_diffusion: bool = False,
+    activation_checkpointing: bool = False,
+    init_from_pixel: str = "",
+):
+    """Load a LatentText2ImUNet model for latent-space diffusion.
+
+    Args:
+        glide_path: Path to a latent-mode checkpoint to resume from.
+        precision: "fp32", "fp16", or "bf16".
+        freeze_transformer: Freeze the GLIDE text transformer.
+        freeze_diffusion: Freeze the UNet diffusion backbone.
+        activation_checkpointing: Enable gradient checkpointing.
+        init_from_pixel: Path to a pixel-space checkpoint for weight transfer.
+    """
+    options = model_and_diffusion_defaults_latent()
+    options["use_fp16"] = precision == "fp16"
+    glide_model, glide_diffusion = create_model_and_diffusion(**options)
+
+    if activation_checkpointing:
+        glide_model.use_checkpoint = True
+
+    glide_model.requires_grad_(True)
+
+    if glide_path and os.path.exists(glide_path):
+        weights = th.load(glide_path, map_location="cpu")
+        if any(k.startswith("_orig_mod.") for k in weights):
+            weights = {k.removeprefix("_orig_mod."): v for k, v in weights.items()}
+        glide_model.load_state_dict(weights)
+    elif init_from_pixel and os.path.exists(init_from_pixel):
+        from glide_finetune.latent_util import init_latent_from_pixel
+
+        pixel_weights = th.load(init_from_pixel, map_location="cpu")
+        init_latent_from_pixel(glide_model, pixel_weights)
+    else:
+        print(
+            "Warning: No checkpoint provided for latent model. Using random initialization."
+        )
+
+    # Freeze transformer if requested
+    if freeze_transformer:
+        for attr in ("transformer", "transformer_proj", "token_embedding", "final_ln"):
+            if hasattr(glide_model, attr):
+                getattr(glide_model, attr).requires_grad_(False)
+        for attr in ("padding_embedding", "positional_embedding"):
+            if hasattr(glide_model, attr):
+                getattr(glide_model, attr).requires_grad = False
+
+    # Freeze diffusion backbone if requested
+    if freeze_diffusion:
+        for attr in (
+            "time_embed",
+            "input_blocks",
+            "middle_block",
+            "output_blocks",
+            "out",
+        ):
+            if hasattr(glide_model, attr):
+                getattr(glide_model, attr).requires_grad_(False)
+        # Keep cross-attention encoder_kv trainable
+        for name, param in glide_model.named_parameters():
+            if "encoder_kv" in name:
+                param.requires_grad = True
+
+    if freeze_transformer or freeze_diffusion:
+        _print_freeze_status(glide_model, freeze_transformer, freeze_diffusion)
+
+    if precision == "fp16":
+        glide_model.convert_to_fp16()
+        print("Converted to fp16, likely gradients will explode")
+    elif precision == "bf16":
+        glide_model.convert_to_bf16()
+        print("Converted to bf16 for stable mixed precision training")
+
+    return glide_model, glide_diffusion, options
+
+
 def read_image(path: str, shape: Tuple[int, int]):
     pil_img = PIL.Image.open(path).convert("RGB")
     pil_img = pil_img.resize(shape, resample=PIL.Image.Resampling.BICUBIC)
@@ -353,6 +434,9 @@ def sample(
     sampler: Literal["plms", "ddim", "euler", "euler_a", "dpm++"] = "plms",
     sampler_eta: float = 0.0,
     dpm_order: int = 2,
+    latent_mode: bool = False,
+    vae=None,
+    clip_encoder=None,
 ):
     glide_model.del_cache()
     eval_diffusion = create_gaussian_diffusion(
@@ -384,11 +468,21 @@ def sample(
         ),
     )
 
+    # For latent mode, add CLIP embeddings to model_kwargs
+    if latent_mode and clip_encoder is not None:
+        clip_emb = clip_encoder.encode_text_batch([prompt] * batch_size).to(device)
+        uncond_clip_emb = th.zeros_like(clip_emb)
+        model_kwargs["clip_emb"] = th.cat([clip_emb, uncond_clip_emb], dim=0)
+
+    num_channels = 4 if latent_mode else 3
+    sample_shape = (full_batch_size, num_channels, side_y, side_x)
+
     def cfg_model_fn(x_t, ts, **kwargs):
         half = x_t[: len(x_t) // 2]
         combined = th.cat([half, half], dim=0)
         model_out = glide_model(combined, ts, **kwargs)
-        eps, rest = model_out[:, :3], model_out[:, 3:]
+        C = x_t.shape[1]
+        eps, rest = model_out[:, :C], model_out[:, C:]
         cond_eps, uncond_eps = th.split(eps, len(eps) // 2, dim=0)
         beta = eval_diffusion.betas[
             int(
@@ -424,9 +518,9 @@ def sample(
     if sampler == "plms":
         samples = eval_diffusion.plms_sample_loop(
             model_fn,
-            (full_batch_size, 3, side_y, side_x),
+            sample_shape,
             device=device,
-            clip_denoised=True,
+            clip_denoised=not latent_mode,
             progress=True,
             model_kwargs=model_kwargs,
             cond_fn=None,
@@ -434,9 +528,9 @@ def sample(
     elif sampler == "ddim":
         samples = eval_diffusion.ddim_sample_loop(
             model_fn,
-            (full_batch_size, 3, side_y, side_x),
+            sample_shape,
             device=device,
-            clip_denoised=True,
+            clip_denoised=not latent_mode,
             progress=True,
             model_kwargs=model_kwargs,
             cond_fn=None,
@@ -447,9 +541,9 @@ def sample(
         enhance_diffusion(eval_diffusion)
         samples = eval_diffusion.euler_sample_loop(
             model_fn,
-            (full_batch_size, 3, side_y, side_x),
+            sample_shape,
             device=device,
-            clip_denoised=True,
+            clip_denoised=not latent_mode,
             progress=True,
             model_kwargs=model_kwargs,
             cond_fn=None,
@@ -460,9 +554,9 @@ def sample(
         enhance_diffusion(eval_diffusion)
         samples = eval_diffusion.euler_ancestral_sample_loop(
             model_fn,
-            (full_batch_size, 3, side_y, side_x),
+            sample_shape,
             device=device,
-            clip_denoised=True,
+            clip_denoised=not latent_mode,
             progress=True,
             model_kwargs=model_kwargs,
             cond_fn=None,
@@ -473,9 +567,9 @@ def sample(
         enhance_diffusion(eval_diffusion)
         samples = eval_diffusion.dpm_solver_sample_loop(
             model_fn,
-            (full_batch_size, 3, side_y, side_x),
+            sample_shape,
             device=device,
-            clip_denoised=True,
+            clip_denoised=not latent_mode,
             progress=True,
             model_kwargs=model_kwargs,
             cond_fn=None,
@@ -486,6 +580,8 @@ def sample(
         raise ValueError(f"Unknown sampler: {sampler}")
 
     glide_model.del_cache()
+    if latent_mode and vae is not None:
+        samples = vae.decode(samples)
     return samples
 
 
@@ -565,7 +661,8 @@ def sample_with_superres(
         half = x_t[: len(x_t) // 2]
         combined = th.cat([half, half], dim=0)
         model_out = base_model(combined, ts, **kwargs)
-        eps, rest = model_out[:, :3], model_out[:, 3:]
+        C = x_t.shape[1]
+        eps, rest = model_out[:, :C], model_out[:, C:]
         cond_eps, uncond_eps = th.split(eps, len(eps) // 2, dim=0)
         half_eps = uncond_eps + guidance_scale * (cond_eps - uncond_eps)
         eps = th.cat([half_eps, half_eps], dim=0)
