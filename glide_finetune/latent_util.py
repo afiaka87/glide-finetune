@@ -133,7 +133,7 @@ def init_latent_from_pixel(
     - All matching-shape weights: copy directly.
     - Input conv (input_blocks.0.0.weight): copy 3 RGB channels, zero-init 4th.
     - Output conv (out.2.weight/bias): copy first 6 channels, zero-init last 2.
-    - New CLIP layers (clip_to_time, clip_to_xf): keep random init.
+    - New CLIP layers (clip_to_time, clip_to_xf): zero-initialized.
 
     Modifies latent_model in-place.
     """
@@ -181,6 +181,14 @@ def init_latent_from_pixel(
         else:
             skipped_shape += 1
 
+    # Zero-initialize CLIP projection layers so they contribute nothing at
+    # the start of training.  With random init these inject noise into the
+    # timestep embedding (clip_to_time) and cross-attention (clip_to_xf),
+    # which corrupts the transferred UNet weights and produces noisy samples.
+    for name, param in latent_sd.items():
+        if name.startswith(("clip_to_time.", "clip_to_xf.")):
+            param.zero_()
+
     print(
-        f"Weight transfer: {transferred} copied, {skipped_new} new (random init), {skipped_shape} shape mismatch"
+        f"Weight transfer: {transferred} copied, {skipped_new} new (zero init), {skipped_shape} shape mismatch"
     )
