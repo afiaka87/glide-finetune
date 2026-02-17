@@ -359,6 +359,15 @@ def run_glide_finetune(
     print("Wandb setup.")
 
     # Model setup
+    if resume_ckpt:
+        print("=" * 60)
+        print(f"  RESUMING FROM CHECKPOINT: {resume_ckpt}")
+        print("=" * 60)
+    else:
+        print("=" * 60)
+        print("  NO CHECKPOINT TO RESUME FROM — TRAINING FROM SCRATCH")
+        print("=" * 60)
+
     if latent_mode:
         glide_model, glide_diffusion, glide_options = load_latent_model(
             glide_path=resume_ckpt,
