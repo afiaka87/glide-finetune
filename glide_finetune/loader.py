@@ -123,7 +123,9 @@ class TextImageDataset(Dataset):
         descriptions = list(filter(lambda t: len(t) > 0, descriptions))
         try:
             description = choice(descriptions).strip()
-            tokens, mask = get_tokens_and_mask(tokenizer=self.tokenizer, prompt=description)
+            tokens, mask = get_tokens_and_mask(
+                tokenizer=self.tokenizer, prompt=description
+            )
             return tokens, mask, description
         except IndexError:
             print(f"An exception occurred trying to load file {text_file}.")
@@ -153,19 +155,26 @@ class TextImageDataset(Dataset):
         # Apply color augmentations if enabled
         if self.random_brightness and random() < 0.5:
             from torchvision.transforms import functional as TF
+
             brightness_factor = 0.5 + random() * 1.0  # 0.5 to 1.5
-            original_pil_image = TF.adjust_brightness(original_pil_image, brightness_factor)
+            original_pil_image = TF.adjust_brightness(
+                original_pil_image, brightness_factor
+            )
 
         if self.random_contrast and random() < 0.5:
             from torchvision.transforms import functional as TF
+
             contrast_factor = 0.5 + random() * 1.0  # 0.5 to 1.5
             original_pil_image = TF.adjust_contrast(original_pil_image, contrast_factor)
 
         if self.random_color_jitter and random() < 0.5:
             from torchvision.transforms import functional as TF
+
             saturation_factor = 0.5 + random() * 1.0  # 0.5 to 1.5
             hue_factor = -0.1 + random() * 0.2  # -0.1 to 0.1
-            original_pil_image = TF.adjust_saturation(original_pil_image, saturation_factor)
+            original_pil_image = TF.adjust_saturation(
+                original_pil_image, saturation_factor
+            )
             original_pil_image = TF.adjust_hue(original_pil_image, hue_factor)
 
         if self.latent_mode:

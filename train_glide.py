@@ -15,7 +15,11 @@ import torch as th
 from tqdm import trange, tqdm
 
 from glide_finetune.glide_finetune import run_glide_finetune_epoch
-from glide_finetune.glide_util import load_model, load_model_with_lora
+from glide_finetune.glide_util import (
+    load_model,
+    load_model_with_lora,
+    load_latent_model,
+)
 from glide_finetune.loader import TextImageDataset
 from glide_finetune.train_util import wandb_setup
 from glide_finetune.wds_loader import glide_wds_loader
@@ -25,12 +29,8 @@ def get_tar_file_info(tar_path):
     """Get file stats for a tar file (size and modification time)."""
     try:
         stat = os.stat(tar_path)
-        return {
-            'size': stat.st_size,
-            'mtime': stat.st_mtime,
-            'path': tar_path
-        }
-    except:
+        return {"size": stat.st_size, "mtime": stat.st_mtime, "path": tar_path}
+    except OSError:
         return None
 
 
@@ -46,7 +46,7 @@ def validate_single_tar(tar_path):
     """
     try:
         # Try to open and read the tar file
-        with tarfile.open(tar_path, 'r') as tf:
+        with tarfile.open(tar_path, "r") as tf:
             # Quick validation - just try to get members list
             _ = tf.getmembers()
         return (tar_path, True, None)
@@ -56,7 +56,14 @@ def validate_single_tar(tar_path):
         return (tar_path, False, str(e))
 
 
-def validate_tar_files(tar_files, skip_validation=False, use_cache=True, cache_dir="./cache", verbose=True, num_workers=None):
+def validate_tar_files(
+    tar_files,
+    skip_validation=False,
+    use_cache=True,
+    cache_dir="./cache",
+    verbose=True,
+    num_workers=None,
+):
     """
     Validate tar files by attempting to read their contents.
     Caches validation results to avoid re-checking valid files.
@@ -75,7 +82,7 @@ def validate_tar_files(tar_files, skip_validation=False, use_cache=True, cache_d
     """
     if skip_validation:
         if verbose:
-            print(f"Skipping tar validation (--skip_tar_validation flag set)")
+            print("Skipping tar validation (--skip_tar_validation flag set)")
         return tar_files
 
     # Create cache directory if it doesn't exist
@@ -97,13 +104,19 @@ def validate_tar_files(tar_files, skip_validation=False, use_cache=True, cache_d
 
     if use_cache and cache_file.exists():
         try:
-            with open(cache_file, 'r') as f:
+            with open(cache_file, "r") as f:
                 cache_data = json.load(f)
-                cached_valid = {item['path']: item for item in cache_data.get('valid', [])}
-                cached_invalid = {item['path']: item for item in cache_data.get('invalid', [])}
+                cached_valid = {
+                    item["path"]: item for item in cache_data.get("valid", [])
+                }
+                cached_invalid = {
+                    item["path"]: item for item in cache_data.get("invalid", [])
+                }
                 if verbose:
-                    cache_date = datetime.fromtimestamp(cache_data.get('timestamp', 0))
-                    print(f"Loaded validation cache from {cache_date.strftime('%Y-%m-%d %H:%M:%S')}")
+                    cache_date = datetime.fromtimestamp(cache_data.get("timestamp", 0))
+                    print(
+                        f"Loaded validation cache from {cache_date.strftime('%Y-%m-%d %H:%M:%S')}"
+                    )
                     print(f"  Cached valid files: {len(cached_valid)}")
                     print(f"  Cached invalid files: {len(cached_invalid)}")
         except Exception as e:
@@ -127,15 +140,19 @@ def validate_tar_files(tar_files, skip_validation=False, use_cache=True, cache_d
         if tar_path in cached_valid:
             cached_info = cached_valid[tar_path]
             # Check if file hasn't changed (same size and modification time)
-            if (cached_info.get('size') == file_info['size'] and
-                cached_info.get('mtime') == file_info['mtime']):
+            if (
+                cached_info.get("size") == file_info["size"]
+                and cached_info.get("mtime") == file_info["mtime"]
+            ):
                 valid_tars.append(tar_path)
                 continue
         elif tar_path in cached_invalid:
             cached_info = cached_invalid[tar_path]
             # Check if file hasn't changed
-            if (cached_info.get('size') == file_info['size'] and
-                cached_info.get('mtime') == file_info['mtime']):
+            if (
+                cached_info.get("size") == file_info["size"]
+                and cached_info.get("mtime") == file_info["mtime"]
+            ):
                 corrupted_tars.append(tar_path)
                 continue
 
@@ -209,14 +226,14 @@ def validate_tar_files(tar_files, skip_validation=False, use_cache=True, cache_d
 
         # Save updated cache
         cache_data = {
-            'timestamp': datetime.now().timestamp(),
-            'total_validated': len(valid_tars) + len(corrupted_tars),
-            'valid': list(cached_valid.values()),
-            'invalid': list(cached_invalid.values())
+            "timestamp": datetime.now().timestamp(),
+            "total_validated": len(valid_tars) + len(corrupted_tars),
+            "valid": list(cached_valid.values()),
+            "invalid": list(cached_invalid.values()),
         }
 
         try:
-            with open(cache_file, 'w') as f:
+            with open(cache_file, "w") as f:
                 json.dump(cache_data, f, indent=2)
             if verbose:
                 print(f"Updated validation cache: {cache_file}")
@@ -225,7 +242,7 @@ def validate_tar_files(tar_files, skip_validation=False, use_cache=True, cache_d
                 print(f"Warning: Could not save cache file: {e}")
 
     if verbose:
-        print(f"\nValidation complete:")
+        print("\nValidation complete:")
         print(f"  ✓ Valid tar files: {len(valid_tars)}")
         print(f"  ✗ Corrupted/incomplete tar files: {len(corrupted_tars)}")
         if files_to_validate:
@@ -233,15 +250,21 @@ def validate_tar_files(tar_files, skip_validation=False, use_cache=True, cache_d
             print(f"  📝 Newly identified as corrupted: {len(newly_corrupted)}")
 
         if corrupted_tars and len(corrupted_tars) <= 10:
-            print(f"\nSkipped tar files:")
+            print("\nSkipped tar files:")
             for tar in corrupted_tars:
                 print(f"    - {os.path.basename(tar)}")
         elif corrupted_tars:
-            print(f"\nSkipped {len(corrupted_tars)} corrupted tar files (too many to list)")
-            print(f"  First few: {', '.join([os.path.basename(t) for t in corrupted_tars[:5]])}")
+            print(
+                f"\nSkipped {len(corrupted_tars)} corrupted tar files (too many to list)"
+            )
+            print(
+                f"  First few: {', '.join([os.path.basename(t) for t in corrupted_tars[:5]])}"
+            )
 
     if not valid_tars:
-        raise ValueError("No valid tar files found! All tar files appear to be corrupted or incomplete.")
+        raise ValueError(
+            "No valid tar files found! All tar files appear to be corrupted or incomplete."
+        )
 
     return valid_tars
 
@@ -297,6 +320,12 @@ def run_glide_finetune(
     random_init=False,
     eval_interval=5000,
     reference_stats="",
+    captions_jsonl_path=None,
+    latent_mode=False,
+    vae_model="stabilityai/sd-vae-ft-mse",
+    clip_model_name="ViT-L-14",
+    clip_pretrained="laion2b_s32b_b82k",
+    init_from_pixel="",
 ):
     if "~" in data_dir:
         data_dir = os.path.expanduser(data_dir)
@@ -309,7 +338,12 @@ def run_glide_finetune(
     # Handle legacy use_fp16 parameter
     if use_fp16:
         precision = "fp16"
-    
+
+    # Latent mode overrides
+    if latent_mode:
+        side_x, side_y = 32, 32
+        print("Latent mode: diffusion on 32x32 latents (256x256 pixel output)")
+
     # Start wandb logging
     wandb_run = wandb_setup(
         batch_size=batch_size,
@@ -325,7 +359,16 @@ def run_glide_finetune(
     print("Wandb setup.")
 
     # Model setup
-    if use_lora:
+    if latent_mode:
+        glide_model, glide_diffusion, glide_options = load_latent_model(
+            glide_path=resume_ckpt,
+            precision=precision,
+            freeze_transformer=freeze_transformer,
+            freeze_diffusion=freeze_diffusion,
+            activation_checkpointing=activation_checkpointing,
+            init_from_pixel=init_from_pixel,
+        )
+    elif use_lora:
         glide_model, glide_diffusion, glide_options = load_model_with_lora(
             glide_path=resume_ckpt,
             use_fp16=False,  # Use precision parameter instead
@@ -380,6 +423,20 @@ def run_glide_finetune(
                     th.nn.init.normal_(p, std=0.02)
                     reinit_count += p.numel()
         print(f"Reinitialized {reinit_count:,} transformer parameters")
+
+    # Create frozen VAE and CLIP encoders for latent mode
+    vae = None
+    clip_enc = None
+    if latent_mode:
+        from glide_finetune.latent_util import LatentVAE, LatentCLIP
+
+        vae_dtype = th.bfloat16 if precision == "bf16" else th.float32
+        print(f"Loading frozen VAE ({vae_model}) ...")
+        vae = LatentVAE(model_name=vae_model, device=str(device), dtype=vae_dtype)
+        print(f"Loading frozen CLIP ({clip_model_name}/{clip_pretrained}) ...")
+        clip_enc = LatentCLIP(
+            model_name=clip_model_name, pretrained=clip_pretrained, device=str(device)
+        )
 
     glide_model.train()
     number_of_params = sum(x.numel() for x in glide_model.parameters())
@@ -436,11 +493,13 @@ def run_glide_finetune(
             similarity_threshold_upper=0.0,
             similarity_threshold_lower=0.5,
             words_to_skip=[],
-            dataset_name=dataset_name,  # can be laion, alamy, or simple.
+            dataset_name=dataset_name,  # can be laion, alamy, simple, synthetic, or datacomp.
             buffer_size=args.wds_buffer_size,
             initial_prefetch=args.wds_initial_prefetch,
             debug=args.wds_debug,
             random_hflip=random_hflip,
+            captions_jsonl_path=captions_jsonl_path,
+            latent_mode=latent_mode,
         )
     else:
         dataset = TextImageDataset(
@@ -456,9 +515,16 @@ def run_glide_finetune(
             enable_glide_upsample=enable_upsample,
             upscale_factor=upsample_factor,  # TODO: make this a parameter
             random_hflip=random_hflip,
+            latent_mode=latent_mode,
         )
 
     # Data loader setup
+    collate_fn = None
+    if latent_mode:
+        from glide_finetune.wds_loader import latent_collate_fn
+
+        collate_fn = latent_collate_fn
+
     dataloader = th.utils.data.DataLoader(
         dataset,
         batch_size=batch_size,
@@ -467,6 +533,7 @@ def run_glide_finetune(
         pin_memory=(device == "cuda"),
         prefetch_factor=4 if args.num_workers > 0 else None,
         persistent_workers=True if args.num_workers > 0 else False,
+        collate_fn=collate_fn,
     )
 
     # Quick test to ensure dataloader is set up (without consuming data)
@@ -495,6 +562,7 @@ def run_glide_finetune(
     ema_model = None
     if ema_rate > 0:
         from glide_finetune.ema_util import SimpleEMA
+
         print(f"Setting up EMA with decay rate {ema_rate}")
         ema_model = SimpleEMA(glide_model, decay=ema_rate)
 
@@ -560,6 +628,9 @@ def run_glide_finetune(
             save_checkpoint_interval=save_checkpoint_interval,
             eval_interval=eval_interval,
             reference_stats=reference_stats,
+            latent_mode=latent_mode,
+            vae=vae,
+            clip_encoder=clip_enc,
         )
 
 
@@ -567,9 +638,18 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data_dir", "-data", type=str, default="./data")
     parser.add_argument("--batch_size", "-bs", type=int, default=1)
-    parser.add_argument("--learning_rate", "-lr", type=float, default=1e-4)  # GLIDE paper value
-    parser.add_argument("--adam_weight_decay", "-adam_wd", type=float, default=0.0)  # GLIDE paper value
-    parser.add_argument("--ema_rate", type=float, default=0.9999, help="EMA decay rate (GLIDE uses 0.9999)")
+    parser.add_argument(
+        "--learning_rate", "-lr", type=float, default=1e-4
+    )  # GLIDE paper value
+    parser.add_argument(
+        "--adam_weight_decay", "-adam_wd", type=float, default=0.0
+    )  # GLIDE paper value
+    parser.add_argument(
+        "--ema_rate",
+        type=float,
+        default=0.9999,
+        help="EMA decay rate (GLIDE uses 0.9999)",
+    )
     parser.add_argument("--side_x", "-x", type=int, default=64)
     parser.add_argument("--side_y", "-y", type=int, default=64)
     parser.add_argument(
@@ -603,7 +683,12 @@ def parse_args():
     parser.add_argument(
         "--checkpoints_dir", "-ckpt", type=str, default="./glide_checkpoints/"
     )
-    parser.add_argument("--use_fp16", "-fp16", action="store_true", help="[Deprecated] Use --precision fp16 instead")
+    parser.add_argument(
+        "--use_fp16",
+        "-fp16",
+        action="store_true",
+        help="[Deprecated] Use --precision fp16 instead",
+    )
     parser.add_argument(
         "--precision",
         type=str,
@@ -694,7 +779,13 @@ def parse_args():
         "-wds_name",
         type=str,
         default="laion",
-        help="Name of the webdataset to use (laion or alamy)",
+        help="Name of the webdataset to use (laion, alamy, simple, synthetic, datacomp-synthetic, or datacomp-real)",
+    )
+    parser.add_argument(
+        "--wds_captions_jsonl",
+        type=str,
+        default=None,
+        help="Path to external JSONL captions file (required for datacomp-synthetic dataset)",
     )
     parser.add_argument("--seed", "-seed", type=int, default=0)
     parser.add_argument(
@@ -714,7 +805,7 @@ def parse_args():
         "--eval_sr_base_images",
         type=str,
         default="data/images/base_64x64",
-        help="Directory containing base 64x64 images for SR evaluation during training"
+        help="Directory containing base 64x64 images for SR evaluation during training",
     )
     parser.add_argument(
         "--use_sr_eval",
@@ -869,6 +960,37 @@ def parse_args():
         help="Path to pre-computed reference stats .pt file for FID/KID evaluation",
     )
 
+    # Latent diffusion mode arguments
+    parser.add_argument(
+        "--latent_mode",
+        action="store_true",
+        help="Enable latent diffusion mode (32x32 latent space via frozen VAE, 256x256 pixel output)",
+    )
+    parser.add_argument(
+        "--vae_model",
+        type=str,
+        default="stabilityai/sd-vae-ft-mse",
+        help="HuggingFace model name for the frozen VAE (latent mode only)",
+    )
+    parser.add_argument(
+        "--clip_model_name",
+        type=str,
+        default="ViT-L-14",
+        help="OpenCLIP model name for frozen CLIP encoder (latent mode only)",
+    )
+    parser.add_argument(
+        "--clip_pretrained",
+        type=str,
+        default="laion2b_s32b_b82k",
+        help="OpenCLIP pretrained weights name (latent mode only)",
+    )
+    parser.add_argument(
+        "--init_from_pixel",
+        type=str,
+        default="",
+        help="Path to a pixel-space GLIDE checkpoint for weight transfer to latent model",
+    )
+
     args = parser.parse_args()
 
     return args
@@ -877,14 +999,16 @@ def parse_args():
 if __name__ == "__main__":
     # CUDA/CPU setup
     args = parse_args()
-    
+
     # Check for deprecated test_prompt argument
     if args.test_prompt != "a group of skiers are preparing to ski down a mountain.":
         print("ERROR: --test_prompt is deprecated.")
-        print("Please use --prompt_file instead to specify a file containing prompts (one per line).")
+        print(
+            "Please use --prompt_file instead to specify a file containing prompts (one per line)."
+        )
         print("Example: --prompt_file prompts.txt")
         exit(1)
-    
+
     if len(args.device) > 0:
         device = th.device(args.device)
     else:
@@ -941,7 +1065,7 @@ if __name__ == "__main__":
             skip_validation=args.skip_tar_validation,
             use_cache=not args.no_cache_validation,
             verbose=True,
-            num_workers=args.validation_workers
+            num_workers=args.validation_workers,
         )
 
         print(f"Using {len(data_dir)} valid tar files for training")
@@ -999,4 +1123,10 @@ if __name__ == "__main__":
         random_init=args.random_init,
         eval_interval=args.eval_interval,
         reference_stats=args.reference_stats,
+        captions_jsonl_path=args.wds_captions_jsonl,
+        latent_mode=args.latent_mode,
+        vae_model=args.vae_model,
+        clip_model_name=args.clip_model_name,
+        clip_pretrained=args.clip_pretrained,
+        init_from_pixel=args.init_from_pixel,
     )

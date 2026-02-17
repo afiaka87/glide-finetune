@@ -22,10 +22,17 @@ class LatentVAE:
 
     SCALE_FACTOR = 0.18215
 
-    def __init__(self, model_name: str = "stabilityai/sd-vae-ft-mse", device: str = "cpu", dtype: th.dtype = th.float32):
+    def __init__(
+        self,
+        model_name: str = "stabilityai/sd-vae-ft-mse",
+        device: str = "cpu",
+        dtype: th.dtype = th.float32,
+    ):
         from diffusers import AutoencoderKL
 
-        self.vae = AutoencoderKL.from_pretrained(model_name).to(device=device, dtype=dtype)
+        self.vae = AutoencoderKL.from_pretrained(model_name).to(
+            device=device, dtype=dtype
+        )
         self.vae.eval()
         self.vae.requires_grad_(False)
         self.device = device
@@ -75,10 +82,17 @@ class LatentCLIP:
     Produces [B, 768] pooled CLIP embeddings from a list of text strings.
     """
 
-    def __init__(self, model_name: str = "ViT-L-14", pretrained: str = "laion2b_s32b_b82k", device: str = "cpu"):
+    def __init__(
+        self,
+        model_name: str = "ViT-L-14",
+        pretrained: str = "laion2b_s32b_b82k",
+        device: str = "cpu",
+    ):
         import open_clip
 
-        self.model, _, _ = open_clip.create_model_and_transforms(model_name, pretrained=pretrained)
+        self.model, _, _ = open_clip.create_model_and_transforms(
+            model_name, pretrained=pretrained
+        )
         self.model = self.model.to(device)
         self.model.eval()
         self.model.requires_grad_(False)
@@ -159,4 +173,6 @@ def init_latent_from_pixel(
         else:
             skipped_shape += 1
 
-    print(f"Weight transfer: {transferred} copied, {skipped_new} new (random init), {skipped_shape} shape mismatch")
+    print(
+        f"Weight transfer: {transferred} copied, {skipped_new} new (random init), {skipped_shape} shape mismatch"
+    )
