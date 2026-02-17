@@ -190,6 +190,7 @@ def run_glide_finetune_epoch(
     clip_encoder=None,
     max_grad_norm: float = 1.0,
     loss_spike_threshold: float = 5.0,
+    clip_caption_stats: dict | None = None,
 ):
     if latent_mode:
         train_step = latent_train_step  # type: ignore
@@ -349,6 +350,11 @@ def run_glide_finetune_epoch(
             }
             if not skip_step and max_grad_norm > 0:
                 log["grad_norm"] = grad_norm
+            if clip_caption_stats is not None and clip_caption_stats["total"] > 0:
+                t = clip_caption_stats["total"]
+                log["clip_caption/generated_win_pct"] = 100 * clip_caption_stats["generated_wins"] / t
+                log["clip_caption/original_win_pct"] = 100 * clip_caption_stats["original_wins"] / t
+                log["clip_caption/total_samples"] = t
             wandb_run.log(log)
 
             # Update tqdm bar

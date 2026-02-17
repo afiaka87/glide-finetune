@@ -490,8 +490,9 @@ def run_glide_finetune(
 
     # Data setup
     print("Loading data...")
+    clip_caption_stats = None
     if use_webdataset:
-        dataset = glide_wds_loader(
+        wds_result = glide_wds_loader(
             urls=data_dir,
             caption_key=caption_key,
             image_key=image_key,
@@ -519,6 +520,8 @@ def run_glide_finetune(
             captions_jsonl_path=captions_jsonl_path,
             latent_mode=latent_mode,
         )
+        dataset = wds_result["dataset"]
+        clip_caption_stats = wds_result["clip_caption_stats"]
     else:
         dataset = TextImageDataset(
             folder=data_dir,
@@ -649,6 +652,7 @@ def run_glide_finetune(
             clip_encoder=clip_enc,
             max_grad_norm=max_grad_norm,
             loss_spike_threshold=loss_spike_threshold,
+            clip_caption_stats=clip_caption_stats,
         )
 
 

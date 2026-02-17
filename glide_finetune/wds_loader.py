@@ -431,7 +431,10 @@ def glide_wds_loader(
         print("  Returning dataset pipeline with filters and preprocessing")
         print(f"  Pipeline: WebDataset -> Filter -> Shuffle({buffer_size}) -> Map")
 
-    return transformed_dataset
+    return {
+        "dataset": transformed_dataset,
+        "clip_caption_stats": clip_stats if dataset_name == "datacomp-clip" else None,
+    }
 
 
 def latent_collate_fn(batch):
