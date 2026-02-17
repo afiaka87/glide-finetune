@@ -253,24 +253,21 @@ class TestInitLatentFromPixel:
             pixel_sd["transformer_proj.weight"],
         )
 
-    def test_clip_layers_remain_random(self):
-        """CLIP projection layers should NOT be overwritten (they're new)."""
+    def test_clip_layers_zero_initialized(self):
+        """CLIP projection layers should be zero-initialized after transfer."""
         from glide_finetune.latent_util import init_latent_from_pixel
 
         latent_model, _, _ = _make_latent_model()
-
-        # Snapshot CLIP layer weights before transfer
-        pre_clip_time = latent_model.clip_to_time[0].weight.clone()
-        pre_clip_xf = latent_model.clip_to_xf.weight.clone()
 
         pixel_opts = model_and_diffusion_defaults()
         pixel_opts["use_fp16"] = False
         pixel_model, _ = create_model_and_diffusion(**pixel_opts)
         init_latent_from_pixel(latent_model, pixel_model.state_dict())
 
-        # CLIP layers should be unchanged (pixel model has no clip_to_*)
-        assert th.allclose(latent_model.clip_to_time[0].weight, pre_clip_time)
-        assert th.allclose(latent_model.clip_to_xf.weight, pre_clip_xf)
+        # CLIP layers should be zeroed so they contribute nothing at init
+        for name, param in latent_model.named_parameters():
+            if name.startswith(("clip_to_time.", "clip_to_xf.")):
+                assert th.allclose(param, th.zeros_like(param)), f"{name} not zero"
 
 
 # ===================================================================
