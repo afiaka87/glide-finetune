@@ -106,13 +106,13 @@ def glide_wds_loader(
     similarity_threshold_lower=0.0,
     similarity_threshold_upper=1.0,
     words_to_skip=[],
-    dataset_name="laion",  # can be laion, alamy, simple, synthetic, datacomp-synthetic, or datacomp-real.
+    dataset_name="laion",  # can be laion, alamy, simple, synthetic, datacomp-synthetic, datacomp-real, or datacomp-clip.
     upscale_factor=4,
     buffer_size=1000,  # Shuffle buffer size
     initial_prefetch=10,  # Initial prefetch size
     debug=False,  # Enable debug printing
     random_hflip=False,  # Random horizontal flip augmentation
-    captions_jsonl_path=None,  # Path to external JSONL captions (required for datacomp-synthetic)
+    captions_jsonl_path=None,  # Path to external JSONL captions (required for datacomp-synthetic and datacomp-clip)
     latent_mode=False,  # Latent diffusion mode: resize to 256x256, return caption strings
 ):
     if debug:
@@ -237,6 +237,25 @@ def glide_wds_loader(
             )
         _captions_map = load_captions_jsonl(captions_jsonl_path)
 
+    # datacomp-clip: load JSONL caption index keyed by sample key (needs full entries for CLIP scores)
+    _caption_index: dict[str, dict] | None = None
+    if dataset_name == "datacomp-clip":
+        if captions_jsonl_path is None:
+            raise ValueError("captions_jsonl_path is required for dataset_name='datacomp-clip'")
+        print(f"Loading caption index from {captions_jsonl_path} ...")
+        _caption_index = {}
+        with open(captions_jsonl_path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                obj = json.loads(line)
+                key = obj.get("key")
+                if not key:
+                    continue
+                _caption_index[key] = obj
+        print(f"  Loaded {len(_caption_index):,} entries")
+
     def filter_dataset_datacomp_synthetic(item):
         # Require an image
         if enable_image and _find_image_key(item) is None:
@@ -266,6 +285,20 @@ def glide_wds_loader(
             return False
         return True
 
+    def filter_dataset_datacomp_clip(item):
+        if enable_image and _find_image_key(item) is None:
+            return False
+        # Need __key__ to look up caption from JSONL
+        sample_key = item.get("__key__", "")
+        if not sample_key or (_caption_index is not None and sample_key not in _caption_index):
+            return False
+        # Skip samples missing either CLIP score
+        if _caption_index is not None:
+            entry = _caption_index[sample_key]
+            if "original_caption_clip_score" not in entry or "generated_caption_clip_score" not in entry:
+                return False
+        return True
+
     if debug:
         print(f"DEBUG: Using dataset filter for '{dataset_name}'")
         print(
@@ -284,13 +317,18 @@ def glide_wds_loader(
         filtered_dataset = dataset.select(filter_dataset_datacomp_synthetic)
     elif dataset_name == "datacomp-real":
         filtered_dataset = dataset.select(filter_dataset_datacomp_real)
+    elif dataset_name == "datacomp-clip":
+        filtered_dataset = dataset.select(filter_dataset_datacomp_clip)
     else:
         raise ValueError(
-            f"Unknown dataset: {dataset_name}. Must be one of 'laion', 'alamy', 'simple', 'synthetic', 'datacomp-synthetic', or 'datacomp-real'."
+            f"Unknown dataset: {dataset_name}. Must be one of 'laion', 'alamy', 'simple', 'synthetic', 'datacomp-synthetic', 'datacomp-real', or 'datacomp-clip'."
         )
 
     # Add a counter to track processed items (only if debugging)
     processed_count = [0] if debug else None
+
+    # Caption selection stats for datacomp-clip
+    clip_stats = {"generated_wins": 0, "original_wins": 0, "total": 0}
 
     def _extract_caption(item):
         """Extract caption string from an item based on dataset_name."""
@@ -299,6 +337,27 @@ def glide_wds_loader(
             return json_data.get("short_caption", json_data.get("long_caption", ""))
         elif dataset_name == "datacomp-synthetic" and _captions_map is not None:
             return _captions_map[item["__key__"]]
+        elif dataset_name == "datacomp-clip" and _caption_index is not None:
+            # Pick the caption with the higher CLIP score
+            entry = _caption_index[item["__key__"]]
+            orig_score = entry.get("original_caption_clip_score", 0.0)
+            gen_score = entry.get("generated_caption_clip_score", 0.0)
+            clip_stats["total"] += 1
+            if gen_score >= orig_score:
+                clip_stats["generated_wins"] += 1
+                caption = entry.get("caption", "")
+            else:
+                clip_stats["original_wins"] += 1
+                caption = entry.get("original_caption", "")
+            if clip_stats["total"] % 1000 == 0:
+                t = clip_stats["total"]
+                gw = clip_stats["generated_wins"]
+                ow = clip_stats["original_wins"]
+                print(f"[datacomp-clip] {t} samples: generated won {gw} ({100*gw/t:.1f}%), original won {ow} ({100*ow/t:.1f}%)")
+            elif clip_stats["total"] <= 5:
+                winner = "generated" if gen_score >= orig_score else "original"
+                print(f"[datacomp-clip] {item['__key__']}: using {winner} caption (orig={orig_score:.4f}, gen={gen_score:.4f})")
+            return caption
         else:
             return item[caption_key].decode("utf-8")
 
