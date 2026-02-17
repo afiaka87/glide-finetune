@@ -1,71 +1,32 @@
+# Python
 .venv/
-.cache/
 __pycache__/
-finetune_checkpoints/wandb/
-glide_model_cache/
+*.egg-info/
+.cache/
+
+# IDE
 .vscode/
+
+# Training artifacts
 outputs/
-wandb/
-finetune_checkpoints/
-docker_child/
-eval_captions.txt
-test_pipeline_output_*.png
-test_full_pipeline.py
-
-# Training and model files
 checkpoints/
+finetune_checkpoints/
+glide_checkpoints/
+cache/
+wandb/
+*.pt
+*.log
+current_grid.png
 current_prediction.png
-download_models.py
-eval_captions_persons_aesthetic_256.txt
 
-# Scripts and configs
-run-finetune-laion.sh
-run-finetune-wds.sh
-scripts/run-finetune-wds.sh
+# Runtime
+.gradio/
+glide_model_cache/
+glide-outputs/
+
+# Scripts (personal run configs)
 *.sh
 
-# Logs and temporary files
-test.log
+# Misc
 trash/
-
-
-# various scripts and output directories
-.gradio/
-glide-outputs-smoke-test/
-glide-outputs/
-glide_finetune/list_i_want.txt
-run_gradio.sh
-smoke_test.sh
-smoke_test_captions.txt
-smoke_test_compiled.sh
-smoke_test_dry.sh
-test_clip_rerank.py
-test_prompts.txt
-text2im.ipynb
-two_prompts.txt
-
-eval_glide.sh
-eval_persons.txt
-glide-cli-batch/
-glide-cli-test/
-glide-ft-0x60000.compiled.pt
-glide_finetune.egg-info/
-glide_finetune/cli/
-upsample.compiled.pt
-
-checkpoints_ema_sr/
-
-# Runtime artifacts
-current_grid.png
-cache/
-glide_checkpoints/
-*.log
-*.pt
-pixel_art_prompts.txt
-pixelart-v7-large-no-menus/
-
-# Personal run scripts
-run.sh
-run_datacomp.sh
-run_textenc.sh
-resume.sh
+scripts/
