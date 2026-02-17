@@ -1,0 +1,311 @@
+"""Integration tests for the latent diffusion pipeline.
+
+Tests marked @pytest.mark.slow require downloading external models
+(VAE ~300MB, CLIP ~900MB) and may take several minutes on first run.
+Run with:  uv run pytest tests/test_integration_latent.py -v
+Slow only: uv run pytest tests/test_integration_latent.py -v -m slow
+Skip slow: uv run pytest tests/test_integration_latent.py -v -m "not slow"
+"""
+
+import subprocess
+
+import pytest
+import torch as th
+from glide_text2im.model_creation import (
+    create_model_and_diffusion,
+    model_and_diffusion_defaults,
+    model_and_diffusion_defaults_latent,
+)
+
+
+def _make_latent_model():
+    opts = model_and_diffusion_defaults_latent()
+    opts["use_fp16"] = False
+    model, diffusion = create_model_and_diffusion(**opts)
+    return model, diffusion, opts
+
+
+# ---------------------------------------------------------------------------
+# Mock helpers for tests that don't need real VAE/CLIP downloads
+# ---------------------------------------------------------------------------
+
+
+class _MockVAE:
+    """Returns correctly-shaped random latents without a real model."""
+
+    @th.no_grad()
+    def encode(self, images: th.Tensor) -> th.Tensor:
+        B = images.shape[0]
+        return th.randn(B, 4, 32, 32)
+
+    @th.no_grad()
+    def decode(self, latents: th.Tensor) -> th.Tensor:
+        B = latents.shape[0]
+        return th.randn(B, 3, 256, 256).clamp(-1, 1)
+
+
+class _MockCLIP:
+    """Returns correctly-shaped random embeddings without a real model."""
+
+    @th.no_grad()
+    def encode_text_batch(self, texts: list[str]) -> th.Tensor:
+        return th.randn(len(texts), 768)
+
+
+# ===================================================================
+# VAE roundtrip (requires downloading stabilityai/sd-vae-ft-mse)
+# ===================================================================
+
+
+class TestVAERoundtrip:
+    @pytest.fixture(scope="class")
+    def vae(self):
+        pytest.importorskip("diffusers")
+        from glide_finetune.latent_util import LatentVAE
+
+        return LatentVAE(device="cpu", dtype=th.float32)
+
+    @pytest.mark.slow
+    def test_encode_shape(self, vae):
+        images = th.randn(1, 3, 256, 256).clamp(-1, 1)
+        latents = vae.encode(images)
+        assert latents.shape == (1, 4, 32, 32)
+
+    @pytest.mark.slow
+    def test_decode_shape(self, vae):
+        latents = th.randn(1, 4, 32, 32) * 0.18215
+        decoded = vae.decode(latents)
+        assert decoded.shape == (1, 3, 256, 256)
+
+    @pytest.mark.slow
+    def test_roundtrip_output_range(self, vae):
+        images = th.randn(1, 3, 256, 256).clamp(-1, 1)
+        latents = vae.encode(images)
+        decoded = vae.decode(latents)
+        assert decoded.min() >= -1.0
+        assert decoded.max() <= 1.0
+
+
+# ===================================================================
+# Training smoke test
+# ===================================================================
+
+
+class TestLatentTrainStep:
+    def _make_batch(self, batch_size: int = 2):
+        return (
+            th.randint(0, 100, (batch_size, 128)),  # tokens
+            th.ones(batch_size, 128, dtype=th.bool),  # masks
+            th.randn(batch_size, 3, 256, 256),  # images_256
+            ["a photo of a cat"] * batch_size,  # captions
+        )
+
+    def test_returns_positive_scalar_loss(self):
+        from glide_finetune.glide_finetune import latent_train_step
+
+        model, diffusion, _opts = _make_latent_model()
+        loss = latent_train_step(
+            glide_model=model,
+            glide_diffusion=diffusion,
+            batch=self._make_batch(),
+            device="cpu",
+            vae=_MockVAE(),
+            clip_encoder=_MockCLIP(),
+        )
+        assert loss.dim() == 0, "loss should be a scalar"
+        assert loss.item() > 0, "MSE loss should be positive"
+        assert not th.isnan(loss)
+        assert not th.isinf(loss)
+
+    def test_loss_is_differentiable(self):
+        from glide_finetune.glide_finetune import latent_train_step
+
+        model, diffusion, _opts = _make_latent_model()
+        loss = latent_train_step(
+            glide_model=model,
+            glide_diffusion=diffusion,
+            batch=self._make_batch(batch_size=1),
+            device="cpu",
+            vae=_MockVAE(),
+            clip_encoder=_MockCLIP(),
+        )
+        assert loss.requires_grad
+        loss.backward()
+
+        grads = [
+            p.grad for p in model.parameters() if p.requires_grad and p.grad is not None
+        ]
+        assert len(grads) > 0, "backward pass should produce gradients"
+
+    def test_optimizer_step_reduces_loss(self):
+        """Two optimizer steps on identical data should reduce loss."""
+        from glide_finetune.glide_finetune import latent_train_step
+
+        model, diffusion, _opts = _make_latent_model()
+        optimizer = th.optim.Adam(model.parameters(), lr=1e-3)
+
+        th.manual_seed(42)
+        batch = self._make_batch(batch_size=2)
+        mock_vae = _MockVAE()
+        mock_clip = _MockCLIP()
+
+        losses = []
+        for _ in range(3):
+            optimizer.zero_grad()
+            loss = latent_train_step(
+                glide_model=model,
+                glide_diffusion=diffusion,
+                batch=batch,
+                device="cpu",
+                vae=mock_vae,
+                clip_encoder=mock_clip,
+            )
+            loss.backward()
+            optimizer.step()
+            losses.append(loss.item())
+
+        # Loss should generally decrease over 3 steps on same data
+        assert losses[-1] < losses[0], f"loss did not decrease: {losses}"
+
+
+# ===================================================================
+# Weight transfer from pixel checkpoint
+# ===================================================================
+
+
+class TestInitLatentFromPixel:
+    def test_input_conv_transfer(self):
+        """First 3 channels copied from pixel, 4th zero-initialized."""
+        from glide_finetune.latent_util import init_latent_from_pixel
+
+        pixel_opts = model_and_diffusion_defaults()
+        pixel_opts["use_fp16"] = False
+        pixel_model, _ = create_model_and_diffusion(**pixel_opts)
+        pixel_sd = pixel_model.state_dict()
+
+        latent_model, _, _ = _make_latent_model()
+        init_latent_from_pixel(latent_model, pixel_sd)
+        latent_sd = latent_model.state_dict()
+
+        w = latent_sd["input_blocks.0.0.weight"]
+        assert w.shape == (192, 4, 3, 3)
+        assert th.allclose(w[:, :3], pixel_sd["input_blocks.0.0.weight"])
+        assert th.allclose(w[:, 3], th.zeros_like(w[:, 3]))
+
+    def test_output_conv_transfer(self):
+        """First 6 output channels copied, last 2 zero-initialized."""
+        from glide_finetune.latent_util import init_latent_from_pixel
+
+        pixel_opts = model_and_diffusion_defaults()
+        pixel_opts["use_fp16"] = False
+        pixel_model, _ = create_model_and_diffusion(**pixel_opts)
+        pixel_sd = pixel_model.state_dict()
+
+        latent_model, _, _ = _make_latent_model()
+        init_latent_from_pixel(latent_model, pixel_sd)
+        latent_sd = latent_model.state_dict()
+
+        # Weight
+        w = latent_sd["out.2.weight"]
+        assert w.shape[0] == 8
+        assert th.allclose(w[:6], pixel_sd["out.2.weight"])
+        assert th.allclose(w[6:], th.zeros_like(w[6:]))
+
+        # Bias
+        b = latent_sd["out.2.bias"]
+        assert b.shape[0] == 8
+        assert th.allclose(b[:6], pixel_sd["out.2.bias"])
+        assert th.allclose(b[6:], th.zeros_like(b[6:]))
+
+    def test_text_transformer_transferred(self):
+        """Text transformer weights should be copied exactly."""
+        from glide_finetune.latent_util import init_latent_from_pixel
+
+        pixel_opts = model_and_diffusion_defaults()
+        pixel_opts["use_fp16"] = False
+        pixel_model, _ = create_model_and_diffusion(**pixel_opts)
+        pixel_sd = pixel_model.state_dict()
+
+        latent_model, _, _ = _make_latent_model()
+        init_latent_from_pixel(latent_model, pixel_sd)
+        latent_sd = latent_model.state_dict()
+
+        # token_embedding and transformer weights should match exactly
+        assert th.allclose(
+            latent_sd["token_embedding.weight"],
+            pixel_sd["token_embedding.weight"],
+        )
+        assert th.allclose(
+            latent_sd["transformer_proj.weight"],
+            pixel_sd["transformer_proj.weight"],
+        )
+
+    def test_clip_layers_remain_random(self):
+        """CLIP projection layers should NOT be overwritten (they're new)."""
+        from glide_finetune.latent_util import init_latent_from_pixel
+
+        latent_model, _, _ = _make_latent_model()
+
+        # Snapshot CLIP layer weights before transfer
+        pre_clip_time = latent_model.clip_to_time[0].weight.clone()
+        pre_clip_xf = latent_model.clip_to_xf.weight.clone()
+
+        pixel_opts = model_and_diffusion_defaults()
+        pixel_opts["use_fp16"] = False
+        pixel_model, _ = create_model_and_diffusion(**pixel_opts)
+        init_latent_from_pixel(latent_model, pixel_model.state_dict())
+
+        # CLIP layers should be unchanged (pixel model has no clip_to_*)
+        assert th.allclose(latent_model.clip_to_time[0].weight, pre_clip_time)
+        assert th.allclose(latent_model.clip_to_xf.weight, pre_clip_xf)
+
+
+# ===================================================================
+# Collate function
+# ===================================================================
+
+
+class TestLatentCollateFn:
+    def test_stacks_tensors_collects_strings(self):
+        from glide_finetune.wds_loader import latent_collate_fn
+
+        batch = [
+            (th.ones(128), th.ones(128, dtype=th.bool), th.randn(3, 256, 256), "cat"),
+            (th.ones(128), th.ones(128, dtype=th.bool), th.randn(3, 256, 256), "dog"),
+        ]
+        tokens, masks, images, captions = latent_collate_fn(batch)
+
+        assert tokens.shape == (2, 128)
+        assert masks.shape == (2, 128)
+        assert images.shape == (2, 3, 256, 256)
+        assert captions == ["cat", "dog"]
+
+
+# ===================================================================
+# Lint / format checks on latent code
+# ===================================================================
+
+
+class TestCodeQuality:
+    _LATENT_FILES = [
+        "glide_finetune/latent_util.py",
+        "glide_finetune/wds_loader.py",
+        "glide_finetune/loader.py",
+        "tests/",
+    ]
+
+    def test_ruff_check_latent_util(self):
+        result = subprocess.run(
+            ["uv", "run", "ruff", "check", "glide_finetune/latent_util.py"],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, f"ruff check failed:\n{result.stdout}"
+
+    def test_ruff_format(self):
+        result = subprocess.run(
+            ["uv", "run", "ruff", "format", "--check", *self._LATENT_FILES],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, f"Formatting issues:\n{result.stderr}"
