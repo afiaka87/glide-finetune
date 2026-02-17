@@ -1,10 +1,8 @@
 import os
-import random
 import time
 import glob
 from typing import Tuple
 
-import numpy as np
 import torch as th
 from glide_text2im.respace import SpacedDiffusion
 from glide_text2im.text2im_model import Text2ImUNet
@@ -31,7 +29,10 @@ def base_train_step(
         Returns:
             The loss.
     """
-    tokens, masks = batch[0].to(device, non_blocking=True), batch[1].to(device, non_blocking=True)
+    tokens, masks = (
+        batch[0].to(device, non_blocking=True),
+        batch[1].to(device, non_blocking=True),
+    )
     reals = batch[2].to(device, non_blocking=True, memory_format=th.channels_last)
     timesteps = th.randint(
         0, len(glide_diffusion.betas) - 1, (reals.shape[0],), device=device
@@ -70,9 +71,16 @@ def upsample_train_step(
         Returns:
             The loss.
     """
-    tokens, masks = batch[0].to(device, non_blocking=True), batch[1].to(device, non_blocking=True)
-    low_res_image = batch[2].to(device, non_blocking=True, memory_format=th.channels_last)
-    high_res_image = batch[3].to(device, non_blocking=True, memory_format=th.channels_last)
+    tokens, masks = (
+        batch[0].to(device, non_blocking=True),
+        batch[1].to(device, non_blocking=True),
+    )
+    low_res_image = batch[2].to(
+        device, non_blocking=True, memory_format=th.channels_last
+    )
+    high_res_image = batch[3].to(
+        device, non_blocking=True, memory_format=th.channels_last
+    )
     timesteps = th.randint(
         0, len(glide_diffusion.betas) - 1, (low_res_image.shape[0],), device=device
     )
@@ -119,8 +127,11 @@ def latent_train_step(
     images_256 = batch[2].to(device, non_blocking=True)
     captions = batch[3]  # list of strings
 
-    latents = vae.encode(images_256)  # [B, 4, 32, 32], no_grad inside
-    clip_emb = clip_encoder.encode_text_batch(captions)  # [B, 768], no_grad inside
+    # VAE may return bf16 latents; cast to float32 so model forward does
+    # bf16 internally but returns float32 output (h.type(x.dtype)), matching
+    # how pixel-space training works and keeping loss computation in float32.
+    latents = vae.encode(images_256).float()  # [B, 4, 32, 32]
+    clip_emb = clip_encoder.encode_text_batch(captions)  # [B, 768], already float32
     clip_emb = clip_emb.to(device)
 
     timesteps = th.randint(
@@ -207,7 +218,9 @@ def run_glide_finetune_epoch(
         compile_t0 = time.time()
         glide_model = th.compile(glide_model)
         glide_model._compiled = True  # type: ignore
-        print(f"torch.compile: wrapped in {time.time() - compile_t0:.1f}s (compilation deferred to first forward/backward)")
+        print(
+            f"torch.compile: wrapped in {time.time() - compile_t0:.1f}s (compilation deferred to first forward/backward)"
+        )
 
     # Move EMA model to the same device if it exists
     if ema_model is not None:
@@ -218,7 +231,6 @@ def run_glide_finetune_epoch(
 
     # Initialize timing for samples/sec calculation
     start_time = time.time()
-    last_log_time = start_time
     samples_processed = 0
     accumulated_loss_gpu = th.tensor(0.0, device=device)  # Accumulate on GPU to avoid sync
     current_loss = 0.0  # For logging (only updated at accumulation boundaries)
@@ -228,7 +240,9 @@ def run_glide_finetune_epoch(
 
     print("Waiting for first batch from dataloader (workers are loading tar files)...")
     dl_t0 = time.time()
-    pbar = tqdm(enumerate(dataloader), desc=f"Epoch {epoch}", unit="step", dynamic_ncols=True)
+    pbar = tqdm(
+        enumerate(dataloader), desc=f"Epoch {epoch}", unit="step", dynamic_ncols=True
+    )
     for train_idx, batch in pbar:
         if train_idx == 0:
             print(f"First batch received in {time.time() - dl_t0:.1f}s")
@@ -262,7 +276,7 @@ def run_glide_finetune_epoch(
             print(f"torch.compile: backward compiled in {time.time() - bwd_t0:.1f}s")
             print(f"torch.compile: warmup complete, total {time.time() - fwd_t0:.1f}s")
             needs_warmup = False
-        
+
         # Accumulate loss on GPU (no sync)
         accumulated_loss_gpu += loss.detach()
 
@@ -336,8 +350,12 @@ def run_glide_finetune_epoch(
 
             # For upsampler training, load base images from directory
             if train_upsample and os.path.exists(eval_sr_base_images):
-                base_image_files = sorted(glob.glob(os.path.join(eval_sr_base_images, "*.png")))
-                base_caption_files = sorted(glob.glob(os.path.join(eval_sr_base_images, "*.txt")))
+                base_image_files = sorted(
+                    glob.glob(os.path.join(eval_sr_base_images, "*.png"))
+                )
+                base_caption_files = sorted(
+                    glob.glob(os.path.join(eval_sr_base_images, "*.txt"))
+                )
 
                 # Limit to available images or sample_prompts, whichever is smaller
                 num_to_eval = min(len(sample_prompts), len(base_image_files))
@@ -348,7 +366,7 @@ def run_glide_finetune_epoch(
                 if len(base_caption_files) >= num_to_eval:
                     loaded_captions = []
                     for caption_file in base_caption_files[:num_to_eval]:
-                        with open(caption_file, 'r') as f:
+                        with open(caption_file, "r") as f:
                             loaded_captions.append(f.read().strip())
                     sample_prompts = loaded_captions
 
@@ -372,15 +390,32 @@ def run_glide_finetune_epoch(
 
                         # Load and log the input base image
                         from PIL import Image
-                        input_base_img = Image.open(current_image_to_upsample).convert("RGB")
-                        wandb_images_input_64.append(wandb.Image(input_base_img, caption=f"Input: {sample_prompt[:50]}..."))
+
+                        input_base_img = Image.open(current_image_to_upsample).convert(
+                            "RGB"
+                        )
+                        wandb_images_input_64.append(
+                            wandb.Image(
+                                input_base_img,
+                                caption=f"Input: {sample_prompt[:50]}...",
+                            )
+                        )
 
                         # Load reference SR image if it exists
-                        base_name = os.path.splitext(os.path.basename(current_image_to_upsample))[0]
-                        ref_sr_path = os.path.join("data/images/sr_256x256", f"{base_name}.png")
+                        base_name = os.path.splitext(
+                            os.path.basename(current_image_to_upsample)
+                        )[0]
+                        ref_sr_path = os.path.join(
+                            "data/images/sr_256x256", f"{base_name}.png"
+                        )
                         if os.path.exists(ref_sr_path):
                             ref_sr_img = Image.open(ref_sr_path).convert("RGB")
-                            wandb_images_reference_256.append(wandb.Image(ref_sr_img, caption=f"Reference: {sample_prompt[:50]}..."))
+                            wandb_images_reference_256.append(
+                                wandb.Image(
+                                    ref_sr_img,
+                                    caption=f"Reference: {sample_prompt[:50]}...",
+                                )
+                            )
 
                 # Generate samples
                 if latent_mode:
@@ -402,7 +437,12 @@ def run_glide_finetune_epoch(
                     # samples are decoded pixel images [B, 3, 256, 256]
                     pil_image_256 = train_util.pred_to_pil(samples)
                     all_images_256.append(pil_image_256)
-                    wandb_images_256.append(wandb.Image(pil_image_256, caption=f"{sample_prompt[:50]}... (latent 256x256)"))
+                    wandb_images_256.append(
+                        wandb.Image(
+                            pil_image_256,
+                            caption=f"{sample_prompt[:50]}... (latent 256x256)",
+                        )
+                    )
                 else:
                     samples_64 = glide_util.sample(
                         glide_model=glide_model,
@@ -416,22 +456,33 @@ def run_glide_finetune_epoch(
                         prediction_respacing=str(eval_base_sampler_steps),
                         sampler=base_sampler,  # type: ignore
                         upsample_enabled=train_upsample,
-                        image_to_upsample=current_image_to_upsample if train_upsample else None,
+                        image_to_upsample=current_image_to_upsample
+                        if train_upsample
+                        else None,
                     )
 
                     # For upsampler training, samples_64 is actually 256x256 output
                     if train_upsample:
                         pil_image_256 = train_util.pred_to_pil(samples_64)
                         all_images_256.append(pil_image_256)
-                        wandb_images_256.append(wandb.Image(pil_image_256, caption=f"Generated: {sample_prompt[:50]}..."))
+                        wandb_images_256.append(
+                            wandb.Image(
+                                pil_image_256,
+                                caption=f"Generated: {sample_prompt[:50]}...",
+                            )
+                        )
                     else:
                         pil_image_64 = train_util.pred_to_pil(samples_64)
                         all_images_64.append(pil_image_64)
-                        wandb_images_64.append(wandb.Image(pil_image_64, caption=f"{sample_prompt} (64x64)"))
+                        wandb_images_64.append(
+                            wandb.Image(
+                                pil_image_64, caption=f"{sample_prompt} (64x64)"
+                            )
+                        )
 
                 # Generate 256x256 with SR if requested and we're training base model
                 if use_sr_eval and not train_upsample and upsampler_model is not None:
-                    print(f"    Generating 256x256 with super-resolution...")
+                    print("    Generating 256x256 with super-resolution...")
 
                     sr_sampler = (
                         "plms" if eval_sr_sampler == "standard" else eval_sr_sampler
@@ -457,7 +508,9 @@ def run_glide_finetune_epoch(
                     # Convert 256x256 to PIL and store
                     pil_image_256 = train_util.pred_to_pil(samples_256)
                     all_images_256.append(pil_image_256)
-                    wandb_images_256.append(wandb.Image(pil_image_256, caption=f"{sample_prompt} (256x256)"))
+                    wandb_images_256.append(
+                        wandb.Image(pil_image_256, caption=f"{sample_prompt} (256x256)")
+                    )
 
             # Create and save grid images
             wandb_log_dict = {"iter": train_idx}
@@ -474,10 +527,20 @@ def run_glide_finetune_epoch(
 
                 # Create comparison table for easy viewing - using WandB Table for better display
                 if len(wandb_images_input_64) > 0 and len(wandb_images_256) > 0:
-                    print(f"Creating comparison table with {len(wandb_images_input_64)} input images and {len(wandb_images_256)} generated images")
+                    print(
+                        f"Creating comparison table with {len(wandb_images_input_64)} input images and {len(wandb_images_256)} generated images"
+                    )
 
                     # Create a table to show all comparisons
-                    comparison_table = wandb.Table(columns=["Sample #", "Prompt", "Input (64px)", "Generated (256px)", "Reference (256px)"])
+                    comparison_table = wandb.Table(
+                        columns=[
+                            "Sample #",
+                            "Prompt",
+                            "Input (64px)",
+                            "Generated (256px)",
+                            "Reference (256px)",
+                        ]
+                    )
 
                     # Add all samples to the table
                     num_samples = min(len(wandb_images_input_64), len(wandb_images_256))
@@ -485,7 +548,9 @@ def run_glide_finetune_epoch(
                         # Get prompt text
                         prompt_text = ""
                         if i < len(sample_prompts):
-                            prompt_text = sample_prompts[i][:100] if sample_prompts[i] else ""
+                            prompt_text = (
+                                sample_prompts[i][:100] if sample_prompts[i] else ""
+                            )
 
                         # Get reference image if available
                         ref_image = None
@@ -497,7 +562,7 @@ def run_glide_finetune_epoch(
                             prompt_text,  # Truncated prompt
                             wandb_images_input_64[i],  # Input image
                             wandb_images_256[i],  # Generated image
-                            ref_image  # Reference image (can be None)
+                            ref_image,  # Reference image (can be None)
                         ]
                         comparison_table.add_data(*row_data)
 
@@ -513,14 +578,16 @@ def run_glide_finetune_epoch(
 
                             # Create side-by-side comparisons
                             comparison_rows = []
-                            for i in range(min(len(wandb_images_input_64), len(wandb_images_256))):
+                            for i in range(
+                                min(len(wandb_images_input_64), len(wandb_images_256))
+                            ):
                                 row_images = []
 
                                 # Get input image (resize to 256x256 for display)
                                 # wandb.Image objects store the PIL image in the _image attribute
                                 try:
                                     # Try to get the underlying PIL image
-                                    if hasattr(wandb_images_input_64[i], '_image'):
+                                    if hasattr(wandb_images_input_64[i], "_image"):
                                         input_img = wandb_images_input_64[i]._image
                                     else:
                                         # If it's already a PIL image or path, handle it
@@ -533,14 +600,18 @@ def run_glide_finetune_epoch(
                                         input_img = Image.fromarray(input_img)
 
                                     if isinstance(input_img, Image.Image):
-                                        input_resized = input_img.resize((256, 256), Image.LANCZOS)
+                                        input_resized = input_img.resize(
+                                            (256, 256), Image.LANCZOS
+                                        )
                                         row_images.append(input_resized)
                                 except Exception as e:
-                                    print(f"Warning: Could not process input image {i}: {e}")
+                                    print(
+                                        f"Warning: Could not process input image {i}: {e}"
+                                    )
 
                                 # Get generated image
                                 try:
-                                    if hasattr(wandb_images_256[i], '_image'):
+                                    if hasattr(wandb_images_256[i], "_image"):
                                         gen_img = wandb_images_256[i]._image
                                     else:
                                         gen_img = wandb_images_256[i]
@@ -553,13 +624,19 @@ def run_glide_finetune_epoch(
                                     if isinstance(gen_img, Image.Image):
                                         row_images.append(gen_img)
                                 except Exception as e:
-                                    print(f"Warning: Could not process generated image {i}: {e}")
+                                    print(
+                                        f"Warning: Could not process generated image {i}: {e}"
+                                    )
 
                                 # Get reference image if available
                                 if i < len(wandb_images_reference_256):
                                     try:
-                                        if hasattr(wandb_images_reference_256[i], '_image'):
-                                            ref_img = wandb_images_reference_256[i]._image
+                                        if hasattr(
+                                            wandb_images_reference_256[i], "_image"
+                                        ):
+                                            ref_img = wandb_images_reference_256[
+                                                i
+                                            ]._image
                                         else:
                                             ref_img = wandb_images_reference_256[i]
 
@@ -571,7 +648,9 @@ def run_glide_finetune_epoch(
                                         if isinstance(ref_img, Image.Image):
                                             row_images.append(ref_img)
                                     except Exception as e:
-                                        print(f"Warning: Could not process reference image {i}: {e}")
+                                        print(
+                                            f"Warning: Could not process reference image {i}: {e}"
+                                        )
 
                                 # Concatenate images horizontally if we have them
                                 if len(row_images) >= 2:
@@ -582,13 +661,19 @@ def run_glide_finetune_epoch(
                                         if img.height != height:
                                             aspect = img.width / img.height
                                             new_width = int(height * aspect)
-                                            img = img.resize((new_width, height), Image.LANCZOS)
+                                            img = img.resize(
+                                                (new_width, height), Image.LANCZOS
+                                            )
                                         resized_row.append(img)
 
                                     # Concatenate horizontally with 5px spacing
                                     spacing = 5
-                                    total_width = sum(img.width for img in resized_row) + spacing * (len(resized_row) - 1)
-                                    row_img = Image.new('RGB', (total_width, height), (128, 128, 128))
+                                    total_width = sum(
+                                        img.width for img in resized_row
+                                    ) + spacing * (len(resized_row) - 1)
+                                    row_img = Image.new(
+                                        "RGB", (total_width, height), (128, 128, 128)
+                                    )
                                     x_offset = 0
                                     for img in resized_row:
                                         row_img.paste(img, (x_offset, 0))
@@ -599,10 +684,14 @@ def run_glide_finetune_epoch(
                             # Stack all rows vertically
                             if comparison_rows:
                                 spacing = 5
-                                total_height = sum(img.height for img in comparison_rows) + spacing * (len(comparison_rows) - 1)
+                                total_height = sum(
+                                    img.height for img in comparison_rows
+                                ) + spacing * (len(comparison_rows) - 1)
                                 max_width = max(img.width for img in comparison_rows)
 
-                                full_comparison = Image.new('RGB', (max_width, total_height), (128, 128, 128))
+                                full_comparison = Image.new(
+                                    "RGB", (max_width, total_height), (128, 128, 128)
+                                )
                                 y_offset = 0
                                 for row_img in comparison_rows:
                                     # Center each row horizontally
@@ -611,13 +700,17 @@ def run_glide_finetune_epoch(
                                     y_offset += row_img.height + spacing
 
                                 # Save and log the comparison grid
-                                comparison_grid_path = os.path.join(outputs_dir, f"{train_idx}_comparison_grid.png")
+                                comparison_grid_path = os.path.join(
+                                    outputs_dir, f"{train_idx}_comparison_grid.png"
+                                )
                                 full_comparison.save(comparison_grid_path)
                                 wandb_log_dict["sr_comparison_grid"] = wandb.Image(
                                     full_comparison,
-                                    caption=f"Comparison grid: Input (64px upscaled) | Generated (256px) | Reference (256px) - {len(comparison_rows)} samples"
+                                    caption=f"Comparison grid: Input (64px upscaled) | Generated (256px) | Reference (256px) - {len(comparison_rows)} samples",
                                 )
-                                print(f"Created comparison grid with {len(comparison_rows)} samples")
+                                print(
+                                    f"Created comparison grid with {len(comparison_rows)} samples"
+                                )
                         except Exception as e:
                             print(f"Warning: Could not create comparison grid: {e}")
 
@@ -626,9 +719,9 @@ def run_glide_finetune_epoch(
                 # Use auto mode for optimal grid layout
                 grid_image_64 = train_util.make_grid(
                     all_images_64,
-                    mode='auto',
+                    mode="auto",
                     pad_to_power_of_2=False,
-                    background_color=(0, 0, 0)
+                    background_color=(0, 0, 0),
                 )
 
                 # Save 64x64 grid
@@ -638,15 +731,20 @@ def run_glide_finetune_epoch(
                 grid_image_64.save(grid_save_path_64)
                 # Also save as current_grid.png for easy monitoring
                 grid_image_64.save("current_grid.png")
-                print(f"Saved 64x64 grid with {len(all_images_64)} images to {grid_save_path_64}")
+                print(
+                    f"Saved 64x64 grid with {len(all_images_64)} images to {grid_save_path_64}"
+                )
 
                 # Add to wandb log dict
-                wandb_log_dict.update({
-                    "sample_grid_64px": wandb.Image(
-                        grid_save_path_64, caption=f"Grid of {len(all_images_64)} samples (64x64)"
-                    ),
-                    "sample_gallery_64px": wandb_images_64,
-                })
+                wandb_log_dict.update(
+                    {
+                        "sample_grid_64px": wandb.Image(
+                            grid_save_path_64,
+                            caption=f"Grid of {len(all_images_64)} samples (64x64)",
+                        ),
+                        "sample_gallery_64px": wandb_images_64,
+                    }
+                )
             elif not train_upsample and len(all_images_64) == 1:
                 # Single 64x64 image case
                 sample_save_path_64 = os.path.join(outputs_dir, f"{train_idx}_64px.png")
@@ -655,9 +753,11 @@ def run_glide_finetune_epoch(
                 all_images_64[0].save("current_grid.png")
                 print(f"Saved 64x64 sample {sample_save_path_64}")
 
-                wandb_log_dict.update({
-                    "samples_64px": wandb_images_64[0],
-                })
+                wandb_log_dict.update(
+                    {
+                        "samples_64px": wandb_images_64[0],
+                    }
+                )
 
             # Create and save grid images for 256x256 if SR evaluation is enabled
             if all_images_256:
@@ -665,9 +765,9 @@ def run_glide_finetune_epoch(
                     # Use auto mode for optimal grid layout
                     grid_image_256 = train_util.make_grid(
                         all_images_256,
-                        mode='auto',
+                        mode="auto",
                         pad_to_power_of_2=False,
-                        background_color=(0, 0, 0)
+                        background_color=(0, 0, 0),
                     )
 
                     # Save 256x256 grid
@@ -677,26 +777,35 @@ def run_glide_finetune_epoch(
                     grid_image_256.save(grid_save_path_256)
                     # Save as current_grid.png for easy monitoring (prefer 256px version)
                     grid_image_256.save("current_grid.png")
-                    print(f"Saved 256x256 grid with {len(all_images_256)} images to {grid_save_path_256}")
+                    print(
+                        f"Saved 256x256 grid with {len(all_images_256)} images to {grid_save_path_256}"
+                    )
 
                     # Add to wandb log dict
-                    wandb_log_dict.update({
-                        "sample_grid_256px": wandb.Image(
-                            grid_save_path_256, caption=f"Grid of {len(all_images_256)} samples (256x256)"
-                        ),
-                        "sample_gallery_256px": wandb_images_256,
-                    })
+                    wandb_log_dict.update(
+                        {
+                            "sample_grid_256px": wandb.Image(
+                                grid_save_path_256,
+                                caption=f"Grid of {len(all_images_256)} samples (256x256)",
+                            ),
+                            "sample_gallery_256px": wandb_images_256,
+                        }
+                    )
                 else:
                     # Single 256x256 image case
-                    sample_save_path_256 = os.path.join(outputs_dir, f"{train_idx}_256px.png")
+                    sample_save_path_256 = os.path.join(
+                        outputs_dir, f"{train_idx}_256px.png"
+                    )
                     all_images_256[0].save(sample_save_path_256)
                     # Save as current_grid.png for easy monitoring (prefer 256px version)
                     all_images_256[0].save("current_grid.png")
                     print(f"Saved 256x256 sample {sample_save_path_256}")
 
-                    wandb_log_dict.update({
-                        "samples_256px": wandb_images_256[0],
-                    })
+                    wandb_log_dict.update(
+                        {
+                            "samples_256px": wandb_images_256[0],
+                        }
+                    )
 
             # Compute CLIP scores on generated samples
             clip_images = all_images_64 if all_images_64 else all_images_256
@@ -705,8 +814,8 @@ def run_glide_finetune_epoch(
                     from glide_finetune.metrics import compute_clip_scores
 
                     clip_results = compute_clip_scores(
-                        clip_images[:len(sample_prompts)],
-                        sample_prompts[:len(clip_images)],
+                        clip_images[: len(sample_prompts)],
+                        sample_prompts[: len(clip_images)],
                         device=device,
                     )
                     wandb_log_dict["clip_score_mean"] = clip_results["clip_score_mean"]
@@ -757,12 +866,14 @@ def run_glide_finetune_epoch(
                     side_x=side_x,
                     side_y=side_y,
                 )
-                wandb_run.log({
-                    "fid": fid_kid_results["fid"],
-                    "kid_mean": fid_kid_results["kid_mean"],
-                    "kid_std": fid_kid_results["kid_std"],
-                    "iter": train_idx,
-                })
+                wandb_run.log(
+                    {
+                        "fid": fid_kid_results["fid"],
+                        "kid_mean": fid_kid_results["kid_mean"],
+                        "kid_std": fid_kid_results["kid_std"],
+                        "iter": train_idx,
+                    }
+                )
                 print(
                     f"FID: {fid_kid_results['fid']:.2f}, "
                     f"KID: {fid_kid_results['kid_mean']:.4f} "
@@ -771,6 +882,7 @@ def run_glide_finetune_epoch(
             except Exception as e:
                 print(f"Warning: FID/KID computation failed: {e}")
                 import traceback
+
                 traceback.print_exc()
             finally:
                 # Swap training weights back in
@@ -829,7 +941,9 @@ def run_glide_finetune_epoch(
 
                 # Save EMA model if available
                 if ema_model is not None:
-                    train_util.save_ema_model(ema_model, checkpoints_dir, train_idx, epoch, ema_model.decay)
+                    train_util.save_ema_model(
+                        ema_model, checkpoints_dir, train_idx, epoch, ema_model.decay
+                    )
                     print(f"Saved EMA checkpoint with decay {ema_model.decay}")
 
     pbar.close()
@@ -860,5 +974,7 @@ def run_glide_finetune_epoch(
         train_util.save_model(glide_model, checkpoints_dir, train_idx, epoch)
         # Save final EMA model if available
         if ema_model is not None:
-            train_util.save_ema_model(ema_model, checkpoints_dir, train_idx, epoch, ema_model.decay)
+            train_util.save_ema_model(
+                ema_model, checkpoints_dir, train_idx, epoch, ema_model.decay
+            )
             print(f"Saved final EMA checkpoint with decay {ema_model.decay}")
