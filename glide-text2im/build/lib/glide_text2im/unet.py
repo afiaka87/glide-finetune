@@ -1,9 +1,9 @@
-import math
 from abc import abstractmethod
 
 import torch as th
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint as gradient_checkpoint
 
 from .fp16_util import convert_module_to_f16, convert_module_to_f32
 from .nn import avg_pool_nd, conv_nd, linear, normalization, timestep_embedding, zero_module
@@ -181,6 +181,11 @@ class ResBlock(TimestepBlock):
         :param emb: an [N x emb_channels] Tensor of timestep embeddings.
         :return: an [N x C x ...] Tensor of outputs.
         """
+        if self.use_checkpoint:
+            return gradient_checkpoint(self._forward, x, emb, use_reentrant=False)
+        return self._forward(x, emb)
+
+    def _forward(self, x, emb):
         if self.updown:
             in_rest, in_conv = self.in_layers[:-1], self.in_layers[-1]
             h = in_rest(x)
@@ -238,6 +243,11 @@ class AttentionBlock(nn.Module):
         self.proj_out = zero_module(conv_nd(1, channels, channels, 1))
 
     def forward(self, x, encoder_out=None):
+        if self.use_checkpoint:
+            return gradient_checkpoint(self._forward, x, encoder_out, use_reentrant=False)
+        return self._forward(x, encoder_out)
+
+    def _forward(self, x, encoder_out=None):
         b, c, *spatial = x.shape
         qkv = self.qkv(self.norm(x).view(b, c, -1))
         if encoder_out is not None:
@@ -274,12 +284,14 @@ class QKVAttention(nn.Module):
             ek, ev = encoder_kv.reshape(bs * self.n_heads, ch * 2, -1).split(ch, dim=1)
             k = th.cat([ek, k], dim=-1)
             v = th.cat([ev, v], dim=-1)
-        scale = 1 / math.sqrt(math.sqrt(ch))
-        weight = th.einsum(
-            "bct,bcs->bts", q * scale, k * scale
-        )  # More stable with f16 than dividing afterwards
-        weight = th.softmax(weight.float(), dim=-1).type(weight.dtype)
-        a = th.einsum("bts,bcs->bct", weight, v)
+        # Use fused SDPA kernel. The original double-sqrt scaling
+        # (1/sqrt(sqrt(ch)) applied to both Q and K) produces net 1/sqrt(ch),
+        # which is SDPA's default scale -- no custom scale needed.
+        q = q.transpose(1, 2)  # [B*H, C, T] -> [B*H, T, C]
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
+        a = F.scaled_dot_product_attention(q, k, v)
+        a = a.transpose(1, 2)  # back to [B*H, C, T]
         return a.reshape(bs, -1, length)
 
 

@@ -3,10 +3,9 @@ Transformer implementation adapted from CLIP ViT:
 https://github.com/openai/CLIP/blob/4c0275784d6d9da97ca1f47eaaee31de1867da91/clip/model.py
 """
 
-import math
-
 import torch as th
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 def convert_module_to_f16(l):
@@ -76,15 +75,15 @@ class QKVMultiheadAttention(nn.Module):
     def forward(self, qkv):
         bs, n_ctx, width = qkv.shape
         attn_ch = width // self.n_heads // 3
-        scale = 1 / math.sqrt(math.sqrt(attn_ch))
         qkv = qkv.view(bs, n_ctx, self.n_heads, -1)
         q, k, v = th.split(qkv, attn_ch, dim=-1)
-        weight = th.einsum(
-            "bthc,bshc->bhts", q * scale, k * scale
-        )  # More stable with f16 than dividing afterwards
-        wdtype = weight.dtype
-        weight = th.softmax(weight.float(), dim=-1).type(wdtype)
-        return th.einsum("bhts,bshc->bthc", weight, v).reshape(bs, n_ctx, -1)
+        # Permute from [B, T, H, C] to [B, H, T, C] for SDPA
+        q = q.permute(0, 2, 1, 3)
+        k = k.permute(0, 2, 1, 3)
+        v = v.permute(0, 2, 1, 3)
+        a = F.scaled_dot_product_attention(q, k, v)
+        # Back to [B, T, H, C] then reshape to [B, T, H*C]
+        return a.permute(0, 2, 1, 3).reshape(bs, n_ctx, -1)
 
 
 class ResidualAttentionBlock(nn.Module):
