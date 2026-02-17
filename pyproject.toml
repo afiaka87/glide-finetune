@@ -9,7 +9,7 @@ dependencies = [
     "braceexpand>=0.1.7",
     "einops>=0.8.1",
     "ftfy>=6.3.1",
-    "glide-text2im @ file:///${PROJECT_ROOT}/glide-text2im",
+    "glide-text2im",
     "gradio>=5.0.0",
     "img2dataset>=1.25.4",
     "matplotlib>=3.10.5",
@@ -42,6 +42,9 @@ dependencies = [
     "torch-fidelity>=0.3.0",
     "typer>=0.17.4",
 ]
+
+[tool.uv.sources]
+glide-text2im = { path = "glide-text2im", editable = true }
 
 [project.scripts]
 glide = "glide_finetune.cli:app"
