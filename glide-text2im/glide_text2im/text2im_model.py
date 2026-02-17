@@ -193,13 +193,13 @@ class LatentText2ImUNet(Text2ImUNet):
 
     def convert_to_fp16(self):
         super().convert_to_fp16()
-        self.clip_to_time.to(th.float16)
-        self.clip_to_xf.to(th.float16)
+        # clip_to_time and clip_to_xf stay in float32 (like time_embed)
+        # to avoid dtype cast issues with torch.compile backward pass.
 
     def convert_to_bf16(self):
         super().convert_to_bf16()
-        self.clip_to_time.to(th.bfloat16)
-        self.clip_to_xf.to(th.bfloat16)
+        # clip_to_time and clip_to_xf stay in float32 (like time_embed)
+        # to avoid dtype cast issues with torch.compile backward pass.
 
     def forward(self, x, timesteps, tokens=None, mask=None, clip_emb=None):
         hs = []
@@ -212,18 +212,22 @@ class LatentText2ImUNet(Text2ImUNet):
             xf_out = None
 
         # Add CLIP conditioning (unCLIP style)
+        # clip_to_time/clip_to_xf stay in float32 (like time_embed) so clip_emb
+        # (float32 from LatentCLIP) can be used directly without dtype casts.
         if clip_emb is not None:
-            clip_emb = clip_emb.to(emb.dtype)
             emb = emb + self.clip_to_time(clip_emb)
             # Project CLIP to extra cross-attention tokens: [B, clip_tokens * xf_width] -> [B, xf_width, clip_tokens]
             clip_tokens_out = self.clip_to_xf(clip_emb).reshape(
                 clip_emb.shape[0], self.clip_tokens, self.xf_width
             ).permute(0, 2, 1)  # [B, xf_width, clip_tokens] in NCL format
             if xf_out is not None:
-                xf_out = th.cat([xf_out, clip_tokens_out], dim=2)  # concat along sequence dim
+                xf_out = th.cat([xf_out, clip_tokens_out.to(xf_out.dtype)], dim=2)
             else:
                 xf_out = clip_tokens_out
 
+        # Ensure xf_out matches model dtype (needed for encoder_kv Conv1d in bf16)
+        if xf_out is not None:
+            xf_out = xf_out.to(self.dtype)
         h = x.type(self.dtype)
         for module in self.input_blocks:
             h = module(h, emb, xf_out)
