@@ -133,6 +133,8 @@ def run_glide_finetune_epoch(
     save_checkpoint_interval: int = 5000,
     eval_interval: int = 5000,
     reference_stats: str = "",
+    max_grad_norm: float = 1.0,
+    loss_spike_threshold: float = 5.0,
 ):
     if train_upsample:
         train_step = upsample_train_step  # type: ignore
@@ -174,6 +176,9 @@ def run_glide_finetune_epoch(
     samples_processed = 0
     accumulated_loss_gpu = th.tensor(0.0, device=device)  # Accumulate on GPU to avoid sync
     current_loss = 0.0  # For logging (only updated at accumulation boundaries)
+    loss_ema = 0.0  # Exponential moving average for spike detection
+    loss_ema_alpha = 0.01  # Smoothing factor
+    spikes_skipped = 0
 
     # Zero gradients at the start
     optimizer.zero_grad(set_to_none=True)
@@ -222,17 +227,43 @@ def run_glide_finetune_epoch(
 
         # Update weights every gradient_accumulation_steps
         if (train_idx + 1) % gradient_accumulation_steps == 0:
-            optimizer.step()
-            optimizer.zero_grad(set_to_none=True)
-
-            # Update EMA after optimizer step (as per OpenAI's guided-diffusion)
-            if ema_model is not None:
-                ema_model.update()
-
             # Only call .item() at accumulation boundaries (single GPU sync)
             avg_accumulated_loss = (accumulated_loss_gpu / gradient_accumulation_steps).item()
             current_loss = avg_accumulated_loss
             accumulated_loss_gpu.zero_()
+
+            # Loss spike detection: skip update if loss is way above running average
+            skip_step = False
+            if loss_ema > 0 and loss_spike_threshold > 0:
+                if avg_accumulated_loss > loss_ema * loss_spike_threshold:
+                    skip_step = True
+                    spikes_skipped += 1
+                    tqdm.write(
+                        f"⚠ Loss spike detected: {avg_accumulated_loss:.4f} "
+                        f"(>{loss_spike_threshold}x EMA {loss_ema:.4f}), "
+                        f"skipping update (total skipped: {spikes_skipped})"
+                    )
+                    optimizer.zero_grad(set_to_none=True)
+
+            if not skip_step:
+                # Gradient clipping (guided-diffusion default: 1.0)
+                grad_norm = th.nn.utils.clip_grad_norm_(
+                    [p for p in glide_model.parameters() if p.requires_grad],
+                    max_grad_norm,
+                ).item() if max_grad_norm > 0 else 0.0
+
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+
+                # Update EMA after optimizer step (as per OpenAI's guided-diffusion)
+                if ema_model is not None:
+                    ema_model.update()
+
+            # Update loss EMA (always, even on spikes, so it adapts)
+            if loss_ema == 0:
+                loss_ema = avg_accumulated_loss  # Initialize on first step
+            else:
+                loss_ema = loss_ema_alpha * avg_accumulated_loss + (1 - loss_ema_alpha) * loss_ema
 
             # Calculate current time and average samples/sec
             current_time = time.time()
@@ -246,14 +277,21 @@ def run_glide_finetune_epoch(
                 **log,
                 "loss": avg_accumulated_loss,
                 "loss_step": avg_accumulated_loss,
+                "loss_ema": loss_ema,
                 "iter": train_idx,
                 "samples_per_sec": avg_samples_per_sec,
                 "total_samples": samples_processed,
+                "spikes_skipped": spikes_skipped,
             }
+            if not skip_step and max_grad_norm > 0:
+                log["grad_norm"] = grad_norm
             wandb_run.log(log)
 
             # Update tqdm bar
-            pbar.set_postfix(loss=f"{current_loss:.4f}", sps=f"{avg_samples_per_sec:.1f}")
+            postfix = {"loss": f"{current_loss:.4f}", "sps": f"{avg_samples_per_sec:.1f}"}
+            if not skip_step and max_grad_norm > 0:
+                postfix["gn"] = f"{grad_norm:.2f}"
+            pbar.set_postfix(postfix)
 
         # Sample from the model at sample_interval (including step 0 for compile warmup)
         if train_idx % sample_interval == 0:
