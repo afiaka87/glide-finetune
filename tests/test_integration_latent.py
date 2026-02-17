@@ -138,13 +138,19 @@ class TestLatentTrainStep:
         assert len(grads) > 0, "backward pass should produce gradients"
 
     def test_optimizer_step_reduces_loss(self):
-        """Two optimizer steps on identical data should reduce loss."""
+        """Three optimizer steps on same data should reduce loss."""
         from glide_finetune.glide_finetune import latent_train_step
 
+        # Use generator-based seeding for deterministic model init independent
+        # of global RNG state (which CUDA compile tests may have altered).
+        gen = th.Generator().manual_seed(123)
         model, diffusion, _opts = _make_latent_model()
+        # Re-init parameters with our generator for reproducibility
+        for p in model.parameters():
+            if p.data.is_floating_point():
+                p.data = th.randn_like(p.data, generator=gen) * 0.02
         optimizer = th.optim.Adam(model.parameters(), lr=1e-3)
 
-        th.manual_seed(42)
         batch = self._make_batch(batch_size=2)
         mock_vae = _MockVAE()
         mock_clip = _MockCLIP()
@@ -160,6 +166,7 @@ class TestLatentTrainStep:
                 vae=mock_vae,
                 clip_encoder=mock_clip,
             )
+            assert not th.isnan(loss), f"NaN loss encountered, losses so far: {losses}"
             loss.backward()
             optimizer.step()
             losses.append(loss.item())
@@ -279,6 +286,176 @@ class TestLatentCollateFn:
         assert masks.shape == (2, 128)
         assert images.shape == (2, 3, 256, 256)
         assert captions == ["cat", "dog"]
+
+
+# ===================================================================
+# torch.compile + bf16 backward pass
+# ===================================================================
+
+
+class TestTorchCompileBf16:
+    """Reproduce dtype errors that occur with torch.compile + bf16 + CLIP conditioning."""
+
+    def _make_bf16_model(self, device="cpu"):
+        model, diffusion, opts = _make_latent_model()
+        model.convert_to_bf16()
+        model = model.to(device)
+        return model, diffusion, opts
+
+    def test_eager_bf16_backward(self):
+        """bf16 latent model backward WITHOUT torch.compile should work."""
+        model, _diffusion, _opts = self._make_bf16_model()
+        x = th.randn(1, 4, 32, 32)
+        t = th.tensor([100])
+        tokens = th.randint(0, 100, (1, 128))
+        mask = th.ones(1, 128, dtype=th.bool)
+        clip_emb = th.randn(1, 768)
+
+        out = model(x, t, tokens=tokens, mask=mask, clip_emb=clip_emb)
+        loss = out.float().mean()
+        loss.backward()
+        grads = [p.grad for p in model.parameters() if p.grad is not None]
+        assert len(grads) > 0
+
+    def test_eager_bf16_backward_no_clip(self):
+        """bf16 latent model backward without CLIP (clip_emb=None)."""
+        model, _diffusion, _opts = self._make_bf16_model()
+        x = th.randn(1, 4, 32, 32)
+        t = th.tensor([100])
+        tokens = th.randint(0, 100, (1, 128))
+        mask = th.ones(1, 128, dtype=th.bool)
+
+        out = model(x, t, tokens=tokens, mask=mask, clip_emb=None)
+        loss = out.float().mean()
+        loss.backward()
+        grads = [p.grad for p in model.parameters() if p.grad is not None]
+        assert len(grads) > 0
+
+    @pytest.mark.skipif(not th.cuda.is_available(), reason="requires CUDA")
+    def test_compile_bf16_backward_no_clip(self):
+        """torch.compile + bf16 backward WITHOUT CLIP conditioning."""
+        model, _diffusion, _opts = self._make_bf16_model(device="cuda")
+        compiled = th.compile(model)
+        x = th.randn(1, 4, 32, 32, device="cuda")
+        t = th.tensor([100], device="cuda")
+        tokens = th.randint(0, 100, (1, 128), device="cuda")
+        mask = th.ones(1, 128, dtype=th.bool, device="cuda")
+
+        out = compiled(x, t, tokens=tokens, mask=mask, clip_emb=None)
+        loss = out.float().mean()
+        loss.backward()
+        grads = [p.grad for p in model.parameters() if p.grad is not None]
+        assert len(grads) > 0, "backward should produce gradients"
+
+    @pytest.mark.skipif(not th.cuda.is_available(), reason="requires CUDA")
+    def test_compile_bf16_backward_with_clip(self):
+        """torch.compile + bf16 backward WITH CLIP conditioning."""
+        model, _diffusion, _opts = self._make_bf16_model(device="cuda")
+        compiled = th.compile(model)
+        x = th.randn(1, 4, 32, 32, device="cuda")
+        t = th.tensor([100], device="cuda")
+        tokens = th.randint(0, 100, (1, 128), device="cuda")
+        mask = th.ones(1, 128, dtype=th.bool, device="cuda")
+        clip_emb = th.randn(1, 768, device="cuda")
+
+        out = compiled(x, t, tokens=tokens, mask=mask, clip_emb=clip_emb)
+        loss = out.float().mean()
+        loss.backward()
+        grads = [p.grad for p in model.parameters() if p.grad is not None]
+        assert len(grads) > 0, "backward should produce gradients"
+
+    @pytest.mark.skipif(not th.cuda.is_available(), reason="requires CUDA")
+    def test_compile_bf16_channels_last_backward_with_clip(self):
+        """torch.compile + bf16 + channels_last + CLIP (matches training loop)."""
+        model, _diffusion, _opts = self._make_bf16_model(device="cuda")
+        model.to(memory_format=th.channels_last)
+        th.set_float32_matmul_precision("high")
+        compiled = th.compile(model)
+        x = th.randn(1, 4, 32, 32, device="cuda")
+        t = th.tensor([100], device="cuda")
+        tokens = th.randint(0, 100, (1, 128), device="cuda")
+        mask = th.ones(1, 128, dtype=th.bool, device="cuda")
+        clip_emb = th.randn(1, 768, device="cuda")
+
+        out = compiled(x, t, tokens=tokens, mask=mask, clip_emb=clip_emb)
+        loss = out.float().mean()
+        loss.backward()
+        grads = [p.grad for p in model.parameters() if p.grad is not None]
+        assert len(grads) > 0, "backward should produce gradients"
+
+    @pytest.mark.skipif(not th.cuda.is_available(), reason="requires CUDA")
+    def test_compile_bf16_backward_with_bf16_input(self):
+        """torch.compile + bf16 backward when input tensor is bf16 (like VAE output).
+
+        This was the root cause: bf16 VAE returns bf16 latents, so x_t is bf16,
+        model output is bf16, loss is bf16. Backward from bf16 loss through
+        mixed-dtype compiled model fails. Fix: cast latents to float32.
+        """
+        model, diffusion, _opts = self._make_bf16_model(device="cuda")
+        model.to(memory_format=th.channels_last)
+        compiled = th.compile(model)
+
+        # Simulate bf16 VAE output → bf16 x_t (the failing path before fix)
+        latents_bf16 = th.randn(1, 4, 32, 32, device="cuda", dtype=th.bfloat16)
+        noise_bf16 = th.randn_like(latents_bf16)
+        t = th.tensor([100], device="cuda")
+        x_t_bf16 = diffusion.q_sample(latents_bf16, t, noise=noise_bf16)
+        tokens = th.randint(0, 100, (1, 128), device="cuda")
+        mask = th.ones(1, 128, dtype=th.bool, device="cuda")
+        clip_emb = th.randn(1, 768, device="cuda")
+
+        # The fix: cast to float32 before model forward
+        x_t = x_t_bf16.float()
+        noise = noise_bf16.float()
+
+        out = compiled(x_t, t, tokens=tokens, mask=mask, clip_emb=clip_emb)
+        C = x_t.shape[1]
+        epsilon, _ = th.split(out, C, dim=1)
+        loss = th.nn.functional.mse_loss(epsilon, noise.detach())
+        loss.backward()
+        grads = [p.grad for p in model.parameters() if p.grad is not None]
+        assert len(grads) > 0, "backward should produce gradients"
+
+    @pytest.mark.skipif(not th.cuda.is_available(), reason="requires CUDA")
+    def test_compile_bf16_with_pixel_weight_transfer(self):
+        """Full training path: pixel weight transfer + bf16 + channels_last + compile."""
+        from glide_finetune.latent_util import init_latent_from_pixel
+
+        # Create pixel model and extract weights
+        pixel_opts = model_and_diffusion_defaults()
+        pixel_opts["use_fp16"] = False
+        pixel_model, _ = create_model_and_diffusion(**pixel_opts)
+        pixel_sd = pixel_model.state_dict()
+        del pixel_model
+
+        # Create latent model and transfer weights (matches load_latent_model path)
+        model, diffusion, _opts = _make_latent_model()
+        init_latent_from_pixel(model, pixel_sd)
+        model.convert_to_bf16()
+        model = model.to("cuda")
+        model.to(memory_format=th.channels_last)
+        model.train()
+        th.set_float32_matmul_precision("high")
+        compiled = th.compile(model)
+
+        # Replicate latent_train_step
+        tokens = th.randint(0, 100, (2, 128), device="cuda")
+        masks = th.ones(2, 128, dtype=th.bool, device="cuda")
+        clip_emb = th.randn(2, 768, device="cuda")
+        latents = th.randn(2, 4, 32, 32, device="cuda")
+        timesteps = th.randint(0, len(diffusion.betas) - 1, (2,), device="cuda")
+        noise = th.randn_like(latents)
+        x_t = diffusion.q_sample(latents, timesteps, noise=noise)
+
+        model_output = compiled(
+            x_t, timesteps, tokens=tokens, mask=masks, clip_emb=clip_emb
+        )
+        C = x_t.shape[1]
+        epsilon, _ = th.split(model_output, C, dim=1)
+        loss = th.nn.functional.mse_loss(epsilon, noise.detach())
+        loss.backward()
+        grads = [p.grad for p in model.parameters() if p.grad is not None]
+        assert len(grads) > 0, "backward should produce gradients"
 
 
 # ===================================================================
