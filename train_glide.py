@@ -1,6 +1,7 @@
 import argparse
 from glob import glob
 import os
+import time
 from braceexpand import braceexpand
 import tarfile
 import json
@@ -298,6 +299,7 @@ def run_glide_finetune(
     image_key="jpg",
     caption_key="txt",
     dataset_name="laion",
+    captions_jsonl=None,
     enable_upsample=False,
     upsample_factor=4,
     use_sr_eval=False,
@@ -323,6 +325,8 @@ def run_glide_finetune(
     clip_model_name="ViT-L-14",
     clip_pretrained="laion2b_s32b_b82k",
     init_from_pixel="",
+    max_grad_norm=1.0,
+    loss_spike_threshold=5.0,
 ):
     if "~" in data_dir:
         data_dir = os.path.expanduser(data_dir)
@@ -476,6 +480,14 @@ def run_glide_finetune(
             f"Upsampler loaded with {sum(x.numel() for x in upsampler_model.parameters())} parameters"
         )
 
+        # Compile upsampler for faster eval inference
+        if th.cuda.is_available():
+            print("torch.compile: wrapping upsampler model for eval...")
+            compile_t0 = time.time()
+            upsampler_model = th.compile(upsampler_model, mode="reduce-overhead")
+            print(f"torch.compile: upsampler wrapped in {time.time() - compile_t0:.1f}s (compilation deferred to first forward)")
+
+
     # Data setup
     print("Loading data...")
     if use_webdataset:
@@ -499,7 +511,7 @@ def run_glide_finetune(
             similarity_threshold_upper=0.0,
             similarity_threshold_lower=0.5,
             words_to_skip=[],
-            dataset_name=dataset_name,  # can be laion, alamy, simple, synthetic, or datacomp.
+            dataset_name=dataset_name,  # can be laion, alamy, simple, synthetic, datacomp-synthetic, datacomp-real, or datacomp-clip.
             buffer_size=args.wds_buffer_size,
             initial_prefetch=args.wds_initial_prefetch,
             debug=args.wds_debug,
@@ -635,6 +647,8 @@ def run_glide_finetune(
             latent_mode=latent_mode,
             vae=vae,
             clip_encoder=clip_enc,
+            max_grad_norm=max_grad_norm,
+            loss_spike_threshold=loss_spike_threshold,
         )
 
 
@@ -776,13 +790,13 @@ def parse_args():
         "-wds_name",
         type=str,
         default="laion",
-        help="Name of the webdataset to use (laion, alamy, simple, synthetic, datacomp-synthetic, or datacomp-real)",
+        help="Name of the webdataset to use (laion, alamy, simple, synthetic, datacomp-synthetic, datacomp-real, or datacomp-clip)",
     )
     parser.add_argument(
         "--wds_captions_jsonl",
         type=str,
         default=None,
-        help="Path to external JSONL captions file (required for datacomp-synthetic dataset)",
+        help="Path to external JSONL captions file (required for datacomp-synthetic and datacomp-clip datasets)",
     )
     parser.add_argument("--seed", "-seed", type=int, default=0)
     parser.add_argument(
@@ -950,6 +964,18 @@ def parse_args():
         default="",
         help="Path to pre-computed reference stats .pt file for FID/KID evaluation",
     )
+    parser.add_argument(
+        "--max_grad_norm",
+        type=float,
+        default=1.0,
+        help="Max gradient norm for clipping (0 to disable, default: 1.0, guided-diffusion uses 1.0)",
+    )
+    parser.add_argument(
+        "--loss_spike_threshold",
+        type=float,
+        default=5.0,
+        help="Skip optimizer step when loss exceeds this multiple of the running EMA (0 to disable, default: 5.0)",
+    )
 
     # Latent diffusion mode arguments
     parser.add_argument(
@@ -1081,6 +1107,7 @@ if __name__ == "__main__":
         image_key=args.wds_image_key,
         caption_key=args.wds_caption_key,
         dataset_name=args.wds_dataset_name,
+        captions_jsonl=args.captions_jsonl,
         enable_upsample=args.train_upsample,
         upsample_factor=args.upscale_factor,
         use_sr_eval=args.use_sr_eval,
@@ -1108,4 +1135,6 @@ if __name__ == "__main__":
         clip_model_name=args.clip_model_name,
         clip_pretrained=args.clip_pretrained,
         init_from_pixel=args.init_from_pixel,
+        max_grad_norm=args.max_grad_norm,
+        loss_spike_threshold=args.loss_spike_threshold,
     )
