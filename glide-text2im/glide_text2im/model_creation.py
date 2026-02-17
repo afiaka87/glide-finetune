@@ -2,6 +2,7 @@ from glide_text2im.gaussian_diffusion import get_named_beta_schedule
 from glide_text2im.respace import SpacedDiffusion, space_timesteps
 from glide_text2im.text2im_model import (
     InpaintText2ImUNet,
+    LatentText2ImUNet,
     SuperResInpaintText2ImUnet,
     SuperResText2ImUNet,
     Text2ImUNet,
@@ -51,6 +52,24 @@ def model_and_diffusion_defaults_upsampler():
     return result
 
 
+def model_and_diffusion_defaults_latent():
+    result = model_and_diffusion_defaults()
+    result.update(
+        dict(
+            image_size=32,
+            in_channels=4,
+            out_channels=8,
+            channel_mult="1,2,4",
+            attention_resolutions="16,8",
+            noise_schedule="linear_latent",
+            latent_mode=True,
+            clip_dim=768,
+            clip_tokens=4,
+        )
+    )
+    return result
+
+
 def create_model_and_diffusion(
     image_size,
     num_channels,
@@ -76,6 +95,10 @@ def create_model_and_diffusion(
     cache_text_emb,
     inpaint,
     super_res,
+    latent_mode=False,
+    clip_dim=768,
+    clip_tokens=4,
+    **kwargs,  # absorb extra keys from defaults dicts
 ):
     model = create_model(
         image_size,
@@ -99,6 +122,9 @@ def create_model_and_diffusion(
         cache_text_emb=cache_text_emb,
         inpaint=inpaint,
         super_res=super_res,
+        latent_mode=latent_mode,
+        clip_dim=clip_dim,
+        clip_tokens=clip_tokens,
     )
     diffusion = create_gaussian_diffusion(
         steps=diffusion_steps,
@@ -130,6 +156,9 @@ def create_model(
     cache_text_emb,
     inpaint,
     super_res,
+    latent_mode=False,
+    clip_dim=768,
+    clip_tokens=4,
 ):
     if channel_mult == "":
         if image_size == 256:
@@ -138,17 +167,20 @@ def create_model(
             channel_mult = (1, 1, 2, 3, 4)
         elif image_size == 64:
             channel_mult = (1, 2, 3, 4)
+        elif image_size == 32:
+            channel_mult = (1, 2, 4)
         else:
             raise ValueError(f"unsupported image size: {image_size}")
     else:
         channel_mult = tuple(int(ch_mult) for ch_mult in channel_mult.split(","))
-        assert 2 ** (len(channel_mult) + 2) == image_size
 
     attention_ds = []
     for res in attention_resolutions.split(","):
         attention_ds.append(image_size // int(res))
 
-    if inpaint and super_res:
+    if latent_mode:
+        model_cls = LatentText2ImUNet
+    elif inpaint and super_res:
         model_cls = SuperResInpaintText2ImUnet
     elif inpaint:
         model_cls = InpaintText2ImUNet
@@ -156,7 +188,9 @@ def create_model(
         model_cls = SuperResText2ImUNet
     else:
         model_cls = Text2ImUNet
-    return model_cls(
+
+    # Base kwargs common to all model classes
+    model_kwargs = dict(
         text_ctx=text_ctx,
         xf_width=xf_width,
         xf_layers=xf_layers,
@@ -164,9 +198,7 @@ def create_model(
         xf_final_ln=xf_final_ln,
         tokenizer=get_encoder(),
         xf_padding=xf_padding,
-        in_channels=3,
         model_channels=num_channels,
-        out_channels=6,
         num_res_blocks=num_res_blocks,
         attention_resolutions=tuple(attention_ds),
         dropout=dropout,
@@ -179,6 +211,18 @@ def create_model(
         resblock_updown=resblock_updown,
         cache_text_emb=cache_text_emb,
     )
+
+    if latent_mode:
+        # LatentText2ImUNet forces in_channels=4, out_channels=8 internally
+        model_kwargs["in_channels"] = 4
+        model_kwargs["out_channels"] = 8
+        model_kwargs["clip_dim"] = clip_dim
+        model_kwargs["clip_tokens"] = clip_tokens
+    else:
+        model_kwargs["in_channels"] = 3
+        model_kwargs["out_channels"] = 6
+
+    return model_cls(**model_kwargs)
 
 
 def create_gaussian_diffusion(

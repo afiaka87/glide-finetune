@@ -155,6 +155,88 @@ class Text2ImUNet(UNetModel):
         return h
 
 
+class LatentText2ImUNet(Text2ImUNet):
+    """
+    A Text2ImUNet for latent diffusion with additional CLIP conditioning.
+
+    Operates on 4-channel VAE latents (32x32) instead of 3-channel RGB (64x64).
+    Adds unCLIP-style CLIP conditioning: pooled CLIP embedding is projected into
+    the timestep embedding and into extra cross-attention tokens.
+
+    :param clip_dim: dimension of the CLIP pooled embedding (768 for ViT-L-14).
+    :param clip_tokens: number of extra cross-attention tokens to project from CLIP.
+    """
+
+    def __init__(
+        self,
+        *args,
+        clip_dim: int = 768,
+        clip_tokens: int = 4,
+        **kwargs,
+    ):
+        # Force latent channels: 4 in, 8 out (4 epsilon + 4 learned variance)
+        kwargs["in_channels"] = 4
+        kwargs["out_channels"] = 8
+        self.clip_dim = clip_dim
+        self.clip_tokens = clip_tokens
+        super().__init__(*args, **kwargs)
+
+        # CLIP pooled -> timestep embedding (model_channels * 4 is the emb dim)
+        emb_dim = self.model_channels * 4
+        self.clip_to_time = nn.Sequential(
+            nn.Linear(clip_dim, emb_dim),
+            nn.SiLU(),
+            nn.Linear(emb_dim, emb_dim),
+        )
+        # CLIP pooled -> extra cross-attention tokens (xf_width per token)
+        self.clip_to_xf = nn.Linear(clip_dim, clip_tokens * self.xf_width)
+
+    def convert_to_fp16(self):
+        super().convert_to_fp16()
+        self.clip_to_time.to(th.float16)
+        self.clip_to_xf.to(th.float16)
+
+    def convert_to_bf16(self):
+        super().convert_to_bf16()
+        self.clip_to_time.to(th.bfloat16)
+        self.clip_to_xf.to(th.bfloat16)
+
+    def forward(self, x, timesteps, tokens=None, mask=None, clip_emb=None):
+        hs = []
+        emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
+        if self.xf_width:
+            text_outputs = self.get_text_emb(tokens, mask)
+            xf_proj, xf_out = text_outputs["xf_proj"], text_outputs["xf_out"]
+            emb = emb + xf_proj.to(emb)
+        else:
+            xf_out = None
+
+        # Add CLIP conditioning (unCLIP style)
+        if clip_emb is not None:
+            clip_emb = clip_emb.to(emb.dtype)
+            emb = emb + self.clip_to_time(clip_emb)
+            # Project CLIP to extra cross-attention tokens: [B, clip_tokens * xf_width] -> [B, xf_width, clip_tokens]
+            clip_tokens_out = self.clip_to_xf(clip_emb).reshape(
+                clip_emb.shape[0], self.clip_tokens, self.xf_width
+            ).permute(0, 2, 1)  # [B, xf_width, clip_tokens] in NCL format
+            if xf_out is not None:
+                xf_out = th.cat([xf_out, clip_tokens_out], dim=2)  # concat along sequence dim
+            else:
+                xf_out = clip_tokens_out
+
+        h = x.type(self.dtype)
+        for module in self.input_blocks:
+            h = module(h, emb, xf_out)
+            hs.append(h)
+        h = self.middle_block(h, emb, xf_out)
+        for module in self.output_blocks:
+            h = th.cat([h, hs.pop()], dim=1)
+            h = module(h, emb, xf_out)
+        h = h.type(x.dtype)
+        h = self.out(h)
+        return h
+
+
 class SuperResText2ImUNet(Text2ImUNet):
     """
     A text2im model that performs super-resolution.

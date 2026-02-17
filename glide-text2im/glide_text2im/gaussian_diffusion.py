@@ -73,6 +73,13 @@ def get_named_beta_schedule(schedule_name, num_diffusion_timesteps):
             num_diffusion_timesteps,
             lambda t: math.cos((t + 0.008) / 1.008 * math.pi / 2) ** 2,
         )
+    elif schedule_name == "linear_latent":
+        # SD-style schedule for latent diffusion (beta_start=0.00085, beta_end=0.012)
+        beta_start = 0.00085
+        beta_end = 0.012
+        return (
+            np.linspace(beta_start**0.5, beta_end**0.5, num_diffusion_timesteps, dtype=np.float64) ** 2
+        )
     else:
         raise NotImplementedError(f"unknown beta schedule: {schedule_name}")
 
@@ -633,7 +640,7 @@ class GaussianDiffusion:
         model_output = model(x, t, **model_kwargs)
         if isinstance(model_output, tuple):
             model_output, _ = model_output
-        eps = model_output[:, :3]
+        eps = model_output[:, :x.shape[1]]
         if cond_fn is not None:
             alpha_bar = _extract_into_tensor_lerp(self.alphas_cumprod, t, x.shape)
             eps = eps - th.sqrt(1 - alpha_bar) * cond_fn(x, t, **model_kwargs)
