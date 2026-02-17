@@ -200,7 +200,7 @@ class TestInitLatentFromPixel:
         assert th.allclose(w[:, 3], th.zeros_like(w[:, 3]))
 
     def test_output_conv_transfer(self):
-        """First 6 output channels copied, last 2 zero-initialized."""
+        """Epsilon and variance channels mapped correctly with new channels zero-initialized."""
         from glide_finetune.latent_util import init_latent_from_pixel
 
         pixel_opts = model_and_diffusion_defaults()
@@ -212,17 +212,23 @@ class TestInitLatentFromPixel:
         init_latent_from_pixel(latent_model, pixel_sd)
         latent_sd = latent_model.state_dict()
 
-        # Weight
+        # Weight: pixel [6, in, kH, kW] → latent [8, in, kH, kW]
         w = latent_sd["out.2.weight"]
+        psw = pixel_sd["out.2.weight"]
         assert w.shape[0] == 8
-        assert th.allclose(w[:6], pixel_sd["out.2.weight"])
-        assert th.allclose(w[6:], th.zeros_like(w[6:]))
+        assert th.allclose(w[:3], psw[:3])  # epsilon channels copied
+        assert th.allclose(w[3], th.zeros_like(w[3]))  # new epsilon channel zero
+        assert th.allclose(w[4:7], psw[3:])  # variance channels copied
+        assert th.allclose(w[7], th.zeros_like(w[7]))  # new variance channel zero
 
-        # Bias
+        # Bias: pixel [6] → latent [8]
         b = latent_sd["out.2.bias"]
+        psb = pixel_sd["out.2.bias"]
         assert b.shape[0] == 8
-        assert th.allclose(b[:6], pixel_sd["out.2.bias"])
-        assert th.allclose(b[6:], th.zeros_like(b[6:]))
+        assert th.allclose(b[:3], psb[:3])  # epsilon channels copied
+        assert b[3] == 0.0  # new epsilon channel zero
+        assert th.allclose(b[4:7], psb[3:])  # variance channels copied
+        assert b[7] == 0.0  # new variance channel zero
 
     def test_text_transformer_transferred(self):
         """Text transformer weights should be copied exactly."""
