@@ -35,6 +35,8 @@ class LatentVAE:
         )
         self.vae.eval()
         self.vae.requires_grad_(False)
+        if th.cuda.is_available():
+            self.vae = th.compile(self.vae)
         self.device = device
         self.dtype = dtype
 
@@ -57,7 +59,7 @@ class LatentVAE:
         """
         images = images.to(device=self.device, dtype=self.dtype)
         posterior = self.vae.encode(images).latent_dist
-        latents = posterior.sample()
+        latents: th.Tensor = posterior.sample()
         return latents * self.SCALE_FACTOR
 
     @th.no_grad()
@@ -72,7 +74,7 @@ class LatentVAE:
         """
         latents = latents.to(device=self.device, dtype=self.dtype)
         latents = latents / self.SCALE_FACTOR
-        decoded = self.vae.decode(latents).sample
+        decoded: th.Tensor = self.vae.decode(latents).sample
         return decoded.clamp(-1, 1)
 
 
@@ -96,6 +98,8 @@ class LatentCLIP:
         self.model = self.model.to(device)
         self.model.eval()
         self.model.requires_grad_(False)
+        if th.cuda.is_available():
+            self.model = th.compile(self.model)
         self.tokenizer = open_clip.get_tokenizer(model_name)
         self.device = device
 
@@ -115,7 +119,7 @@ class LatentCLIP:
             [B, 768] pooled CLIP text embeddings (float32).
         """
         tokens = self.tokenizer(texts).to(self.device)
-        text_features = self.model.encode_text(tokens)
+        text_features: th.Tensor = self.model.encode_text(tokens)
         return text_features.float()
 
 
