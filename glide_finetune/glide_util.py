@@ -7,7 +7,6 @@ from typing import Tuple, Literal, Optional, Union
 import PIL
 import numpy as np
 import torch as th
-from glide_finetune.train_util import pred_to_pil
 from glide_finetune.enhanced_samplers import enhance_diffusion
 from glide_text2im.download import load_checkpoint
 from glide_text2im.model_creation import (
@@ -484,13 +483,6 @@ def sample(
         C = x_t.shape[1]
         eps, rest = model_out[:, :C], model_out[:, C:]
         cond_eps, uncond_eps = th.split(eps, len(eps) // 2, dim=0)
-        beta = eval_diffusion.betas[
-            int(
-                ts.flatten()[0].item()
-                / glide_options["diffusion_steps"]
-                * len(eval_diffusion.betas)
-            )
-        ]
         half_eps = uncond_eps + guidance_scale * (cond_eps - uncond_eps)
         eps = th.cat([half_eps, half_eps], dim=0)
         return th.cat([eps, rest], dim=1)
