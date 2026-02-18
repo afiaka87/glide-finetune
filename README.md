@@ -8,15 +8,13 @@ Fine-tune and evaluate GLIDE text-to-image diffusion models with a modern CLI in
 
 ## Features
 
-- 🎨 **Modern CLI**: Clean command-line interface built with Typer
-- 🚀 **Advanced Samplers**: Euler, Euler-A, DPM++, PLMS, and DDIM
-- 🎯 **CLIP Re-ranking**: Generate multiple candidates and select the best
-- 📊 **WebDataset Support**: Train on large-scale datasets like LAION and synthetic datasets
-- 🔧 **LoRA Support**: Parameter-efficient fine-tuning
-- 📈 **W&B Integration**: Automatic experiment tracking
-- ⚡ **Performance**: Gradient accumulation, BF16/FP16 mixed precision, torch.compile support
-- 🆕 **BF16 Support**: Stable mixed-precision training with bfloat16 (recommended over FP16)
-- 🧪 **Latent Diffusion**: Experimental latent-space training with a frozen VAE and CLIP encoder
+- Multiple samplers: Euler, Euler-A, DPM++, PLMS, DDIM
+- CLIP re-ranking: generate N candidates, keep the best K
+- WebDataset support for large-scale training (LAION, DataComp, etc.)
+- LoRA fine-tuning
+- BF16/FP16 mixed precision, gradient accumulation, gradient checkpointing, torch.compile
+- W&B logging
+- Experimental latent diffusion mode (frozen SD 1.5 VAE + OpenCLIP encoder)
 
 ## Installation
 
@@ -182,20 +180,17 @@ Generate multiple candidates and select the best using CLIP:
 
 ## Latent Diffusion Mode (Experimental)
 
-There is experimental support for training GLIDE in latent space using a frozen Stable Diffusion VAE. Instead of denoising 64x64 pixel images directly, the model operates on 32x32 latent representations and can produce 256x256 outputs after VAE decoding. A frozen OpenCLIP ViT-L/14 encoder replaces the orignal GLIDE text transformer for conditioning.
-
-You can bootstrap a latent model from an existing pixel-space checkpoint (e.g. laionide-v3-base) using `--init_from_pixel`. This transfers the UNet backbone and text transformer weights — only the input/output convolutions need to be adapted for the different channel counts. New latent channels are zero-initialized so the model starts from a reasonable point rather than random noise.
+Experimental support for training GLIDE in latent space. Instead of denoising 64x64 pixel images directly, the model operates on 32x32 latent representations (via a frozen SD 1.5 VAE) and produces 256x256 outputs after decoding. A frozen OpenCLIP ViT-L-14 encoder replaces the GLIDE text transformer for conditioning.
 
 ### Latent Training
 ```bash
 python train_glide.py \
   --latent_mode \
-  --init_from_pixel laionide-v3-base.pt \
-  --data_dir "/path/to/webdataset/{0000000..0000999}.tar" \
+  --random_init \
+  --data_dir "/path/to/webdataset/*.tar" \
   --use_webdataset \
-  --wds_dataset_name datacomp-real \
+  --wds_dataset_name datacomp-clip \
   --wds_image_key jpg \
-  --wds_caption_key txt \
   --use_captions \
   --batch_size 32 \
   --learning_rate 3e-4 \
@@ -205,20 +200,12 @@ python train_glide.py \
 
 ### Latent Mode Arguments
 
-| Argument | Default | Desription |
+| Argument | Default | Description |
 |----------|---------|------------|
 | `--latent_mode` | off | Enable latent diffusion training |
-| `--init_from_pixel` | `""` | Path to a pixel-space checkpoint for weight transfer |
 | `--vae_model` | `stabilityai/sd-vae-ft-mse` | HuggingFace VAE model |
 | `--clip_model_name` | `ViT-L-14` | OpenCLIP model architecture |
 | `--clip_pretrained` | `laion2b_s32b_b82k` | OpenCLIP pretrained weights |
-
-### How Weight Transfer Works
-
-The pixel-space and latent-space models share most of their architecture — the text transformer, UNet middle blocks, and attention layers are all identical. Only the first and last convolutions differ:
-
-- **Input conv**: pixel expects 3 RGB channels, latent expects 4 VAE channels. The 3 pretrained channels are copied and the 4th is zero-initialized.
-- **Output conv**: pixel produces 6 channels (3 epsilon + 3 variance), latent produces 8 (4 epsilon + 4 variance). Epsilon and variance groups are mapped separately so the semantic split is preserved.
 
 ## Legacy Script Usage
 
