@@ -144,8 +144,8 @@ def load_or_compile_model(
             f"[yellow]Loading {model_type} model for first-time compilation...[/yellow]"
         )
         model, diffusion, options = load_model(
-            glide_path=model_path,
-            use_fp16=use_fp16,
+            init_strategy="checkpoint" if model_path else "pretrained",
+            init_path=model_path,
             model_type=model_type,
         )
         model.to(device)
@@ -187,8 +187,8 @@ def load_or_compile_model(
     else:
         # Normal loading without compilation
         model, diffusion, options = load_model(
-            glide_path=model_path,
-            use_fp16=use_fp16,
+            init_strategy="checkpoint" if model_path else "pretrained",
+            init_path=model_path,
             model_type=model_type,
         )
         model.to(device)
