@@ -18,7 +18,6 @@ from tqdm import trange, tqdm
 from glide_finetune.glide_finetune import run_glide_finetune_epoch
 from glide_finetune.glide_util import (
     load_model,
-    load_model_with_lora,
     load_latent_model,
 )
 from glide_finetune.loader import TextImageDataset
@@ -303,13 +302,6 @@ def run_glide_finetune(
     upsample_factor=4,
     use_sr_eval=False,
     sr_model_path=None,
-    use_lora=False,
-    lora_rank=4,
-    lora_alpha=32,
-    lora_dropout=0.1,
-    lora_target_mode="attention",
-    lora_save_steps=1000,
-    lora_resume="",
     save_checkpoint_interval=5000,
     gradient_accumulation_steps=1,
     random_hflip=False,
@@ -326,6 +318,7 @@ def run_glide_finetune(
     init_from_pixel="",
     max_grad_norm=1.0,
     loss_spike_threshold=5.0,
+    clip_threshold=0.0,
 ):
     if "~" in data_dir:
         data_dir = os.path.expanduser(data_dir)
@@ -381,23 +374,6 @@ def run_glide_finetune(
             freeze_diffusion=freeze_diffusion,
             activation_checkpointing=activation_checkpointing,
             init_from_pixel=init_from_pixel,
-        )
-    elif use_lora:
-        glide_model, glide_diffusion, glide_options = load_model_with_lora(
-            glide_path=resume_ckpt,
-            use_fp16=False,  # Use precision parameter instead
-            precision=precision,
-            freeze_transformer=freeze_transformer,
-            freeze_diffusion=freeze_diffusion,
-            activation_checkpointing=activation_checkpointing,
-            model_type="base" if not enable_upsample else "upsample",
-            use_lora=True,
-            lora_rank=lora_rank,
-            lora_alpha=lora_alpha,
-            lora_dropout=lora_dropout,
-            lora_target_mode=lora_target_mode,
-            lora_resume=lora_resume,
-            device=device,
         )
     else:
         glide_model, glide_diffusion, glide_options = load_model(
@@ -523,6 +499,7 @@ def run_glide_finetune(
             random_hflip=random_hflip,
             captions_jsonl_path=captions_jsonl_path,
             latent_mode=latent_mode,
+            clip_threshold=clip_threshold,
         )
         dataset = wds_result["dataset"]
         clip_caption_stats = wds_result["clip_caption_stats"]
@@ -591,7 +568,7 @@ def run_glide_finetune(
         print(f"Setting up EMA with decay rate {ema_rate}")
         ema_model = SimpleEMA(glide_model, decay=ema_rate)
 
-    # Note: Freezing is already handled in load_model/load_model_with_lora
+    # Note: Freezing is already handled in load_model
     # No need for additional requires_grad_ modifications here
 
     # Training setup
@@ -646,8 +623,6 @@ def run_glide_finetune(
             epoch=epoch,
             gradient_accumulation_steps=gradient_accumulation_steps,
             train_upsample=enable_upsample,
-            use_lora=use_lora,
-            lora_save_steps=lora_save_steps,
             save_checkpoint_interval=save_checkpoint_interval,
             eval_interval=eval_interval,
             reference_stats=reference_stats,
@@ -914,46 +889,6 @@ def parse_args():
         help="Number of parallel workers for tar validation (default: auto-detect based on CPU count)",
     )
 
-    # LoRA configuration arguments
-    parser.add_argument(
-        "--use_lora",
-        action="store_true",
-        help="Enable LoRA (Low-Rank Adaptation) for efficient fine-tuning",
-    )
-    parser.add_argument(
-        "--lora_rank",
-        type=int,
-        default=4,
-        help="Rank of LoRA decomposition (default: 4)",
-    )
-    parser.add_argument(
-        "--lora_alpha",
-        type=int,
-        default=32,
-        help="LoRA scaling parameter (default: 32)",
-    )
-    parser.add_argument(
-        "--lora_dropout",
-        type=float,
-        default=0.1,
-        help="Dropout for LoRA layers (default: 0.1)",
-    )
-    parser.add_argument(
-        "--lora_target_mode",
-        type=str,
-        default="attention",
-        choices=["attention", "mlp", "all", "minimal"],
-        help="Which modules to apply LoRA to (default: attention)",
-    )
-    parser.add_argument(
-        "--lora_save_steps",
-        type=int,
-        default=1000,
-        help="Save LoRA adapter every N steps (default: 1000)",
-    )
-    parser.add_argument(
-        "--lora_resume", type=str, default="", help="Path to resume LoRA adapter from"
-    )
     parser.add_argument(
         "--save_checkpoint_interval",
         type=int,
@@ -1014,6 +949,12 @@ def parse_args():
         type=str,
         default="",
         help="Path to a pixel-space GLIDE checkpoint for weight transfer to latent model",
+    )
+    parser.add_argument(
+        "--clip_threshold",
+        type=float,
+        default=0.0,
+        help="Minimum CLIP score threshold for datacomp-clip dataset. Samples where max(orig, gen) < threshold are dropped. (default: 0.0 = no filtering)",
     )
 
     args = parser.parse_args()
@@ -1121,13 +1062,6 @@ if __name__ == "__main__":
         sr_model_path=args.sr_model_path,
         prompt_file=args.prompt_file,
         sample_batch_size=args.sample_batch_size,
-        use_lora=args.use_lora,
-        lora_rank=args.lora_rank,
-        lora_alpha=args.lora_alpha,
-        lora_dropout=args.lora_dropout,
-        lora_target_mode=args.lora_target_mode,
-        lora_save_steps=args.lora_save_steps,
-        lora_resume=args.lora_resume,
         save_checkpoint_interval=args.save_checkpoint_interval,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         random_hflip=args.random_hflip,
@@ -1144,4 +1078,5 @@ if __name__ == "__main__":
         init_from_pixel=args.init_from_pixel,
         max_grad_norm=args.max_grad_norm,
         loss_spike_threshold=args.loss_spike_threshold,
+        clip_threshold=args.clip_threshold,
     )
