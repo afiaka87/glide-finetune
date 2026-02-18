@@ -115,8 +115,6 @@ python train_glide.py \
 | `transformer` | Train only text encoder, freeze UNet (keeps encoder_kv trainable) |
 | `transformer-scratch` | Reinit text encoder from random, freeze UNet |
 
-## Legacy Script Usage
-
 ## Full Usage
 
 Run `python train_glide.py --help` for the complete argument list. Key arguments are documented above.
