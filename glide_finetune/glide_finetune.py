@@ -164,8 +164,6 @@ def run_glide_finetune_epoch(
     ema_model=None,  # EMA model wrapper
     sample_bs: int = 1,  # batch size for inference
     sample_gs: float = 4.0,  # guidance scale for inference
-    sample_respacing: str = "30",  # respacing for inference - using 30 steps with Euler
-    sample_sampler: str = "euler",  # sampler for inference - Euler is fast and deterministic
     eval_base_sampler: str = "euler",  # sampler for base model evaluation
     eval_sr_sampler: str = "euler",  # sampler for super-resolution evaluation
     eval_base_sampler_steps: int = 30,  # number of steps for base model evaluation
@@ -182,7 +180,6 @@ def run_glide_finetune_epoch(
     gradient_accumulation_steps=1,
     epoch: int = 0,
     train_upsample: bool = False,
-    upsample_factor=4,
     eval_sr_base_images="data/images/base_64x64",
     upsampler_model=None,
     upsampler_options=None,
