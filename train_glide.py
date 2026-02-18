@@ -299,7 +299,6 @@ def run_glide_finetune(
     image_key="jpg",
     caption_key="txt",
     dataset_name="laion",
-    captions_jsonl=None,
     enable_upsample=False,
     upsample_factor=4,
     use_sr_eval=False,
@@ -359,7 +358,12 @@ def run_glide_finetune(
     )
     print("Wandb setup.")
 
-    # Model setup
+    # Model setup — resolve checkpoint path relative to checkpoints_dir if needed
+    if resume_ckpt and not os.path.exists(resume_ckpt):
+        candidate = os.path.join(checkpoints_dir, resume_ckpt)
+        if os.path.exists(candidate):
+            resume_ckpt = candidate
+
     if resume_ckpt:
         print("=" * 60)
         print(f"  RESUMING FROM CHECKPOINT: {resume_ckpt}")
@@ -505,8 +509,8 @@ def run_glide_finetune(
             uncond_p=uncond_p,
             ar_lower=0.5,
             ar_upper=2.0,
-            min_original_height=side_x * upsample_factor,
-            min_original_width=side_y * upsample_factor,
+            min_original_height=256 if latent_mode else side_x * upsample_factor,
+            min_original_width=256 if latent_mode else side_y * upsample_factor,
             upscale_factor=upsample_factor,
             nsfw_filter=True,
             similarity_threshold_upper=0.0,
@@ -1111,7 +1115,6 @@ if __name__ == "__main__":
         image_key=args.wds_image_key,
         caption_key=args.wds_caption_key,
         dataset_name=args.wds_dataset_name,
-        captions_jsonl=args.captions_jsonl,
         enable_upsample=args.train_upsample,
         upsample_factor=args.upscale_factor,
         use_sr_eval=args.use_sr_eval,
