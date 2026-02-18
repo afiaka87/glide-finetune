@@ -303,29 +303,31 @@ def parse_init_strategy(init_str, latent_mode):
 
 
 def parse_train_scope(train_str):
-    """Parse --train value into (freeze_transformer, freeze_diffusion, reinit_transformer).
+    """Parse --train value into (freeze_transformer, freeze_diffusion, reinit_transformer, reinit_unet).
 
     Returns:
-        (freeze_transformer, freeze_diffusion, reinit_transformer) booleans.
+        (freeze_transformer, freeze_diffusion, reinit_transformer, reinit_unet) booleans.
     """
     if train_str == "all":
-        return (False, False, False)
+        return (False, False, False, False)
     if train_str == "unet":
-        return (True, False, False)
+        return (True, False, False, False)
+    if train_str == "unet-scratch":
+        return (True, False, False, True)
     if train_str == "transformer":
-        return (False, True, False)
+        return (False, True, False, False)
     if train_str == "transformer-scratch":
-        return (False, True, True)
+        return (False, True, True, False)
 
     raise SystemExit(
         f"Error: Unknown --train value '{train_str}'. "
-        f"Valid values: all, unet, transformer, transformer-scratch"
+        f"Valid values: all, unet, unet-scratch, transformer, transformer-scratch"
     )
 
 
 def validate_config(init_strategy, init_path, train_scope, latent_mode, checkpoints_dir):
     """Validate combinations of --init and --train flags. Exits on invalid combos."""
-    freeze_transformer, freeze_diffusion, reinit_transformer = train_scope
+    freeze_transformer, freeze_diffusion, reinit_transformer, reinit_unet = train_scope
 
     if init_strategy == "pretrained" and latent_mode:
         raise SystemExit(
@@ -358,10 +360,11 @@ def validate_config(init_strategy, init_path, train_scope, latent_mode, checkpoi
                 f"Error: Pixel-transfer checkpoint path does not exist: {init_path}"
             )
 
-    if reinit_transformer and init_strategy == "scratch":
+    if (reinit_transformer or reinit_unet) and init_strategy == "scratch":
         import warnings
+        scope = "transformer-scratch" if reinit_transformer else "unet-scratch"
         warnings.warn(
-            "Warning: --train transformer-scratch with --init scratch is redundant "
+            f"Warning: --train {scope} with --init scratch is redundant "
             "(entire model is already randomly initialized)."
         )
 
@@ -383,6 +386,7 @@ def run_glide_finetune(
     freeze_transformer=False,
     freeze_diffusion=False,
     reinit_transformer=False,
+    reinit_unet=False,
     wandb_project_name="glide_finetune",
     activation_checkpointing=False,
     use_captions=True,
@@ -505,6 +509,21 @@ def run_glide_finetune(
                     th.nn.init.normal_(p, std=0.02)
                     reinit_count += p.numel()
         print(f"Reinitialized {reinit_count:,} transformer parameters")
+
+    # Reinitialize UNet/diffusion from scratch if requested (keeps pretrained text encoder)
+    if reinit_unet:
+        print("Reinitializing UNet/diffusion backbone from scratch...")
+        reinit_count = 0
+        for name in ["time_embed", "input_blocks", "middle_block", "output_blocks", "out"]:
+            if hasattr(glide_model, name):
+                module = getattr(glide_model, name)
+                for p in module.parameters():
+                    if p.dim() >= 2:
+                        th.nn.init.xavier_uniform_(p)
+                    else:
+                        th.nn.init.zeros_(p)
+                    reinit_count += p.numel()
+        print(f"Reinitialized {reinit_count:,} UNet parameters")
 
     # Create frozen VAE and CLIP encoders for latent mode
     vae = None
@@ -786,6 +805,7 @@ def parse_args():
             "Which components to train (others are frozen). "
             "Values: all (default, train everything), "
             "unet (freeze text encoder), "
+            "unet-scratch (reinit UNet from random, freeze text encoder), "
             "transformer (freeze UNet, keep encoder_kv trainable), "
             "transformer-scratch (reinit text encoder from random, freeze UNet)."
         ),
@@ -1130,12 +1150,12 @@ if __name__ == "__main__":
 
     # Parse --init and --train into structured values
     init_strategy, init_path = parse_init_strategy(args.init, args.latent_mode)
-    freeze_transformer, freeze_diffusion, reinit_transformer = parse_train_scope(args.train)
+    freeze_transformer, freeze_diffusion, reinit_transformer, reinit_unet = parse_train_scope(args.train)
 
     # Validate combinations
     validate_config(
         init_strategy, init_path,
-        (freeze_transformer, freeze_diffusion, reinit_transformer),
+        (freeze_transformer, freeze_diffusion, reinit_transformer, reinit_unet),
         args.latent_mode, args.checkpoints_dir,
     )
 
@@ -1157,6 +1177,7 @@ if __name__ == "__main__":
         freeze_transformer=freeze_transformer,
         freeze_diffusion=freeze_diffusion,
         reinit_transformer=reinit_transformer,
+        reinit_unet=reinit_unet,
         wandb_project_name=args.wandb_project_name,
         activation_checkpointing=args.activation_checkpointing,
         use_captions=args.use_captions,
