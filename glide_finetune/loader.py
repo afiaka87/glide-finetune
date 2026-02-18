@@ -61,9 +61,6 @@ class TextImageDataset(Dataset):
         enable_glide_upsample=False,
         upscale_factor=4,
         random_hflip=False,
-        random_brightness=False,
-        random_contrast=False,
-        random_color_jitter=False,
         latent_mode=False,
     ):
         super().__init__()
@@ -94,9 +91,6 @@ class TextImageDataset(Dataset):
         self.enable_upsample = enable_glide_upsample
         self.upscale_factor = upscale_factor
         self.random_hflip = random_hflip
-        self.random_brightness = random_brightness
-        self.random_contrast = random_contrast
-        self.random_color_jitter = random_color_jitter
         self.latent_mode = latent_mode
 
     def __len__(self):
@@ -150,31 +144,6 @@ class TextImageDataset(Dataset):
         # Apply random horizontal flip if enabled
         if self.random_hflip and random() < 0.5:
             original_pil_image = original_pil_image.transpose(PIL.Image.FLIP_LEFT_RIGHT)
-
-        # Apply color augmentations if enabled
-        if self.random_brightness and random() < 0.5:
-            from torchvision.transforms import functional as TF
-
-            brightness_factor = 0.5 + random() * 1.0  # 0.5 to 1.5
-            original_pil_image = TF.adjust_brightness(
-                original_pil_image, brightness_factor
-            )
-
-        if self.random_contrast and random() < 0.5:
-            from torchvision.transforms import functional as TF
-
-            contrast_factor = 0.5 + random() * 1.0  # 0.5 to 1.5
-            original_pil_image = TF.adjust_contrast(original_pil_image, contrast_factor)
-
-        if self.random_color_jitter and random() < 0.5:
-            from torchvision.transforms import functional as TF
-
-            saturation_factor = 0.5 + random() * 1.0  # 0.5 to 1.5
-            hue_factor = -0.1 + random() * 0.2  # -0.1 to 0.1
-            original_pil_image = TF.adjust_saturation(
-                original_pil_image, saturation_factor
-            )
-            original_pil_image = TF.adjust_hue(original_pil_image, hue_factor)
 
         if self.latent_mode:
             latent_pil = original_pil_image.resize(
