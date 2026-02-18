@@ -15,6 +15,7 @@
 #   --train <scope>     Controls which components are trained:
 #       all                      train everything (default)
 #       unet                     train UNet only, freeze text encoder
+#       unet-scratch             reinit UNet from random, freeze text encoder
 #       transformer              train text encoder only, freeze UNet
 #       transformer-scratch      reinit text encoder, freeze UNet
 
