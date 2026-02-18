@@ -210,6 +210,7 @@ python train_glide.py \
 |---|---|
 | `all` | Train everything (default) |
 | `unet` | Train only UNet, freeze text encoder |
+| `unet-scratch` | Reinit UNet from random, freeze text encoder |
 | `transformer` | Train only text encoder, freeze UNet (keeps encoder_kv trainable) |
 | `transformer-scratch` | Reinit text encoder from random, freeze UNet |
 
