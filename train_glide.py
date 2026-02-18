@@ -270,6 +270,102 @@ def validate_tar_files(
     return valid_tars
 
 
+def parse_init_strategy(init_str, latent_mode):
+    """Parse --init value into (strategy, path).
+
+    Returns:
+        (strategy, path) where strategy is one of: pretrained, scratch,
+        checkpoint, pixel-transfer; and path is empty or a file path.
+    """
+    if not init_str:
+        # Auto-default: scratch for latent, pretrained for pixel
+        return ("scratch", "") if latent_mode else ("pretrained", "")
+
+    if init_str == "pretrained":
+        return ("pretrained", "")
+    if init_str == "scratch":
+        return ("scratch", "")
+    if init_str.startswith("checkpoint:"):
+        path = init_str[len("checkpoint:"):]
+        if not path:
+            raise SystemExit("Error: --init checkpoint:<path> requires a path after the colon.")
+        return ("checkpoint", path)
+    if init_str.startswith("pixel-transfer:"):
+        path = init_str[len("pixel-transfer:"):]
+        if not path:
+            raise SystemExit("Error: --init pixel-transfer:<path> requires a path after the colon.")
+        return ("pixel-transfer", path)
+
+    raise SystemExit(
+        f"Error: Unknown --init value '{init_str}'. "
+        f"Valid values: pretrained, scratch, checkpoint:<path>, pixel-transfer:<path>"
+    )
+
+
+def parse_train_scope(train_str):
+    """Parse --train value into (freeze_transformer, freeze_diffusion, reinit_transformer).
+
+    Returns:
+        (freeze_transformer, freeze_diffusion, reinit_transformer) booleans.
+    """
+    if train_str == "all":
+        return (False, False, False)
+    if train_str == "unet":
+        return (True, False, False)
+    if train_str == "transformer":
+        return (False, True, False)
+    if train_str == "transformer-scratch":
+        return (False, True, True)
+
+    raise SystemExit(
+        f"Error: Unknown --train value '{train_str}'. "
+        f"Valid values: all, unet, transformer, transformer-scratch"
+    )
+
+
+def validate_config(init_strategy, init_path, train_scope, latent_mode, checkpoints_dir):
+    """Validate combinations of --init and --train flags. Exits on invalid combos."""
+    freeze_transformer, freeze_diffusion, reinit_transformer = train_scope
+
+    if init_strategy == "pretrained" and latent_mode:
+        raise SystemExit(
+            "Error: --init pretrained is not available with --latent_mode "
+            "(no pretrained latent checkpoint exists). "
+            "Use --init scratch or --init checkpoint:<path>."
+        )
+
+    if init_strategy == "pixel-transfer" and not latent_mode:
+        raise SystemExit(
+            "Error: --init pixel-transfer:<path> is only valid with --latent_mode."
+        )
+
+    if init_strategy == "checkpoint":
+        # Resolve path relative to checkpoints_dir if not found at literal path
+        path = init_path
+        if not os.path.exists(path):
+            candidate = os.path.join(checkpoints_dir, path)
+            if os.path.exists(candidate):
+                return  # will be resolved later in run_glide_finetune
+        if not os.path.exists(path) and not os.path.exists(os.path.join(checkpoints_dir, path)):
+            raise SystemExit(
+                f"Error: Checkpoint path does not exist: {path}\n"
+                f"Also checked: {os.path.join(checkpoints_dir, path)}"
+            )
+
+    if init_strategy == "pixel-transfer":
+        if not os.path.exists(init_path):
+            raise SystemExit(
+                f"Error: Pixel-transfer checkpoint path does not exist: {init_path}"
+            )
+
+    if reinit_transformer and init_strategy == "scratch":
+        import warnings
+        warnings.warn(
+            "Warning: --train transformer-scratch with --init scratch is redundant "
+            "(entire model is already randomly initialized)."
+        )
+
+
 def run_glide_finetune(
     data_dir="./data",
     batch_size=1,
@@ -279,13 +375,14 @@ def run_glide_finetune(
     side_y=64,
     resize_ratio=1.0,
     uncond_p=0.0,
-    resume_ckpt="",
+    init_strategy="pretrained",
+    init_path="",
     checkpoints_dir="./finetune_checkpoints",
-    use_fp16=False,  # Deprecated, use precision parameter
     precision="fp32",  # "fp32", "fp16", "bf16"
     device="cpu",
     freeze_transformer=False,
     freeze_diffusion=False,
+    reinit_transformer=False,
     wandb_project_name="glide_finetune",
     activation_checkpointing=False,
     use_captions=True,
@@ -307,8 +404,6 @@ def run_glide_finetune(
     gradient_accumulation_steps=1,
     random_hflip=False,
     ema_rate=0.9999,  # GLIDE paper value for EMA decay
-    reinit_transformer=False,
-    random_init=False,
     eval_interval=5000,
     reference_stats="",
     captions_jsonl_path=None,
@@ -316,7 +411,6 @@ def run_glide_finetune(
     vae_model="stabilityai/sd-vae-ft-mse",
     clip_model_name="ViT-L-14",
     clip_pretrained="laion2b_s32b_b82k",
-    init_from_pixel="",
     max_grad_norm=1.0,
     loss_spike_threshold=5.0,
     clip_threshold=0.0,
@@ -328,10 +422,6 @@ def run_glide_finetune(
 
     # Create the checkpoint/output directories
     os.makedirs(checkpoints_dir, exist_ok=True)
-
-    # Handle legacy use_fp16 parameter
-    if use_fp16:
-        precision = "fp16"
 
     # Latent mode overrides
     if latent_mode:
@@ -353,39 +443,40 @@ def run_glide_finetune(
     print("Wandb setup.")
 
     # Model setup — resolve checkpoint path relative to checkpoints_dir if needed
-    if resume_ckpt and not os.path.exists(resume_ckpt):
-        candidate = os.path.join(checkpoints_dir, resume_ckpt)
+    if init_strategy == "checkpoint" and init_path and not os.path.exists(init_path):
+        candidate = os.path.join(checkpoints_dir, init_path)
         if os.path.exists(candidate):
-            resume_ckpt = candidate
+            init_path = candidate
 
-    if resume_ckpt:
-        print("=" * 60)
-        print(f"  RESUMING FROM CHECKPOINT: {resume_ckpt}")
-        print("=" * 60)
+    print("=" * 60)
+    if init_strategy == "checkpoint":
+        print(f"  RESUMING FROM CHECKPOINT: {init_path}")
+    elif init_strategy == "pixel-transfer":
+        print(f"  PIXEL-TRANSFER FROM: {init_path}")
+    elif init_strategy == "pretrained":
+        print("  LOADING PRETRAINED WEIGHTS")
     else:
-        print("=" * 60)
-        print("  NO CHECKPOINT TO RESUME FROM — TRAINING FROM SCRATCH")
-        print("=" * 60)
+        print("  TRAINING FROM SCRATCH (random init)")
+    print("=" * 60)
 
     if latent_mode:
         glide_model, glide_diffusion, glide_options = load_latent_model(
-            glide_path=resume_ckpt,
+            init_strategy=init_strategy,
+            init_path=init_path,
             precision=precision,
             freeze_transformer=freeze_transformer,
             freeze_diffusion=freeze_diffusion,
             activation_checkpointing=activation_checkpointing,
-            init_from_pixel=init_from_pixel,
         )
     else:
         glide_model, glide_diffusion, glide_options = load_model(
-            glide_path=resume_ckpt,
-            use_fp16=False,  # Use precision parameter instead
+            init_strategy=init_strategy,
+            init_path=init_path,
             precision=precision,
             freeze_transformer=freeze_transformer,
             freeze_diffusion=freeze_diffusion,
             activation_checkpointing=activation_checkpointing,
             model_type="base" if not enable_upsample else "upsample",
-            random_init=random_init,
         )
     # Reinitialize transformer from scratch if requested (keeps pretrained UNet)
     if reinit_transformer:
@@ -451,8 +542,8 @@ def run_glide_finetune(
             print("  Using default pretrained SR model")
 
         upsampler_model, _, upsampler_options = load_model(
-            glide_path=sr_path,
-            use_fp16=use_fp16,
+            init_strategy="checkpoint" if sr_path else "pretrained",
+            init_path=sr_path,
             model_type="upsample",
         )
         upsampler_model.eval()
@@ -676,11 +767,28 @@ def parse_args():
         help="Train the upsampling type of the model instead of the base model.",
     )
     parser.add_argument(
-        "--resume_ckpt",
-        "-resume",
+        "--init",
         type=str,
         default="",
-        help="Checkpoint to resume from",
+        help=(
+            "Model initialization strategy. "
+            "Values: pretrained (default for pixel), scratch (default for latent), "
+            "checkpoint:<path> (resume from saved checkpoint), "
+            "pixel-transfer:<path> (transfer pixel weights to latent model). "
+            "Empty string = auto-select based on mode."
+        ),
+    )
+    parser.add_argument(
+        "--train",
+        type=str,
+        default="all",
+        help=(
+            "Which components to train (others are frozen). "
+            "Values: all (default, train everything), "
+            "unet (freeze text encoder), "
+            "transformer (freeze UNet, keep encoder_kv trainable), "
+            "transformer-scratch (reinit text encoder from random, freeze UNet)."
+        ),
     )
     parser.add_argument(
         "--checkpoints_dir", "-ckpt", type=str, default="./glide_checkpoints/"
@@ -705,18 +813,6 @@ def parse_args():
         type=int,
         default=500,
         help="Frequency of sampling images for evaluation (defaults to 500)",
-    )
-    parser.add_argument("--freeze_transformer", "-fz_xt", action="store_true")
-    parser.add_argument("--freeze_diffusion", "-fz_unet", action="store_true")
-    parser.add_argument(
-        "--reinit_transformer",
-        action="store_true",
-        help="Reinitialize transformer/text encoder from scratch (use with --freeze_diffusion to train only text encoder)",
-    )
-    parser.add_argument(
-        "--random_init",
-        action="store_true",
-        help="Skip loading any pretrained weights, train from random initialization",
     )
     parser.add_argument(
         "--wandb_project_name",
@@ -946,12 +1042,6 @@ def parse_args():
         help="OpenCLIP pretrained weights name (latent mode only)",
     )
     parser.add_argument(
-        "--init_from_pixel",
-        type=str,
-        default="",
-        help="Path to a pixel-space GLIDE checkpoint for weight transfer to latent model",
-    )
-    parser.add_argument(
         "--clip_threshold",
         type=float,
         default=0.0,
@@ -1038,6 +1128,17 @@ if __name__ == "__main__":
     else:
         data_dir = args.data_dir
 
+    # Parse --init and --train into structured values
+    init_strategy, init_path = parse_init_strategy(args.init, args.latent_mode)
+    freeze_transformer, freeze_diffusion, reinit_transformer = parse_train_scope(args.train)
+
+    # Validate combinations
+    validate_config(
+        init_strategy, init_path,
+        (freeze_transformer, freeze_diffusion, reinit_transformer),
+        args.latent_mode, args.checkpoints_dir,
+    )
+
     run_glide_finetune(
         data_dir=data_dir,
         batch_size=args.batch_size,
@@ -1047,14 +1148,15 @@ if __name__ == "__main__":
         side_y=args.side_y,
         resize_ratio=args.resize_ratio,
         uncond_p=args.uncond_p,
-        resume_ckpt=args.resume_ckpt,
+        init_strategy=init_strategy,
+        init_path=init_path,
         checkpoints_dir=args.checkpoints_dir,
-        use_fp16=args.use_fp16,
         precision=args.precision,
         device=device,
         sample_interval=args.sample_interval,
-        freeze_transformer=args.freeze_transformer,
-        freeze_diffusion=args.freeze_diffusion,
+        freeze_transformer=freeze_transformer,
+        freeze_diffusion=freeze_diffusion,
+        reinit_transformer=reinit_transformer,
         wandb_project_name=args.wandb_project_name,
         activation_checkpointing=args.activation_checkpointing,
         use_captions=args.use_captions,
@@ -1075,8 +1177,6 @@ if __name__ == "__main__":
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         random_hflip=args.random_hflip,
         ema_rate=args.ema_rate,
-        reinit_transformer=args.reinit_transformer,
-        random_init=args.random_init,
         eval_interval=args.eval_interval,
         reference_stats=args.reference_stats,
         captions_jsonl_path=args.wds_captions_jsonl,
@@ -1084,7 +1184,6 @@ if __name__ == "__main__":
         vae_model=args.vae_model,
         clip_model_name=args.clip_model_name,
         clip_pretrained=args.clip_pretrained,
-        init_from_pixel=args.init_from_pixel,
         max_grad_norm=args.max_grad_norm,
         loss_spike_threshold=args.loss_spike_threshold,
         clip_threshold=args.clip_threshold,
