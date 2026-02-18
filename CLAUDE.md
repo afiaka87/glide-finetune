@@ -32,9 +32,6 @@ uv run mypy .
 
 ```bash
 # Train base model (64x64) on LAION dataset
-bash run_train_glide.sh
-
-# Alternative: Direct training command
 uv run python train_glide.py \
   --data_dir /mnt/usb_nvme_2tb/Data/laion-2b-en-aesthetic-subset \
   --use_webdataset \
@@ -127,7 +124,6 @@ glide_finetune/
 ├── loader.py              # Standard image-caption dataset loader
 ├── wds_loader.py          # WebDataset loader for LAION/Alamy
 ├── train_util.py          # Training utilities, wandb setup
-├── fp16_util.py           # Mixed precision (FP16/BF16) utilities
 ├── enhanced_samplers.py   # Euler, Euler-A, DPM++ implementations
 ├── clip_rerank.py         # CLIP-based quality selection
 └── cli_utils.py           # CLI utilities for evaluation and generation
@@ -210,12 +206,6 @@ ls -la /mnt/usb_nvme_2tb/Data/laion-2b-en-aesthetic-subset/*.tar | head -5
 - `train_glide.py`: Primary training script with WebDataset support and tar validation
 - `evaluate_glide.py`: Batch generation with CLIP re-ranking and Rich UI
 - `gradio_app.py`: Interactive web interface for generation
-- `run_train_glide.sh`: Configured training script for LAION dataset
-
-### Utility Scripts
-- `test_bf16.py`: Test BF16 mixed precision training
-- `example_samplers.py`: Demonstrate different sampling methods
-- `quick_test_samplers.py`: Quick sampler testing
 
 ### Evaluation Prompts
 - `eval_captions_persons_aesthetic.txt`: Human-focused evaluation prompts for testing model quality
