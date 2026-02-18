@@ -364,9 +364,7 @@ def load_latent_model(
         pixel_weights = th.load(init_from_pixel, map_location="cpu")
         init_latent_from_pixel(glide_model, pixel_weights)
     else:
-        print(
-            "Warning: No checkpoint provided for latent model. Using random initialization."
-        )
+        print("Latent model: using random initialization.")
 
     # Freeze transformer if requested
     if freeze_transformer:
