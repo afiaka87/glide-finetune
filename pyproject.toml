@@ -40,18 +40,14 @@ dependencies = [
     "open-clip-torch>=2.20.0",
     "torchmetrics>=1.0.0",
     "torch-fidelity>=0.3.0",
-    "typer>=0.17.4",
     "python-dotenv>=1.2.1",
 ]
 
 [tool.uv.sources]
 glide-text2im = { path = "glide-text2im", editable = true }
 
-[project.scripts]
-glide = "glide_finetune.cli:app"
-
 [tool.setuptools]
-packages = ["glide_finetune", "glide_finetune.cli"]
+packages = ["glide_finetune"]
 
 [dependency-groups]
 dev = [
