@@ -114,6 +114,7 @@ def glide_wds_loader(
     random_hflip=False,  # Random horizontal flip augmentation
     captions_jsonl_path=None,  # Path to external JSONL captions (required for datacomp-synthetic and datacomp-clip)
     latent_mode=False,  # Latent diffusion mode: resize to 256x256, return caption strings
+    clip_threshold=0.0,  # Minimum CLIP score for datacomp-clip (max of orig/gen must meet this)
 ):
     if debug:
         print("\nDEBUG: glide_wds_loader called with:")
@@ -255,6 +256,15 @@ def glide_wds_loader(
                     continue
                 _caption_index[key] = obj
         print(f"  Loaded {len(_caption_index):,} entries")
+        if clip_threshold > 0.0:
+            eligible = sum(
+                1 for e in _caption_index.values()
+                if max(
+                    e.get("original_caption_clip_score", 0.0),
+                    e.get("generated_caption_clip_score", 0.0),
+                ) >= clip_threshold
+            )
+            print(f"  CLIP threshold {clip_threshold}: {eligible:,} / {len(_caption_index):,} entries eligible ({100 * eligible / len(_caption_index):.1f}%)")
 
     def filter_dataset_datacomp_synthetic(item):
         # Require an image
@@ -297,6 +307,14 @@ def glide_wds_loader(
             entry = _caption_index[sample_key]
             if "original_caption_clip_score" not in entry or "generated_caption_clip_score" not in entry:
                 return False
+            # Apply CLIP score threshold: best-of-two must meet threshold
+            if clip_threshold > 0.0:
+                best_score = max(
+                    entry["original_caption_clip_score"],
+                    entry["generated_caption_clip_score"],
+                )
+                if best_score < clip_threshold:
+                    return False
         return True
 
     if debug:
