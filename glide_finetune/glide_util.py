@@ -2,7 +2,7 @@
 # Utilities for tokenizing, padding, and batching data and sampling from GLIDE.
 
 import os
-from typing import Tuple, Literal, Optional, Union
+from typing import Tuple, Literal, Optional
 
 import PIL
 import numpy as np
