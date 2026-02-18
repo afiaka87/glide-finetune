@@ -814,12 +814,6 @@ def parse_args():
         "--checkpoints_dir", "-ckpt", type=str, default="./glide_checkpoints/"
     )
     parser.add_argument(
-        "--use_fp16",
-        "-fp16",
-        action="store_true",
-        help="[Deprecated] Use --precision fp16 instead",
-    )
-    parser.add_argument(
         "--precision",
         type=str,
         default="fp32",
