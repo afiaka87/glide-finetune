@@ -17,21 +17,13 @@ Fine-tune and evaluate GLIDE text-to-image diffusion models.
 
 ## Installation
 
-### Using uv (Recommended)
+Requires [uv](https://docs.astral.sh/uv/getting-started/installation/) and Python 3.12+.
+
 ```bash
 git clone https://github.com/afiaka87/glide-finetune.git
 cd glide-finetune/
 uv sync
 uv pip install -e .
-```
-
-### Using pip
-```bash
-git clone https://github.com/afiaka87/glide-finetune.git
-cd glide-finetune/
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .
 ```
 
 ## Quick Start
