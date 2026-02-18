@@ -134,6 +134,13 @@ def latent_train_step(
     clip_emb = clip_encoder.encode_text_batch(captions)  # [B, 768], already float32
     clip_emb = clip_emb.to(device)
 
+    # Zero out CLIP embeddings for unconditional samples (where uncond_p
+    # replaced the caption with "").  This must match inference, which uses
+    # clip_emb=zeros for the unconditional CFG branch.
+    for i, cap in enumerate(captions):
+        if cap == "":
+            clip_emb[i] = 0.0
+
     timesteps = th.randint(
         0, len(glide_diffusion.betas) - 1, (latents.shape[0],), device=device
     )
