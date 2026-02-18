@@ -71,8 +71,6 @@ no_implicit_optional = true
 strict_optional = true
 exclude = [
     "wandb/",
-    "glide-cli-batch/",
-    "glide-cli-test/",
     "__pycache__/",
     ".mypy_cache/",
 ]
