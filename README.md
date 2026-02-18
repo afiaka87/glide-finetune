@@ -6,15 +6,6 @@ Fine-tune and evaluate GLIDE text-to-image diffusion models.
 
 ---
 
-## Features
-
-- Multiple samplers: Euler, Euler-A, DPM++, PLMS, DDIM
-- CLIP re-ranking: generate N candidates, keep the best K
-- WebDataset support for large-scale training (LAION, DataComp, etc.)
-- BF16/FP16 mixed precision, gradient accumulation, gradient checkpointing, torch.compile
-- W&B logging
-- Experimental latent diffusion mode (frozen SD 1.5 VAE + OpenCLIP encoder)
-
 ## Installation
 
 Requires [uv](https://docs.astral.sh/uv/getting-started/installation/) and Python 3.12+.
@@ -75,27 +66,6 @@ python evaluate_glide.py \
   --sampler euler \
   --cfg 4.0
 ```
-
-## Features
-
-### Samplers
-- **euler**: Fast deterministic ODE solver
-- **euler_a**: Euler with ancestral sampling
-- **dpm++**: DPM-Solver++ for fewer steps
-- **plms**: Pseudo Linear Multi-Step
-- **ddim**: Denoising Diffusion Implicit Models
-
-### CLIP Re-ranking
-Generate multiple candidates and select the best using CLIP:
-- Supports OpenCLIP models (ViT-L-14/laion2b_s32b_b82k recommended)
-- Memory-efficient GPU offloading
-- Batch processing for speed
-
-### Performance Optimizations
-- **Gradient Accumulation**: Larger effective batch sizes (`--gradient_accumulation_steps`)
-- **Mixed Precision**: BF16 recommended (`--precision bf16`)
-- **Gradient Checkpointing**: Trade compute for memory (`--activation_checkpointing`)
-- **torch.compile**: Optimized inference
 
 ## Latent Diffusion Mode (Experimental)
 
