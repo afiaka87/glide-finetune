@@ -93,8 +93,8 @@ def load_models_if_needed(
 
     # Load base model
     base_model, base_diffusion, base_options = load_model(
-        glide_path=base_model_path,
-        use_fp16=use_fp16,
+        init_strategy="checkpoint" if base_model_path else "pretrained",
+        init_path=base_model_path,
         model_type="base",
     )
     base_model.to(device)
@@ -112,8 +112,8 @@ def load_models_if_needed(
 
     # Load SR model
     sr_model, sr_diffusion, sr_options = load_model(
-        glide_path=sr_model_path,
-        use_fp16=use_fp16,
+        init_strategy="checkpoint" if sr_model_path else "pretrained",
+        init_path=sr_model_path,
         model_type="upsample",
     )
     sr_model.to(device)
