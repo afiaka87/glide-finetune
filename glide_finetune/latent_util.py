@@ -133,7 +133,7 @@ def init_latent_from_pixel(
     - All matching-shape weights: copy directly.
     - Input conv (input_blocks.0.0.weight): copy 3 RGB channels, zero-init 4th.
     - Output conv (out.2.weight/bias): copy first 6 channels, zero-init last 2.
-    - New CLIP layers (clip_to_time, clip_to_xf): zero-initialized.
+    - New CLIP layers: output layers zero-initialized (clip_to_time.2, clip_to_xf).
 
     Modifies latent_model in-place.
     """
@@ -181,12 +181,19 @@ def init_latent_from_pixel(
         else:
             skipped_shape += 1
 
-    # Zero-initialize CLIP projection layers so they contribute nothing at
-    # the start of training.  With random init these inject noise into the
-    # timestep embedding (clip_to_time) and cross-attention (clip_to_xf),
-    # which corrupts the transferred UNet weights and produces noisy samples.
+    # Zero-initialize the *output* layers of the CLIP projections so they
+    # contribute nothing at the start of training (preserving transferred
+    # UNet weights).  We keep the *input* layer of clip_to_time randomly
+    # initialized so that gradients can flow — zero-initializing both layers
+    # of a Sequential(Linear, SiLU, Linear) creates a dead layer where
+    # SiLU(0)=0 blocks all gradient flow.
+    #
+    # clip_to_time = Sequential(Linear, SiLU, Linear)  — zero layer 2 only
+    # clip_to_xf   = Linear                            — zero the whole thing
     for name, param in latent_sd.items():
-        if name.startswith(("clip_to_time.", "clip_to_xf.")):
+        if name.startswith("clip_to_xf."):
+            param.zero_()
+        elif name.startswith("clip_to_time.2."):
             param.zero_()
 
     print(
