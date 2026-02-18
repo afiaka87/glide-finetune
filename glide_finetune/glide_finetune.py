@@ -187,8 +187,6 @@ def run_glide_finetune_epoch(
     upsampler_model=None,
     upsampler_options=None,
     use_sr_eval: bool = False,
-    use_lora: bool = False,
-    lora_save_steps: int = 1000,
     save_checkpoint_interval: int = 5000,
     eval_interval: int = 5000,
     reference_stats: str = "",
@@ -215,7 +213,7 @@ def run_glide_finetune_epoch(
     else:
         print(f"Warning: {prompt_file} not found, sampling will use empty prompts")
 
-    # Model should already be on correct device - moved in load_model_with_lora or before EMA creation
+    # Model should already be on correct device - moved before EMA creation
     glide_model.to(memory_format=th.channels_last)
     glide_model.train()
 
@@ -939,61 +937,19 @@ def run_glide_finetune_epoch(
                     ema_model.swap()
                 glide_model.train()
 
-        # Save LoRA adapter if enabled and at save interval
-        if (
-            use_lora
-            and lora_save_steps > 0
-            and train_idx % lora_save_steps == 0
-            and train_idx > 0
-        ):
-            from glide_finetune.lora_wrapper import save_lora_checkpoint
-
-            lora_save_path = os.path.join(
-                checkpoints_dir, f"lora_adapter_{epoch}_{train_idx}"
-            )
-            save_lora_checkpoint(
-                glide_model,
-                lora_save_path,
-                metadata={
-                    "epoch": epoch,
-                    "step": train_idx,
-                    "loss": current_loss,
-                },
-            )
-            print(f"Saved LoRA adapter to {lora_save_path}")
-
         if (
             save_checkpoint_interval > 0
             and train_idx % save_checkpoint_interval == 0
             and train_idx > 0
         ):
-            if use_lora:
-                # For LoRA, save adapter separately
-                from glide_finetune.lora_wrapper import save_lora_checkpoint
+            train_util.save_model(glide_model, checkpoints_dir, train_idx, epoch)
 
-                lora_save_path = os.path.join(
-                    checkpoints_dir, f"lora_checkpoint_{epoch}_{train_idx}"
+            # Save EMA model if available
+            if ema_model is not None:
+                train_util.save_ema_model(
+                    ema_model, checkpoints_dir, train_idx, epoch, ema_model.decay
                 )
-                save_lora_checkpoint(
-                    glide_model,
-                    lora_save_path,
-                    metadata={
-                        "epoch": epoch,
-                        "step": train_idx,
-                        "loss": current_loss,
-                    },
-                )
-                print(f"Saved LoRA checkpoint to {lora_save_path}")
-            else:
-                # Save full model if not using LoRA
-                train_util.save_model(glide_model, checkpoints_dir, train_idx, epoch)
-
-                # Save EMA model if available
-                if ema_model is not None:
-                    train_util.save_ema_model(
-                        ema_model, checkpoints_dir, train_idx, epoch, ema_model.decay
-                    )
-                    print(f"Saved EMA checkpoint with decay {ema_model.decay}")
+                print(f"Saved EMA checkpoint with decay {ema_model.decay}")
 
     pbar.close()
 
@@ -1005,25 +961,10 @@ def run_glide_finetune_epoch(
             ema_model.update()
 
     print("Finished training, saving final checkpoint")
-    if use_lora:
-        from glide_finetune.lora_wrapper import save_lora_checkpoint
-
-        final_lora_path = os.path.join(checkpoints_dir, f"lora_final_{epoch}")
-        save_lora_checkpoint(
-            glide_model,
-            final_lora_path,
-            metadata={
-                "epoch": epoch,
-                "step": train_idx,
-                "final": True,
-            },
+    train_util.save_model(glide_model, checkpoints_dir, train_idx, epoch)
+    # Save final EMA model if available
+    if ema_model is not None:
+        train_util.save_ema_model(
+            ema_model, checkpoints_dir, train_idx, epoch, ema_model.decay
         )
-        print(f"Saved final LoRA adapter to {final_lora_path}")
-    else:
-        train_util.save_model(glide_model, checkpoints_dir, train_idx, epoch)
-        # Save final EMA model if available
-        if ema_model is not None:
-            train_util.save_ema_model(
-                ema_model, checkpoints_dir, train_idx, epoch, ema_model.decay
-            )
-            print(f"Saved final EMA checkpoint with decay {ema_model.decay}")
+        print(f"Saved final EMA checkpoint with decay {ema_model.decay}")
