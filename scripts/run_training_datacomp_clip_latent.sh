@@ -4,6 +4,19 @@
 # Latent diffusion: 256x256 images encoded to 32x32 latents via frozen SD 1.5 VAE.
 # Text conditioning via frozen OpenCLIP ViT-L-14 instead of GLIDE's text transformer.
 # Resuming from checkpoint.
+#
+# --- Model init & training scope CLI ---
+#   --init <strategy>   Controls weight initialization:
+#       (empty)                  auto: pretrained for pixel, scratch for latent
+#       pretrained               OpenAI pretrained weights (pixel mode only)
+#       scratch                  random init
+#       checkpoint:<path>        resume from a saved checkpoint
+#       pixel-transfer:<path>    transfer pixel weights to latent model
+#   --train <scope>     Controls which components are trained:
+#       all                      train everything (default)
+#       unet                     train UNet only, freeze text encoder
+#       transformer              train text encoder only, freeze UNet
+#       transformer-scratch      reinit text encoder, freeze UNet
 
 echo "Starting GLIDE LATENT training on DataComp-10M (best CLIP caption)..."
 echo "Dataset: /home/sam/Data/datacomp10m/"
