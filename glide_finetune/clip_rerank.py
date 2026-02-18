@@ -253,38 +253,6 @@ class CLIPReranker:
             return top_indices, top_scores.cpu()
         return top_indices
 
-    def get_best_images(
-        self,
-        all_candidates: List[List[Union[Image.Image, torch.Tensor, np.ndarray]]],
-        prompts: List[str],
-        top_k: int = 8,
-        batch_size: int = 16,
-    ) -> List[Tuple[List[int], torch.Tensor]]:
-        """
-        Get the best images for multiple prompts.
-
-        Args:
-            all_candidates: List of candidate image lists (one per prompt)
-            prompts: List of text prompts
-            top_k: Number of top images to select per prompt
-            batch_size: Batch size for processing
-
-        Returns:
-            List of (indices, scores) tuples for each prompt
-        """
-        results = []
-
-        for candidates, prompt in zip(all_candidates, prompts):
-            self.console.print(
-                f"[cyan]Re-ranking {len(candidates)} candidates for: {prompt[:50]}...[/cyan]"
-            )
-            indices, scores = self.rerank_images(
-                candidates, prompt, top_k, batch_size, return_scores=True
-            )
-            results.append((indices, scores))
-
-        return results
-
     def __enter__(self):
         """Context manager entry - load model."""
         self.load_model()
@@ -293,24 +261,3 @@ class CLIPReranker:
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit - unload model."""
         self.unload_model()
-
-
-def create_reranker(
-    model_name: str = "ViT-L/14",
-    device: Optional[str] = None,
-    use_fp16: bool = False,
-    console: Optional[Console] = None,
-) -> CLIPReranker:
-    """
-    Factory function to create a CLIP re-ranker.
-
-    Args:
-        model_name: Name of the CLIP model to use
-        device: Device to run the model on
-        use_fp16: Whether to use FP16 precision
-        console: Rich console for output
-
-    Returns:
-        CLIPReranker instance
-    """
-    return CLIPReranker(model_name, device, use_fp16, console)
