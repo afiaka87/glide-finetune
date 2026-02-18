@@ -2,9 +2,9 @@
 
 [colab](https://github.com/eliohead/glide-finetune-colab)
 
-Fine-tune and evaluate GLIDE text-to-image diffusion models with a modern CLI interface.
+Fine-tune and evaluate GLIDE text-to-image diffusion models.
 
---- 
+---
 
 ## Features
 
@@ -36,116 +36,55 @@ pip install -e .
 
 ## Quick Start
 
-### Generate Images
-
+### Train Base Model (64x64)
 ```bash
-# Generate a single image
-glide eval generate base.pt sr.pt \
-  --prompt "a serene mountain landscape at sunset" \
-  --cfg 4.0 \
-  --seed 42
-
-# Generate from prompt file with CLIP re-ranking
-glide eval generate base.pt sr.pt \
-  --prompt-file prompts.txt \
-  --clip-rerank \
-  --clip-candidates 32 \
-  --clip-top-k 8
-```
-
-### Train Models
-
-```bash
-# Train base model (64x64)
-glide train base /path/to/dataset \
-  --batch-size 4 \
-  --lr 1e-4 \
-  --wandb my-project
-
-# Train upsampler (64→256)
-glide train upsampler /path/to/dataset \
-  --upscale 4 \
-  --lr 5e-5 \
-  --wandb my-upsampler
-```
-
-## CLI Usage
-
-The GLIDE CLI provides two main commands: `train` and `eval`.
-
-### Training Commands
-
-#### Train Base Model (64x64)
-```bash
-glide train base /path/to/dataset \
-  --batch-size 4 \
-  --lr 1e-4 \
-  --epochs 100 \
-  --uncond-p 0.2 \  # Classifier-free guidance
-  --wandb my-project \
-  --fp16 \  # Mixed precision
-  --grad-ckpt  # Gradient checkpointing
-```
-
-#### Train on WebDataset (LAION)
-```bash
-glide train base /mnt/laion/*.tar \
-  --webdataset \
-  --batch-size 8 \
-  --lr 1e-4 \
-  --precision bf16 \
-  --grad-ckpt
-```
-
-#### BF16 Mixed Precision Training (Recommended)
-```bash
-# BF16 provides better stability than FP16
 python train_glide.py \
   --data_dir /path/to/dataset \
-  --precision bf16 \
   --batch_size 4 \
-  --gradient_accumulation_steps 4 \
+  --learning_rate 1e-4 \
+  --uncond_p 0.2 \
+  --precision bf16 \
+  --wandb_project_name my-project
+```
+
+### Train on WebDataset (LAION)
+```bash
+python train_glide.py \
+  --data_dir "/mnt/laion/*.tar" \
+  --use_webdataset \
+  --wds_image_key jpg \
+  --wds_caption_key txt \
+  --use_captions \
+  --batch_size 8 \
+  --learning_rate 1e-4 \
+  --precision bf16 \
   --activation_checkpointing
 ```
 
-### Evaluation Commands
-
-#### Generate with Advanced Samplers
+### Train Upsampler (64->256)
 ```bash
-# DPM++ for better quality with fewer steps
-glide eval generate base.pt sr.pt \
-  --prompt "a masterpiece painting" \
-  --sampler dpm++ \
-  --base-steps 20 \
-  --sr-steps 15
+python train_glide.py \
+  --data_dir /path/to/dataset \
+  --train_upsample \
+  --upscale_factor 4 \
+  --uncond_p 0.0 \
+  --precision bf16
+```
 
-# Euler for fast generation
-glide eval generate base.pt sr.pt \
-  --prompt "futuristic city" \
+### Evaluate / Generate
+```bash
+python evaluate_glide.py \
+  --prompt_file eval_captions.txt \
+  --base_model checkpoints/base.pt \
+  --sr_model checkpoints/sr.pt \
+  --use_clip_rerank \
+  --clip_candidates 32 \
+  --clip_top_k 8 \
   --sampler euler \
-  --cfg 3.0
+  --cfg 4.0
 ```
 
-#### CLIP Re-ranking for Quality
-```bash
-glide eval generate base.pt sr.pt \
-  --prompt-file artistic_prompts.txt \
-  --clip-rerank \
-  --clip-model ViT-L-14/laion2b_s32b_b82k \
-  --clip-candidates 64 \
-  --clip-top-k 4
-```
-
-#### Compare Models
-```bash
-glide eval compare \
-  model1_base.pt model1_sr.pt \
-  model2_base.pt model2_sr.pt \
-  "a test prompt" \
-  --seed 42
-```
-
-## Advanced Features
+## Features
 
 ### Samplers
 - **euler**: Fast deterministic ODE solver
@@ -161,9 +100,9 @@ Generate multiple candidates and select the best using CLIP:
 - Batch processing for speed
 
 ### Performance Optimizations
-- **Gradient Accumulation**: Larger effective batch sizes
-- **Mixed Precision**: FP16/BF16 training
-- **Gradient Checkpointing**: Trade compute for memory
+- **Gradient Accumulation**: Larger effective batch sizes (`--gradient_accumulation_steps`)
+- **Mixed Precision**: BF16 recommended (`--precision bf16`)
+- **Gradient Checkpointing**: Trade compute for memory (`--activation_checkpointing`)
 - **torch.compile**: Optimized inference
 
 ## Latent Diffusion Mode (Experimental)
@@ -215,32 +154,6 @@ python train_glide.py \
 | `transformer-scratch` | Reinit text encoder from random, freeze UNet |
 
 ## Legacy Script Usage
-
-The original training scripts are still available:
-
-### Train Base Model (Traditional)
-```bash
-python train_glide.py \
-  --data_dir '/path/to/dataset' \
-  --batch_size 4 \
-  --learning_rate 1e-04 \
-  --side_x 64 \
-  --side_y 64 \
-  --uncond_p 0.2 \
-  --wandb_project_name 'my_project'
-```
-
-### Train Upsampler (Traditional)
-```bash
-python train_glide.py \
-  --data_dir '/path/to/dataset' \
-  --train_upsample \
-  --upscale_factor 4 \
-  --side_x 64 \
-  --side_y 64 \
-  --uncond_p 0.0
-```
-
 
 ## Full Usage
 
