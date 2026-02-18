@@ -58,15 +58,6 @@ uv run python train_glide.py \
   --uncond_p 0.0 \
   --precision bf16
 
-# LoRA fine-tuning (parameter-efficient)
-uv run python train_glide.py \
-  --data_dir /path/to/dataset \
-  --use_lora \
-  --lora_rank 8 \
-  --lora_alpha 32 \
-  --lora_target_mode attention \
-  --freeze_transformer \
-  --freeze_diffusion
 ```
 
 ### Evaluation and Generation
@@ -125,7 +116,6 @@ The repository implements GLIDE (Guided Language to Image Diffusion) fine-tuning
 #### Memory Optimization
 - **BF16 Training** (`--precision bf16`): Recommended for stability over FP16
 - **Gradient Checkpointing** (`--activation_checkpointing`): Trade compute for memory
-- **LoRA** (`--use_lora`): Reduces trainable parameters by 90%+
 - **CLIP Re-ranking**: Offloads GLIDE to CPU during CLIP scoring
 
 ### Module Structure
@@ -139,7 +129,6 @@ glide_finetune/
 ├── train_util.py          # Training utilities, wandb setup
 ├── fp16_util.py           # Mixed precision (FP16/BF16) utilities
 ├── enhanced_samplers.py   # Euler, Euler-A, DPM++ implementations
-├── lora_wrapper.py        # LoRA adaptation layers
 ├── clip_rerank.py         # CLIP-based quality selection
 └── cli_utils.py           # CLI utilities for evaluation and generation
 ```
@@ -180,11 +169,6 @@ samples = sample(model, options, 64, 64,
 - Model format: Use `ViT-L-14` (hyphen) not `ViT-L/14` (slash) for OpenCLIP
 - Memory management: Automatic GPU offloading during ranking phase
 - Output structure: Images saved as `image_rank_001.jpg` with metadata.json
-
-### LoRA Configuration
-- `lora_target_mode`: 'attention' (fastest), 'mlp', 'all' (most parameters)
-- `lora_rank`: 4-8 for most tasks, 16+ for complex adaptations
-- `lora_alpha`: Typically 2x-4x the rank value
 
 ## Common Issues and Solutions
 
