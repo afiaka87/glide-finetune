@@ -40,14 +40,13 @@ def get_tokens_and_mask(
 
 
 def load_model(
-    glide_path: str = "",
-    use_fp16: bool = False,
+    init_strategy: str = "pretrained",
+    init_path: str = "",
     precision: str = "fp32",  # "fp32", "fp16", "bf16"
     freeze_transformer: bool = False,
     freeze_diffusion: bool = False,
     activation_checkpointing: bool = False,
     model_type: str = "base",
-    random_init: bool = False,
 ):
     assert model_type in MODEL_TYPES, f"Model must be one of {MODEL_TYPES}. Exiting."
     if model_type in ["base", "base-inpaint"]:
@@ -57,9 +56,6 @@ def load_model(
     if "inpaint" in model_type:
         options["inpaint"] = True
 
-    # Handle legacy use_fp16 parameter
-    if use_fp16:
-        precision = "fp16"
     options["use_fp16"] = precision == "fp16"
     glide_model, glide_diffusion = create_model_and_diffusion(**options)
     if activation_checkpointing:
@@ -122,19 +118,25 @@ def load_model(
 
         # Note: label_emb doesn't exist in base model but might in other variants
 
-    if random_init:
+    # Load weights based on init strategy
+    if init_strategy == "scratch":
         print("Using random initialization (no pretrained weights)")
-    elif len(glide_path) > 0:  # user provided checkpoint
-        assert os.path.exists(glide_path), "glide path does not exist"
-        weights = th.load(glide_path, map_location="cpu")
+    elif init_strategy == "checkpoint":
+        assert os.path.exists(init_path), f"Checkpoint path does not exist: {init_path}"
+        weights = th.load(init_path, map_location="cpu")
         # Strip _orig_mod. prefix from torch.compile'd checkpoints
         if any(k.startswith("_orig_mod.") for k in weights):
             weights = {k.removeprefix("_orig_mod."): v for k, v in weights.items()}
         glide_model.load_state_dict(weights)
-    else:  # use default checkpoint from openai
+    elif init_strategy == "pretrained":
         glide_model.load_state_dict(
             load_checkpoint(model_type, th.device("cpu"))
         )  # always load to cpu, saves memory
+    else:
+        raise ValueError(
+            f"Unknown init_strategy '{init_strategy}' for pixel model. "
+            f"Valid strategies: pretrained, scratch, checkpoint:<path>"
+        )
 
     # Print parameter freeze status
     if freeze_transformer or freeze_diffusion:
@@ -254,22 +256,22 @@ def _print_freeze_status(model, freeze_transformer, freeze_diffusion):
 
 
 def load_latent_model(
-    glide_path: str = "",
+    init_strategy: str = "scratch",
+    init_path: str = "",
     precision: str = "fp32",
     freeze_transformer: bool = False,
     freeze_diffusion: bool = False,
     activation_checkpointing: bool = False,
-    init_from_pixel: str = "",
 ):
     """Load a LatentText2ImUNet model for latent-space diffusion.
 
     Args:
-        glide_path: Path to a latent-mode checkpoint to resume from.
+        init_strategy: One of "scratch", "checkpoint", or "pixel-transfer".
+        init_path: Path for checkpoint or pixel-transfer strategies.
         precision: "fp32", "fp16", or "bf16".
         freeze_transformer: Freeze the GLIDE text transformer.
         freeze_diffusion: Freeze the UNet diffusion backbone.
         activation_checkpointing: Enable gradient checkpointing.
-        init_from_pixel: Path to a pixel-space checkpoint for weight transfer.
     """
     options = model_and_diffusion_defaults_latent()
     options["use_fp16"] = precision == "fp16"
@@ -280,18 +282,27 @@ def load_latent_model(
 
     glide_model.requires_grad_(True)
 
-    if glide_path and os.path.exists(glide_path):
-        weights = th.load(glide_path, map_location="cpu")
+    if init_strategy == "scratch":
+        print("Latent model: using random initialization.")
+    elif init_strategy == "checkpoint":
+        assert os.path.exists(init_path), f"Checkpoint path does not exist: {init_path}"
+        weights = th.load(init_path, map_location="cpu")
         if any(k.startswith("_orig_mod.") for k in weights):
             weights = {k.removeprefix("_orig_mod."): v for k, v in weights.items()}
         glide_model.load_state_dict(weights)
-    elif init_from_pixel and os.path.exists(init_from_pixel):
+    elif init_strategy == "pixel-transfer":
+        assert os.path.exists(init_path), (
+            f"Pixel checkpoint path does not exist: {init_path}"
+        )
         from glide_finetune.latent_util import init_latent_from_pixel
 
-        pixel_weights = th.load(init_from_pixel, map_location="cpu")
+        pixel_weights = th.load(init_path, map_location="cpu")
         init_latent_from_pixel(glide_model, pixel_weights)
     else:
-        print("Latent model: using random initialization.")
+        raise ValueError(
+            f"Unknown init_strategy '{init_strategy}' for latent model. "
+            f"Valid strategies: scratch, checkpoint:<path>, pixel-transfer:<path>"
+        )
 
     # Freeze transformer if requested
     if freeze_transformer:
