@@ -217,38 +217,6 @@ def pil_image_to_norm_tensor(pil_image):
     return th.from_numpy(arr).permute(2, 0, 1) / 127.5 - 1.0
 
 
-def resize_for_upsample(
-    original, low_res_x, low_res_y, upscale_factor: int = 4
-) -> Tuple[th.Tensor, th.Tensor]:
-    """
-    Resize/Crop an image to the size of the low resolution image. This is useful for upsampling.
-
-    Args:
-        original: A PIL.Image object to be cropped.
-        low_res_x: The width of the low resolution image.
-        low_res_y: The height of the low resolution image.
-        upscale_factor: The factor by which to upsample the image.
-
-    Returns:
-        The downsampled image and the corresponding upscaled version cropped according to upscale_factor.
-    """
-    high_res_x, high_res_y = low_res_x * upscale_factor, low_res_y * upscale_factor
-    high_res_image = original.resize((high_res_x, high_res_y), Image.Resampling.LANCZOS)
-    high_res_tensor = pil_image_to_norm_tensor(pil_image=high_res_image)
-    low_res_image = high_res_image.resize(
-        (low_res_x, low_res_y), resample=Image.Resampling.BICUBIC
-    )
-    low_res_tensor = pil_image_to_norm_tensor(pil_image=low_res_image)
-    return low_res_tensor, high_res_tensor
-
-
-def mean_flat(tensor):
-    """
-    Take the mean over all non-batch dimensions.
-    """
-    return tensor.mean(dim=list(range(1, len(tensor.shape))))
-
-
 def wandb_setup(
     batch_size: int,
     side_x: int,
