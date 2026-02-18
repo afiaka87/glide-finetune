@@ -1,4 +1,5 @@
 import argparse
+from dotenv import load_dotenv
 from glob import glob
 import os
 import time
@@ -963,8 +964,16 @@ def parse_args():
 
 
 if __name__ == "__main__":
+    load_dotenv()
+
     # CUDA/CPU setup
     args = parse_args()
+
+    if args.wandb_project_name and not os.environ.get("WANDB_API_KEY"):
+        print(
+            "Warning: --wandb_project_name is set but WANDB_API_KEY not found. "
+            "Set it in .env or as an environment variable."
+        )
 
     if len(args.device) > 0:
         device = th.device(args.device)

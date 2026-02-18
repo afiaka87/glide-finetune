@@ -10,8 +10,6 @@ echo "Dataset: /home/sam/Data/datacomp10m/"
 echo "Captions: /home/sam/Data/datacomp10m/captions/datacomp-10m-captions.jsonl"
 echo ""
 
-export WANDB_API_KEY='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'
-
 uv run python train_glide.py \
     --data_dir "/home/sam/Data/datacomp10m/*.tar" \
     --use_webdataset \

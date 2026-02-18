@@ -27,6 +27,9 @@ glide-outputs/
 # Scripts (personal run configs)
 *.sh
 
+# Secrets
+.env
+
 # Misc
 trash/
 scripts/

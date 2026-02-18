@@ -41,6 +41,7 @@ dependencies = [
     "torchmetrics>=1.0.0",
     "torch-fidelity>=0.3.0",
     "typer>=0.17.4",
+    "python-dotenv>=1.2.1",
 ]
 
 [tool.uv.sources]
