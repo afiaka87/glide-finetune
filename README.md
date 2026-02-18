@@ -174,7 +174,6 @@ Experimental support for training GLIDE in latent space. Instead of denoising 64
 ```bash
 python train_glide.py \
   --latent_mode \
-  --random_init \
   --data_dir "/path/to/webdataset/*.tar" \
   --use_webdataset \
   --wds_dataset_name datacomp-clip \
@@ -194,6 +193,25 @@ python train_glide.py \
 | `--vae_model` | `stabilityai/sd-vae-ft-mse` | HuggingFace VAE model |
 | `--clip_model_name` | `ViT-L-14` | OpenCLIP model architecture |
 | `--clip_pretrained` | `laion2b_s32b_b82k` | OpenCLIP pretrained weights |
+
+### Model Initialization (`--init`)
+
+| Value | Description |
+|---|---|
+| *(empty)* | Auto: `pretrained` for pixel mode, `scratch` for latent mode |
+| `pretrained` | Load OpenAI pretrained weights (pixel mode only) |
+| `scratch` | Random initialization |
+| `checkpoint:<path>` | Resume from a saved checkpoint |
+| `pixel-transfer:<path>` | Transfer pixel-space weights to latent model (latent mode only) |
+
+### Training Scope (`--train`)
+
+| Value | Description |
+|---|---|
+| `all` | Train everything (default) |
+| `unet` | Train only UNet, freeze text encoder |
+| `transformer` | Train only text encoder, freeze UNet (keeps encoder_kv trainable) |
+| `transformer-scratch` | Reinit text encoder from random, freeze UNet |
 
 ## Legacy Script Usage
 
@@ -224,170 +242,5 @@ python train_glide.py \
 
 
 ## Full Usage
-```
-usage: train_glide.py [-h] [--data_dir DATA_DIR] [--batch_size BATCH_SIZE]
-                      [--learning_rate LEARNING_RATE]
-                      [--adam_weight_decay ADAM_WEIGHT_DECAY]
-                      [--ema_rate EMA_RATE] [--side_x SIDE_X]
-                      [--side_y SIDE_Y] [--resize_ratio RESIZE_RATIO]
-                      [--random_hflip] [--uncond_p UNCOND_P]
-                      [--train_upsample] [--resume_ckpt RESUME_CKPT]
-                      [--checkpoints_dir CHECKPOINTS_DIR] [--use_fp16]
-                      [--precision {fp32,fp16,bf16}] [--device DEVICE]
-                      [--sample_interval SAMPLE_INTERVAL]
-                      [--freeze_transformer] [--freeze_diffusion]
-                      [--reinit_transformer] [--random_init]
-                      [--wandb_project_name WANDB_PROJECT_NAME]
-                      [--activation_checkpointing]
-                      [--gradient_accumulation_steps GRADIENT_ACCUMULATION_STEPS]
-                      [--use_captions] [--epochs EPOCHS]
-                      [--test_batch_size TEST_BATCH_SIZE]
-                      [--test_guidance_scale TEST_GUIDANCE_SCALE]
-                      [--use_webdataset] [--wds_image_key WDS_IMAGE_KEY]
-                      [--wds_caption_key WDS_CAPTION_KEY]
-                      [--wds_dataset_name WDS_DATASET_NAME]
-                      [--wds_captions_jsonl WDS_CAPTIONS_JSONL] [--seed SEED]
-                      [--cudnn_benchmark] [--upscale_factor UPSCALE_FACTOR]
-                      [--use_sr_eval] [--sr_model_path SR_MODEL_PATH]
-                      [--prompt_file PROMPT_FILE]
-                      [--sample_batch_size SAMPLE_BATCH_SIZE]
-                      [--eval_base_sampler {standard,euler,euler_a,dpm++}]
-                      [--eval_sr_sampler {standard,euler,euler_a,dpm++}]
-                      [--eval_base_sampler_steps EVAL_BASE_SAMPLER_STEPS]
-                      [--eval_sr_sampler_steps EVAL_SR_SAMPLER_STEPS]
-                      [--num_workers NUM_WORKERS]
-                      [--wds_buffer_size WDS_BUFFER_SIZE]
-                      [--wds_initial_prefetch WDS_INITIAL_PREFETCH]
-                      [--wds_debug] [--skip_tar_validation]
-                      [--no_cache_validation] [--clear_validation_cache]
-                      [--validation_workers VALIDATION_WORKERS]
-                      [--save_checkpoint_interval SAVE_CHECKPOINT_INTERVAL]
-                      [--eval_interval EVAL_INTERVAL]
-                      [--reference_stats REFERENCE_STATS] [--latent_mode]
-                      [--vae_model VAE_MODEL]
-                      [--clip_model_name CLIP_MODEL_NAME]
-                      [--clip_pretrained CLIP_PRETRAINED]
-                      [--init_from_pixel INIT_FROM_PIXEL]
 
-options:
-  -h, --help            show this help message and exit
-  --data_dir DATA_DIR, -data DATA_DIR
-  --batch_size BATCH_SIZE, -bs BATCH_SIZE
-  --learning_rate LEARNING_RATE, -lr LEARNING_RATE
-  --adam_weight_decay ADAM_WEIGHT_DECAY, -adam_wd ADAM_WEIGHT_DECAY
-  --ema_rate EMA_RATE   EMA decay rate (GLIDE uses 0.9999)
-  --side_x SIDE_X, -x SIDE_X
-  --side_y SIDE_Y, -y SIDE_Y
-  --resize_ratio RESIZE_RATIO, -crop RESIZE_RATIO
-                        Crop ratio
-  --random_hflip        Apply random horizontal flip augmentation during
-                        training (50% probability)
-  --uncond_p UNCOND_P, -p UNCOND_P
-                        Probability of using the empty/unconditional token
-                        instead of a caption. OpenAI used 0.2 for their
-                        finetune.
-  --train_upsample, -upsample
-                        Train the upsampling type of the model instead of the
-                        base model.
-  --resume_ckpt RESUME_CKPT, -resume RESUME_CKPT
-                        Checkpoint to resume from
-  --checkpoints_dir CHECKPOINTS_DIR, -ckpt CHECKPOINTS_DIR
-  --use_fp16, -fp16     [Deprecated] Use --precision fp16 instead
-  --precision {fp32,fp16,bf16}
-                        Precision for training: fp32 (default), fp16
-                        (unstable), bf16 (recommended for mixed precision)
-  --device DEVICE, -dev DEVICE
-  --sample_interval SAMPLE_INTERVAL, -sample_freq SAMPLE_INTERVAL
-                        Frequency of sampling images for evaluation (defaults
-                        to 500)
-  --freeze_transformer, -fz_xt
-  --freeze_diffusion, -fz_unet
-  --reinit_transformer  Reinitialize transformer/text encoder from scratch
-                        (use with --freeze_diffusion to train only text
-                        encoder)
-  --random_init         Skip loading any pretrained weights, train from random
-                        initialization
-  --wandb_project_name WANDB_PROJECT_NAME, -wname WANDB_PROJECT_NAME
-                        Project name for wandb logging
-  --activation_checkpointing, -grad_ckpt
-  --gradient_accumulation_steps GRADIENT_ACCUMULATION_STEPS, -grad_acc GRADIENT_ACCUMULATION_STEPS
-                        Number of gradient accumulation steps (effective batch
-                        size = batch_size * gradient_accumulation_steps)
-  --use_captions, -txt
-  --epochs EPOCHS, -epochs EPOCHS
-  --test_batch_size TEST_BATCH_SIZE, -tbs TEST_BATCH_SIZE
-                        Batch size used for model eval, not training.
-  --test_guidance_scale TEST_GUIDANCE_SCALE, -tgs TEST_GUIDANCE_SCALE
-                        Guidance scale used during model eval, not training.
-  --use_webdataset, -wds
-                        Enables webdataset (tar) loading
-  --wds_image_key WDS_IMAGE_KEY, -wds_img WDS_IMAGE_KEY
-                        A 'key' e.g. 'jpg' used to access the image in the
-                        webdataset
-  --wds_caption_key WDS_CAPTION_KEY, -wds_cap WDS_CAPTION_KEY
-                        A 'key' e.g. 'txt' used to access the caption in the
-                        webdataset
-  --wds_dataset_name WDS_DATASET_NAME, -wds_name WDS_DATASET_NAME
-                        Name of the webdataset to use (laion, alamy, simple,
-                        synthetic, datacomp-synthetic, or datacomp-real)
-  --wds_captions_jsonl WDS_CAPTIONS_JSONL
-                        Path to external JSONL captions file (required for
-                        datacomp-synthetic dataset)
-  --seed SEED, -seed SEED
-  --cudnn_benchmark, -cudnn
-                        Enable cudnn benchmarking. May improve performance.
-                        (may not)
-  --upscale_factor UPSCALE_FACTOR, -upscale UPSCALE_FACTOR
-                        Upscale factor for training the upsampling model only
-  --use_sr_eval         Use full pipeline (base + superres) for evaluation
-                        sampling during training.
-  --sr_model_path SR_MODEL_PATH
-                        Path to the super-resolution model checkpoint.
-  --prompt_file PROMPT_FILE
-                        Path to file containing prompts for evaluation
-                        (one per line)
-  --sample_batch_size SAMPLE_BATCH_SIZE
-                        Number of prompts to generate images for at each
-                        sample interval
-  --eval_base_sampler {standard,euler,euler_a,dpm++}
-                        Sampler for base model evaluation
-  --eval_sr_sampler {standard,euler,euler_a,dpm++}
-                        Sampler for super-resolution evaluation
-  --eval_base_sampler_steps EVAL_BASE_SAMPLER_STEPS
-                        Diffusion steps for base model evaluation (default: 30)
-  --eval_sr_sampler_steps EVAL_SR_SAMPLER_STEPS
-                        Diffusion steps for SR evaluation (default: 17)
-  --num_workers NUM_WORKERS
-                        Number of dataloader workers (default: 4)
-  --wds_buffer_size WDS_BUFFER_SIZE
-                        WebDataset shuffle buffer size (default: 1000)
-  --wds_initial_prefetch WDS_INITIAL_PREFETCH
-                        WebDataset initial prefetch size (default: 10)
-  --wds_debug           Enable debug printing for WebDataset loading
-  --skip_tar_validation Skip validation of tar files
-  --no_cache_validation Force re-validation of all tar files
-  --clear_validation_cache
-                        Clear the validation cache before starting
-  --validation_workers VALIDATION_WORKERS
-                        Parallel workers for tar validation (default: auto)
-  --save_checkpoint_interval SAVE_CHECKPOINT_INTERVAL
-                        Save full checkpoint every N steps (default: 5000)
-  --eval_interval EVAL_INTERVAL
-                        Compute FID/KID every N steps (default: 5000, 0 to
-                        disable)
-  --reference_stats REFERENCE_STATS
-                        Path to pre-computed reference stats for FID/KID
-  --latent_mode         Enable latent diffusion mode (32x32 latent space via
-                        frozen VAE, 256x256 pixel output)
-  --vae_model VAE_MODEL
-                        HuggingFace model name for the frozen VAE (latent
-                        mode only)
-  --clip_model_name CLIP_MODEL_NAME
-                        OpenCLIP model name for frozen CLIP encoder (latent
-                        mode only)
-  --clip_pretrained CLIP_PRETRAINED
-                        OpenCLIP pretrained weights name (latent mode only)
-  --init_from_pixel INIT_FROM_PIXEL
-                        Path to a pixel-space checkpoint for weight transfer
-                        to latent model
-```
+Run `python train_glide.py --help` for the complete argument list. Key arguments are documented above.
