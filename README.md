@@ -11,7 +11,6 @@ Fine-tune and evaluate GLIDE text-to-image diffusion models with a modern CLI in
 - Multiple samplers: Euler, Euler-A, DPM++, PLMS, DDIM
 - CLIP re-ranking: generate N candidates, keep the best K
 - WebDataset support for large-scale training (LAION, DataComp, etc.)
-- LoRA fine-tuning
 - BF16/FP16 mixed precision, gradient accumulation, gradient checkpointing, torch.compile
 - W&B logging
 - Experimental latent diffusion mode (frozen SD 1.5 VAE + OpenCLIP encoder)
@@ -86,16 +85,6 @@ glide train base /path/to/dataset \
   --wandb my-project \
   --fp16 \  # Mixed precision
   --grad-ckpt  # Gradient checkpointing
-```
-
-#### Train with LoRA (Efficient Fine-tuning)
-```bash
-glide train base /path/to/dataset \
-  --lora \
-  --lora-rank 8 \
-  --lora-alpha 32 \
-  --freeze-transformer \
-  --wandb lora-finetune
 ```
 
 #### Train on WebDataset (LAION)
@@ -176,7 +165,6 @@ Generate multiple candidates and select the best using CLIP:
 - **Mixed Precision**: FP16/BF16 training
 - **Gradient Checkpointing**: Trade compute for memory
 - **torch.compile**: Optimized inference
-- **LoRA**: Parameter-efficient fine-tuning
 
 ## Latent Diffusion Mode (Experimental)
 
@@ -272,12 +260,7 @@ usage: train_glide.py [-h] [--data_dir DATA_DIR] [--batch_size BATCH_SIZE]
                       [--wds_initial_prefetch WDS_INITIAL_PREFETCH]
                       [--wds_debug] [--skip_tar_validation]
                       [--no_cache_validation] [--clear_validation_cache]
-                      [--validation_workers VALIDATION_WORKERS] [--use_lora]
-                      [--lora_rank LORA_RANK] [--lora_alpha LORA_ALPHA]
-                      [--lora_dropout LORA_DROPOUT]
-                      [--lora_target_mode {attention,mlp,all,minimal}]
-                      [--lora_save_steps LORA_SAVE_STEPS]
-                      [--lora_resume LORA_RESUME]
+                      [--validation_workers VALIDATION_WORKERS]
                       [--save_checkpoint_interval SAVE_CHECKPOINT_INTERVAL]
                       [--eval_interval EVAL_INTERVAL]
                       [--reference_stats REFERENCE_STATS] [--latent_mode]
@@ -387,19 +370,6 @@ options:
                         Clear the validation cache before starting
   --validation_workers VALIDATION_WORKERS
                         Parallel workers for tar validation (default: auto)
-  --use_lora            Enable LoRA for efficient fine-tuning
-  --lora_rank LORA_RANK
-                        Rank of LoRA decomposition (default: 4)
-  --lora_alpha LORA_ALPHA
-                        LoRA scaling parameter (default: 32)
-  --lora_dropout LORA_DROPOUT
-                        Dropout for LoRA layers (default: 0.1)
-  --lora_target_mode {attention,mlp,all,minimal}
-                        Which modules to apply LoRA to (default: attention)
-  --lora_save_steps LORA_SAVE_STEPS
-                        Save LoRA adapter every N steps (default: 1000)
-  --lora_resume LORA_RESUME
-                        Path to resume LoRA adapter from
   --save_checkpoint_interval SAVE_CHECKPOINT_INTERVAL
                         Save full checkpoint every N steps (default: 5000)
   --eval_interval EVAL_INTERVAL
