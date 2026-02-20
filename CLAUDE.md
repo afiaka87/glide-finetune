@@ -115,6 +115,12 @@ The repository implements GLIDE (Guided Language to Image Diffusion) fine-tuning
 - **Gradient Checkpointing** (`--activation_checkpointing`): Trade compute for memory
 - **CLIP Re-ranking**: Offloads GLIDE to CPU during CLIP scoring
 
+#### Performance Optimizations (opt-in, disabled by default)
+- `--use_compile`: torch.compile wrapping. **Breaks pixel-space BF16 training** — causes loss stagnation due to wrong gradients through mixed BF16/FP32 ResBlock casting. The latent model has explicit FP32 protections (`clip_to_time`, `clip_to_xf`) but the pixel `Text2ImUNet` does not.
+- `--use_tf32`: Enables TF32 for matmul and cuDNN (reduces FP32 mantissa from 23 to 10 bits).
+- `--use_channels_last`: Applies channels_last memory format to model and data tensors.
+- `--use_fused_adam`: Uses fused single-kernel AdamW optimizer.
+
 ### Module Structure
 
 ```
@@ -190,6 +196,10 @@ ls -la /mnt/usb_nvme_2tb/Data/laion-2b-en-aesthetic-subset/*.tar | head -5
 
 # Problem: Checkpoints not saving
 # Solution: Ensure save_checkpoint_interval aligns with global_step increments
+
+# Problem: Training outputs degrade to blobs over time (pixel-space models)
+# Root cause: torch.compile produces wrong gradients through mixed BF16/FP32 ResBlocks
+# Solution: Do NOT use --use_compile with pixel-space BF16 models (it is off by default)
 ```
 
 ### CLIP Re-ranking Issues
@@ -206,6 +216,12 @@ ls -la /mnt/usb_nvme_2tb/Data/laion-2b-en-aesthetic-subset/*.tar | head -5
 - `train_glide.py`: Primary training script with WebDataset support and tar validation
 - `evaluate_glide.py`: Batch generation with CLIP re-ranking and Rich UI
 - `gradio_app.py`: Interactive web interface for generation
+
+### Tests
+- `tests/test_training_regression.py`: Regression tests (loss decrease, sample quality, NaN detection)
+- `tests/test_training_sanity.py`: Ablation tests for performance optimization flags
+- `tests/test_latent_core.py`: Latent model architecture unit tests
+- Run: `uv run pytest tests/ -m slow -v` (GPU tests) or `uv run pytest tests/ -v` (fast only)
 
 ### Evaluation Prompts
 - `eval_captions_persons_aesthetic.txt`: Human-focused evaluation prompts for testing model quality
