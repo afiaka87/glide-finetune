@@ -33,9 +33,9 @@ def base_train_step(
         batch[0].to(device, non_blocking=True),
         batch[1].to(device, non_blocking=True),
     )
-    reals = batch[2].to(device, non_blocking=True, memory_format=th.channels_last)
+    reals = batch[2].to(device, non_blocking=True)
     timesteps = th.randint(
-        0, len(glide_diffusion.betas) - 1, (reals.shape[0],), device=device
+        0, len(glide_diffusion.betas), (reals.shape[0],), device=device
     )
     noise = th.randn_like(reals, device=device)
     x_t = glide_diffusion.q_sample(reals, timesteps, noise=noise)
@@ -75,14 +75,10 @@ def upsample_train_step(
         batch[0].to(device, non_blocking=True),
         batch[1].to(device, non_blocking=True),
     )
-    low_res_image = batch[2].to(
-        device, non_blocking=True, memory_format=th.channels_last
-    )
-    high_res_image = batch[3].to(
-        device, non_blocking=True, memory_format=th.channels_last
-    )
+    low_res_image = batch[2].to(device, non_blocking=True)
+    high_res_image = batch[3].to(device, non_blocking=True)
     timesteps = th.randint(
-        0, len(glide_diffusion.betas) - 1, (low_res_image.shape[0],), device=device
+        0, len(glide_diffusion.betas), (low_res_image.shape[0],), device=device
     )
     noise = th.randn_like(
         high_res_image, device=device
@@ -142,7 +138,7 @@ def latent_train_step(
             clip_emb[i] = 0.0
 
     timesteps = th.randint(
-        0, len(glide_diffusion.betas) - 1, (latents.shape[0],), device=device
+        0, len(glide_diffusion.betas), (latents.shape[0],), device=device
     )
     noise = th.randn_like(latents)
     x_t = glide_diffusion.q_sample(latents, timesteps, noise=noise)
@@ -193,6 +189,9 @@ def run_glide_finetune_epoch(
     max_grad_norm: float = 1.0,
     loss_spike_threshold: float = 5.0,
     clip_caption_stats: dict | None = None,
+    use_compile: bool = False,
+    use_tf32: bool = False,
+    use_channels_last: bool = False,
 ):
     if latent_mode:
         train_step = latent_train_step  # type: ignore
@@ -211,13 +210,20 @@ def run_glide_finetune_epoch(
         print(f"Warning: {prompt_file} not found, sampling will use empty prompts")
 
     # Model should already be on correct device - moved before EMA creation
-    glide_model.to(memory_format=th.channels_last)
+    if use_channels_last:
+        glide_model.to(memory_format=th.channels_last)
     glide_model.train()
 
-    # torch.compile for training speedup
-    if th.cuda.is_available() and not getattr(glide_model, "_compiled", False):
-        th.set_float32_matmul_precision("high")
-        th.backends.cudnn.allow_tf32 = True
+    # Optional: torch.compile for training speedup (may cause subtle gradient
+    # issues with pixel-space BF16 models — use with caution)
+    if (
+        use_compile
+        and th.cuda.is_available()
+        and not getattr(glide_model, "_compiled", False)
+    ):
+        if use_tf32:
+            th.set_float32_matmul_precision("high")
+            th.backends.cudnn.allow_tf32 = True
         print("torch.compile: wrapping model...")
         compile_t0 = time.time()
         glide_model = th.compile(glide_model)
@@ -225,18 +231,23 @@ def run_glide_finetune_epoch(
         print(
             f"torch.compile: wrapped in {time.time() - compile_t0:.1f}s (compilation deferred to first forward/backward)"
         )
+    elif use_tf32 and th.cuda.is_available():
+        th.set_float32_matmul_precision("high")
+        th.backends.cudnn.allow_tf32 = True
+        print("TF32 enabled for matmul and cuDNN")
 
     # Move EMA model to the same device if it exists
     if ema_model is not None:
         ema_model.to(device)
 
     log: dict = {}
-    needs_warmup = getattr(glide_model, "_compiled", False)
 
     # Initialize timing for samples/sec calculation
     start_time = time.time()
     samples_processed = 0
-    accumulated_loss_gpu = th.tensor(0.0, device=device)  # Accumulate on GPU to avoid sync
+    accumulated_loss_gpu = th.tensor(
+        0.0, device=device
+    )  # Accumulate on GPU to avoid sync
     current_loss = 0.0  # For logging (only updated at accumulation boundaries)
     loss_ema = 0.0  # Exponential moving average for spike detection
     loss_ema_alpha = 0.01  # Smoothing factor
@@ -254,11 +265,6 @@ def run_glide_finetune_epoch(
         if train_idx == 0:
             print(f"First batch received in {time.time() - dl_t0:.1f}s")
 
-        # Compute loss
-        if needs_warmup:
-            print("torch.compile: compiling forward pass (this may take ~40s)...")
-            fwd_t0 = time.time()
-
         train_kwargs = dict(
             glide_model=glide_model,
             glide_diffusion=glide_diffusion,
@@ -270,19 +276,9 @@ def run_glide_finetune_epoch(
             train_kwargs["clip_encoder"] = clip_encoder
         loss = train_step(**train_kwargs)
 
-        if needs_warmup:
-            print(f"torch.compile: forward compiled in {time.time() - fwd_t0:.1f}s")
-            print("torch.compile: compiling backward pass (this may take ~40s)...")
-            bwd_t0 = time.time()
-
         # Scale loss by gradient accumulation steps
         scaled_loss = loss / gradient_accumulation_steps
         scaled_loss.backward()
-
-        if needs_warmup:
-            print(f"torch.compile: backward compiled in {time.time() - bwd_t0:.1f}s")
-            print(f"torch.compile: warmup complete, total {time.time() - fwd_t0:.1f}s")
-            needs_warmup = False
 
         # Accumulate loss on GPU (no sync)
         accumulated_loss_gpu += loss.detach()
@@ -296,7 +292,9 @@ def run_glide_finetune_epoch(
         # Update weights every gradient_accumulation_steps
         if (train_idx + 1) % gradient_accumulation_steps == 0:
             # Only call .item() at accumulation boundaries (single GPU sync)
-            avg_accumulated_loss = (accumulated_loss_gpu / gradient_accumulation_steps).item()
+            avg_accumulated_loss = (
+                accumulated_loss_gpu / gradient_accumulation_steps
+            ).item()
             current_loss = avg_accumulated_loss
             accumulated_loss_gpu.zero_()
 
@@ -315,10 +313,14 @@ def run_glide_finetune_epoch(
 
             if not skip_step:
                 # Gradient clipping (guided-diffusion default: 1.0)
-                grad_norm = th.nn.utils.clip_grad_norm_(
-                    [p for p in glide_model.parameters() if p.requires_grad],
-                    max_grad_norm,
-                ).item() if max_grad_norm > 0 else 0.0
+                grad_norm = (
+                    th.nn.utils.clip_grad_norm_(
+                        [p for p in glide_model.parameters() if p.requires_grad],
+                        max_grad_norm,
+                    ).item()
+                    if max_grad_norm > 0
+                    else 0.0
+                )
 
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
@@ -331,7 +333,10 @@ def run_glide_finetune_epoch(
             if loss_ema == 0:
                 loss_ema = avg_accumulated_loss  # Initialize on first step
             else:
-                loss_ema = loss_ema_alpha * avg_accumulated_loss + (1 - loss_ema_alpha) * loss_ema
+                loss_ema = (
+                    loss_ema_alpha * avg_accumulated_loss
+                    + (1 - loss_ema_alpha) * loss_ema
+                )
 
             # Calculate current time and average samples/sec
             current_time = time.time()
@@ -355,18 +360,25 @@ def run_glide_finetune_epoch(
                 log["grad_norm"] = grad_norm
             if clip_caption_stats is not None and clip_caption_stats["total"] > 0:
                 t = clip_caption_stats["total"]
-                log["clip_caption/generated_win_pct"] = 100 * clip_caption_stats["generated_wins"] / t
-                log["clip_caption/original_win_pct"] = 100 * clip_caption_stats["original_wins"] / t
+                log["clip_caption/generated_win_pct"] = (
+                    100 * clip_caption_stats["generated_wins"] / t
+                )
+                log["clip_caption/original_win_pct"] = (
+                    100 * clip_caption_stats["original_wins"] / t
+                )
                 log["clip_caption/total_samples"] = t
             wandb_run.log(log)
 
             # Update tqdm bar
-            postfix = {"loss": f"{current_loss:.4f}", "sps": f"{avg_samples_per_sec:.1f}"}
+            postfix = {
+                "loss": f"{current_loss:.4f}",
+                "sps": f"{avg_samples_per_sec:.1f}",
+            }
             if not skip_step and max_grad_norm > 0:
                 postfix["gn"] = f"{grad_norm:.2f}"
             pbar.set_postfix(postfix)
 
-        # Sample from the model at sample_interval (including step 0 for compile warmup)
+        # Sample from the model at sample_interval
         if train_idx % sample_interval == 0:
             glide_model.eval()
             # Swap in EMA weights for evaluation
