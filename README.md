@@ -115,6 +115,33 @@ python train_glide.py \
 | `transformer` | Train only text encoder, freeze UNet (keeps encoder_kv trainable) |
 | `transformer-scratch` | Reinit text encoder from random, freeze UNet |
 
+## Performance Optimization Flags
+
+The following flags enable GPU performance optimizations that are **disabled by default**. They were removed from the default training path because `torch.compile` was found to produce subtly wrong gradients through the mixed BF16/FP32 casting in pixel-space GLIDE models, causing training outputs to slowly degrade into abstract blobs over time. The other flags are safe individually but are opt-in for consistency.
+
+| Flag | Description |
+|---|---|
+| `--use_compile` | Enable `torch.compile`. **Not recommended** for pixel-space BF16 models — causes gradient issues through mixed-precision ResBlocks. Safe for latent models which have explicit FP32 protections. |
+| `--use_tf32` | Enable TF32 for matmul and cuDNN. Reduces FP32 precision from 23-bit to 10-bit mantissa. |
+| `--use_channels_last` | Enable `channels_last` memory format for model weights and activations. |
+| `--use_fused_adam` | Enable fused AdamW optimizer (single-kernel parameter update). |
+
+## Testing
+
+```bash
+# Run all tests (requires GPU and pretrained weights)
+uv run pytest tests/ -m slow -v
+
+# Run only the fast tests (no GPU needed)
+uv run pytest tests/ -v
+```
+
+### Test Suites
+
+- **`tests/test_training_regression.py`** -- Regression tests that train for a small number of steps on synthetic data and verify loss decreases, outputs are not degenerate, and no NaN/Inf values appear.
+- **`tests/test_training_sanity.py`** -- Ablation tests parameterized by feature flags (`torch.compile`, TF32, `channels_last`, fused AdamW). Used to isolate which optimizations cause training degradation.
+- **`tests/test_latent_core.py`** -- Unit tests for the latent diffusion model architecture.
+
 ## Full Usage
 
 Run `python train_glide.py --help` for the complete argument list. Key arguments are documented above.
