@@ -22,6 +22,7 @@ from glide_finetune.glide_util import (
     load_latent_model,
 )
 from glide_finetune.loader import TextImageDataset
+from glide_finetune.lazy_loader import LazyImageDataset
 from glide_finetune.train_util import wandb_setup
 from glide_finetune.wds_loader import glide_wds_loader
 
@@ -286,14 +287,18 @@ def parse_init_strategy(init_str, latent_mode):
     if init_str == "scratch":
         return ("scratch", "")
     if init_str.startswith("checkpoint:"):
-        path = init_str[len("checkpoint:"):]
+        path = init_str[len("checkpoint:") :]
         if not path:
-            raise SystemExit("Error: --init checkpoint:<path> requires a path after the colon.")
+            raise SystemExit(
+                "Error: --init checkpoint:<path> requires a path after the colon."
+            )
         return ("checkpoint", path)
     if init_str.startswith("pixel-transfer:"):
-        path = init_str[len("pixel-transfer:"):]
+        path = init_str[len("pixel-transfer:") :]
         if not path:
-            raise SystemExit("Error: --init pixel-transfer:<path> requires a path after the colon.")
+            raise SystemExit(
+                "Error: --init pixel-transfer:<path> requires a path after the colon."
+            )
         return ("pixel-transfer", path)
 
     raise SystemExit(
@@ -325,7 +330,9 @@ def parse_train_scope(train_str):
     )
 
 
-def validate_config(init_strategy, init_path, train_scope, latent_mode, checkpoints_dir):
+def validate_config(
+    init_strategy, init_path, train_scope, latent_mode, checkpoints_dir
+):
     """Validate combinations of --init and --train flags. Exits on invalid combos."""
     freeze_transformer, freeze_diffusion, reinit_transformer, reinit_unet = train_scope
 
@@ -348,7 +355,9 @@ def validate_config(init_strategy, init_path, train_scope, latent_mode, checkpoi
             candidate = os.path.join(checkpoints_dir, path)
             if os.path.exists(candidate):
                 return  # will be resolved later in run_glide_finetune
-        if not os.path.exists(path) and not os.path.exists(os.path.join(checkpoints_dir, path)):
+        if not os.path.exists(path) and not os.path.exists(
+            os.path.join(checkpoints_dir, path)
+        ):
             raise SystemExit(
                 f"Error: Checkpoint path does not exist: {path}\n"
                 f"Also checked: {os.path.join(checkpoints_dir, path)}"
@@ -362,6 +371,7 @@ def validate_config(init_strategy, init_path, train_scope, latent_mode, checkpoi
 
     if (reinit_transformer or reinit_unet) and init_strategy == "scratch":
         import warnings
+
         scope = "transformer-scratch" if reinit_transformer else "unet-scratch"
         warnings.warn(
             f"Warning: --train {scope} with --init scratch is redundant "
@@ -418,6 +428,7 @@ def run_glide_finetune(
     max_grad_norm=1.0,
     loss_spike_threshold=5.0,
     clip_threshold=0.0,
+    lazy=False,
 ):
     if "~" in data_dir:
         data_dir = os.path.expanduser(data_dir)
@@ -514,7 +525,13 @@ def run_glide_finetune(
     if reinit_unet:
         print("Reinitializing UNet/diffusion backbone from scratch...")
         reinit_count = 0
-        for name in ["time_embed", "input_blocks", "middle_block", "output_blocks", "out"]:
+        for name in [
+            "time_embed",
+            "input_blocks",
+            "middle_block",
+            "output_blocks",
+            "out",
+        ]:
             if hasattr(glide_model, name):
                 module = getattr(glide_model, name)
                 for p in module.parameters():
@@ -566,18 +583,10 @@ def run_glide_finetune(
             model_type="upsample",
         )
         upsampler_model.eval()
-        upsampler_model.to(device)
+        upsampler_model.to("cpu")
         print(
-            f"Upsampler loaded with {sum(x.numel() for x in upsampler_model.parameters())} parameters"
+            f"Upsampler loaded on CPU with {sum(x.numel() for x in upsampler_model.parameters())} parameters (moved to GPU on-demand during eval)"
         )
-
-        # Compile upsampler for faster eval inference
-        if th.cuda.is_available():
-            print("torch.compile: wrapping upsampler model for eval...")
-            compile_t0 = time.time()
-            upsampler_model = th.compile(upsampler_model, mode="reduce-overhead")
-            print(f"torch.compile: upsampler wrapped in {time.time() - compile_t0:.1f}s (compilation deferred to first forward)")
-
 
     # Data setup
     print("Loading data...")
@@ -614,6 +623,20 @@ def run_glide_finetune(
         )
         dataset = wds_result["dataset"]
         clip_caption_stats = wds_result["clip_caption_stats"]
+    elif lazy:
+        dataset = LazyImageDataset(
+            folder=data_dir,
+            side_x=side_x,
+            side_y=side_y,
+            resize_ratio=resize_ratio,
+            uncond_p=uncond_p,
+            shuffle=True,
+            tokenizer=glide_model.tokenizer,
+            text_ctx_len=glide_options["text_ctx"],
+            enable_glide_upsample=enable_upsample,
+            upscale_factor=upsample_factor,
+            random_hflip=random_hflip,
+        )
     else:
         dataset = TextImageDataset(
             folder=data_dir,
@@ -844,6 +867,11 @@ def parse_args():
         help="Number of gradient accumulation steps (effective batch size = batch_size * gradient_accumulation_steps)",
     )
     parser.add_argument("--use_captions", "-txt", action="store_true")
+    parser.add_argument(
+        "--lazy_dataset",
+        action="store_true",
+        help="Use LazyImageDataset that extracts captions from filenames (timestamp_caption_words.jpg)",
+    )
     parser.add_argument("--epochs", "-epochs", type=int, default=20)
     parser.add_argument(
         "--test_batch_size",
@@ -1144,13 +1172,17 @@ if __name__ == "__main__":
 
     # Parse --init and --train into structured values
     init_strategy, init_path = parse_init_strategy(args.init, args.latent_mode)
-    freeze_transformer, freeze_diffusion, reinit_transformer, reinit_unet = parse_train_scope(args.train)
+    freeze_transformer, freeze_diffusion, reinit_transformer, reinit_unet = (
+        parse_train_scope(args.train)
+    )
 
     # Validate combinations
     validate_config(
-        init_strategy, init_path,
+        init_strategy,
+        init_path,
         (freeze_transformer, freeze_diffusion, reinit_transformer, reinit_unet),
-        args.latent_mode, args.checkpoints_dir,
+        args.latent_mode,
+        args.checkpoints_dir,
     )
 
     run_glide_finetune(
@@ -1202,4 +1234,5 @@ if __name__ == "__main__":
         max_grad_norm=args.max_grad_norm,
         loss_spike_threshold=args.loss_spike_threshold,
         clip_threshold=args.clip_threshold,
+        lazy=args.lazy_dataset,
     )
