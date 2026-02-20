@@ -217,6 +217,7 @@ def run_glide_finetune_epoch(
     # torch.compile for training speedup
     if th.cuda.is_available() and not getattr(glide_model, "_compiled", False):
         th.set_float32_matmul_precision("high")
+        th.backends.cudnn.allow_tf32 = True
         print("torch.compile: wrapping model...")
         compile_t0 = time.time()
         glide_model = th.compile(glide_model)
@@ -528,6 +529,9 @@ def run_glide_finetune_epoch(
                 if use_sr_eval and not train_upsample and upsampler_model is not None:
                     print("    Generating 256x256 with super-resolution...")
 
+                    # Move upsampler to GPU for eval
+                    upsampler_model.to(device)
+
                     sr_sampler = (
                         "plms" if eval_sr_sampler == "standard" else eval_sr_sampler
                     )
@@ -548,6 +552,10 @@ def run_glide_finetune_epoch(
                         base_sampler=base_sampler,  # type: ignore
                         upsampler_sampler=sr_sampler,  # type: ignore
                     )
+
+                    # Move upsampler back to CPU and free GPU memory
+                    upsampler_model.to("cpu")
+                    th.cuda.empty_cache()
 
                     # Convert 256x256 to PIL and store
                     pil_image_256 = train_util.pred_to_pil(samples_256)
