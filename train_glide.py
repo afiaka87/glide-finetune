@@ -2,7 +2,6 @@ import argparse
 from dotenv import load_dotenv
 from glob import glob
 import os
-import time
 from braceexpand import braceexpand
 import tarfile
 import json
@@ -429,6 +428,10 @@ def run_glide_finetune(
     loss_spike_threshold=5.0,
     clip_threshold=0.0,
     lazy=False,
+    use_compile=False,
+    use_tf32=False,
+    use_channels_last=False,
+    use_fused_adam=False,
 ):
     if "~" in data_dir:
         data_dir = os.path.expanduser(data_dir)
@@ -686,12 +689,15 @@ def run_glide_finetune(
     glide_model = glide_model.to(device)
 
     # Optimizer setup - GLIDE paper uses AdamW with default betas (0.9, 0.999)
-    optimizer = th.optim.AdamW(
-        [x for x in glide_model.parameters() if x.requires_grad],
+    adam_kwargs = dict(
         lr=learning_rate,
         weight_decay=adam_weight_decay,
-        fused=th.cuda.is_available() and str(device) != "cpu",
-        # Using PyTorch default betas=(0.9, 0.999) as per GLIDE paper
+    )
+    if use_fused_adam and th.cuda.is_available() and str(device) != "cpu":
+        adam_kwargs["fused"] = True
+    optimizer = th.optim.AdamW(
+        [x for x in glide_model.parameters() if x.requires_grad],
+        **adam_kwargs,
     )
 
     # EMA setup - GLIDE paper uses EMA decay of 0.9999
@@ -766,6 +772,9 @@ def run_glide_finetune(
             max_grad_norm=max_grad_norm,
             loss_spike_threshold=loss_spike_threshold,
             clip_caption_stats=clip_caption_stats,
+            use_compile=use_compile,
+            use_tf32=use_tf32,
+            use_channels_last=use_channels_last,
         )
 
 
@@ -1090,6 +1099,29 @@ def parse_args():
         help="Minimum CLIP score threshold for datacomp-clip dataset. Samples where max(orig, gen) < threshold are dropped. (default: 0.0 = no filtering)",
     )
 
+    # Performance optimization flags (disabled by default — these can cause
+    # subtle numerical issues with pixel-space models, see plan.md)
+    parser.add_argument(
+        "--use_compile",
+        action="store_true",
+        help="Enable torch.compile (may cause gradient issues with pixel-space BF16 models)",
+    )
+    parser.add_argument(
+        "--use_tf32",
+        action="store_true",
+        help="Enable TF32 for matmul and cuDNN (reduces FP32 precision)",
+    )
+    parser.add_argument(
+        "--use_channels_last",
+        action="store_true",
+        help="Enable channels_last memory format for model and data tensors",
+    )
+    parser.add_argument(
+        "--use_fused_adam",
+        action="store_true",
+        help="Enable fused AdamW optimizer (different numerical path for parameter updates)",
+    )
+
     args = parser.parse_args()
 
     return args
@@ -1235,4 +1267,8 @@ if __name__ == "__main__":
         loss_spike_threshold=args.loss_spike_threshold,
         clip_threshold=args.clip_threshold,
         lazy=args.lazy_dataset,
+        use_compile=args.use_compile,
+        use_tf32=args.use_tf32,
+        use_channels_last=args.use_channels_last,
+        use_fused_adam=args.use_fused_adam,
     )
