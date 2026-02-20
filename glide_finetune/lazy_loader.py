@@ -4,6 +4,7 @@ from random import randint, random
 import PIL
 
 from torch.utils.data import Dataset
+from torchvision import transforms as T
 from glide_finetune.glide_util import get_tokens_and_mask, get_uncond_tokens_mask
 from glide_finetune.train_util import pil_image_to_norm_tensor
 from glide_finetune.loader import random_resized_crop
@@ -61,6 +62,9 @@ class LazyImageDataset(Dataset):
         self.enable_upsample = enable_glide_upsample
         self.upscale_factor = upscale_factor
         self.random_hflip = random_hflip
+        self.color_jitter = T.ColorJitter(
+            brightness=0.05, contrast=0.05, saturation=0.05, hue=0.02
+        )
 
     def __len__(self):
         return len(self.image_files)
@@ -94,8 +98,9 @@ class LazyImageDataset(Dataset):
             print(f"Skipping index {ind}")
             return self.skip_sample(ind)
 
-        if self.random_hflip and random() < 0.5:
+        if random() < 0.5:
             original_pil_image = original_pil_image.transpose(PIL.Image.FLIP_LEFT_RIGHT)
+        original_pil_image = self.color_jitter(original_pil_image)
 
         if self.enable_upsample:
             upsample_pil_image = random_resized_crop(
