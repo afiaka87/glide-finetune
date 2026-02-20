@@ -164,7 +164,7 @@ def run_glide_finetune_epoch(
     eval_sr_sampler: str = "euler",  # sampler for super-resolution evaluation
     eval_base_sampler_steps: int = 30,  # number of steps for base model evaluation
     eval_sr_sampler_steps: int = 17,  # number of steps for super-resolution evaluation
-    prompt_file: str = "eval_captions.txt",  # file with prompts to sample from
+    prompt_file: str = "",  # file with prompts to sample from
     sample_batch_size: int = 8,  # number of prompts to randomly sample at each interval
     side_x: int = 64,
     side_y: int = 64,
@@ -193,6 +193,12 @@ def run_glide_finetune_epoch(
     use_tf32: bool = False,
     use_channels_last: bool = False,
 ):
+    # Tell wandb to use "iter" (the batch index) as the x-axis for all metrics.
+    # This avoids the default auto-incrementing step counter, which diverges
+    # from train_idx when gradient_accumulation_steps > 1.
+    wandb.define_metric("iter")
+    wandb.define_metric("*", step_metric="iter")
+
     if latent_mode:
         train_step = latent_train_step  # type: ignore
     elif train_upsample:
@@ -200,14 +206,17 @@ def run_glide_finetune_epoch(
     else:
         train_step = base_train_step  # type: ignore
 
-    # Load eval prompts if available
-    eval_prompts = []
-    if os.path.exists(prompt_file):
-        with open(prompt_file, "r") as f:
-            eval_prompts = [line.strip() for line in f.readlines() if line.strip()]
-        print(f"Loaded {len(eval_prompts)} eval prompts from {prompt_file}")
-    else:
-        print(f"Warning: {prompt_file} not found, sampling will use empty prompts")
+    # Load eval prompts
+    if not prompt_file or not os.path.exists(prompt_file):
+        raise FileNotFoundError(
+            f"--prompt_file is required but {'not specified' if not prompt_file else f'{prompt_file!r} not found'}. "
+            "Provide a text file with one prompt per line for evaluation sampling."
+        )
+    with open(prompt_file, "r") as f:
+        eval_prompts = [line.strip() for line in f.readlines() if line.strip()]
+    if not eval_prompts:
+        raise ValueError(f"--prompt_file {prompt_file!r} is empty. Add at least one prompt.")
+    print(f"Loaded {len(eval_prompts)} eval prompts from {prompt_file}")
 
     # Model should already be on correct device - moved before EMA creation
     if use_channels_last:
@@ -385,13 +394,7 @@ def run_glide_finetune_epoch(
             if ema_model is not None:
                 ema_model.swap()
 
-            # Select prompts for sampling
-            if eval_prompts:
-                # Use all eval prompts in order for consistent tracking
-                sample_prompts = eval_prompts
-            else:
-                # No prompt file — generate unconditional samples
-                sample_prompts = [""] * sample_batch_size
+            sample_prompts = eval_prompts
 
             print(
                 f"Sampling {len(sample_prompts)} images from model at iteration {train_idx}"

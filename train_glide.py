@@ -403,7 +403,7 @@ def run_glide_finetune(
     sample_interval=500,
     sample_bs=1,
     sample_gs=8.0,
-    prompt_file="eval_captions.txt",
+    prompt_file="",
     sample_batch_size=8,
     use_webdataset=False,
     image_key="jpg",
@@ -957,7 +957,7 @@ def parse_args():
     parser.add_argument(
         "--prompt_file",
         type=str,
-        default="eval_captions.txt",
+        required=True,
         help="Path to file containing prompts to randomly sample from during evaluation (one per line)",
     )
     parser.add_argument(
