@@ -756,3 +756,173 @@ def sample_with_superres(
     upsampler_model.del_cache()
 
     return upsampled_samples
+
+
+# ---------------------------------------------------------------------------
+# JiT model loading & sampling
+# ---------------------------------------------------------------------------
+
+
+def load_jit_model(
+    init_strategy: str = "scratch",
+    init_path: str = "",
+    precision: str = "fp32",
+    jit_size: str = "B",
+    jit_depth: int = 0,
+    jit_hidden_dim: int = 0,
+    jit_heads: int = 0,
+    jit_patch_size: int = 0,
+    jit_bottleneck_dim: int = 0,
+    time_mu: float = -0.8,
+    time_sigma: float = 0.8,
+    cfg_drop_prob: float = 0.1,
+    glide_text_encoder_path: str = "",
+):
+    """Load a JiT model and RectifiedFlow instance.
+
+    Returns:
+        (model, flow, options) matching the pattern of load_model.
+    """
+    from glide_finetune.jit_model import JIT_CONFIGS, JiTModel
+    from glide_finetune.rectified_flow import RectifiedFlow
+
+    # Start from config preset, then override with any explicit args
+    config = dict(JIT_CONFIGS[jit_size])
+    if jit_depth > 0:
+        config["depth"] = jit_depth
+    if jit_hidden_dim > 0:
+        config["hidden_dim"] = jit_hidden_dim
+    if jit_heads > 0:
+        config["heads"] = jit_heads
+    if jit_patch_size > 0:
+        config["patch_size"] = jit_patch_size
+    if jit_bottleneck_dim > 0:
+        config["bottleneck_dim"] = jit_bottleneck_dim
+
+    model = JiTModel(
+        image_size=64,
+        patch_size=config["patch_size"],
+        in_channels=3,
+        hidden_dim=config["hidden_dim"],
+        depth=config["depth"],
+        heads=config["heads"],
+        bottleneck_dim=config["bottleneck_dim"],
+    )
+
+    # Weight loading
+    if init_strategy == "scratch":
+        print("JiT model: using random initialization")
+    elif init_strategy == "checkpoint":
+        import os
+
+        assert os.path.exists(init_path), f"Checkpoint path does not exist: {init_path}"
+        weights = th.load(init_path, map_location="cpu")
+        if any(k.startswith("_orig_mod.") for k in weights):
+            weights = {k.removeprefix("_orig_mod."): v for k, v in weights.items()}
+        model.load_state_dict(weights)
+        print(f"JiT model: loaded checkpoint from {init_path}")
+    else:
+        raise ValueError(
+            f"Unknown init_strategy '{init_strategy}' for JiT model. "
+            f"Valid strategies: scratch, checkpoint:<path>"
+        )
+
+    # Optionally initialize text encoder from GLIDE checkpoint
+    if glide_text_encoder_path:
+        import os
+
+        assert os.path.exists(glide_text_encoder_path), (
+            f"GLIDE text encoder path does not exist: {glide_text_encoder_path}"
+        )
+        glide_weights = th.load(glide_text_encoder_path, map_location="cpu")
+        model.init_text_from_glide(glide_weights)
+
+    # Precision conversion
+    if precision == "fp16":
+        model.convert_to_fp16()
+        print("JiT: converted to fp16")
+    elif precision == "bf16":
+        model.convert_to_bf16()
+        print("JiT: converted to bf16")
+
+    # Create RectifiedFlow
+    flow = RectifiedFlow(
+        time_mu=time_mu,
+        time_sigma=time_sigma,
+        noise_scale=1.0,
+        cfg_drop_prob=cfg_drop_prob,
+    )
+
+    # Options dict for compatibility
+    options = {
+        "text_ctx": model.text_ctx,
+        "jit_size": jit_size,
+        **config,
+    }
+
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"JiT-{jit_size}: {total_params:,} parameters "
+          f"(hidden={config['hidden_dim']}, depth={config['depth']}, "
+          f"heads={config['heads']}, patch={config['patch_size']})")
+
+    return model, flow, options
+
+
+@th.inference_mode()
+def sample_jit(
+    model,
+    flow,
+    prompt: str = "",
+    batch_size: int = 1,
+    guidance_scale: float = 4.0,
+    device: str = "cpu",
+    num_steps: int = 50,
+    sampler: str = "euler",
+) -> th.Tensor:
+    """Sample from a JiT model using rectified flow.
+
+    Args:
+        model: JiTModel instance.
+        flow: RectifiedFlow instance.
+        prompt: Text prompt.
+        batch_size: Number of images to generate.
+        guidance_scale: CFG scale.
+        device: Device.
+        num_steps: Number of ODE steps.
+        sampler: "euler" or "heun".
+
+    Returns:
+        Tensor [batch_size, 3, 64, 64] in [-1, 1].
+    """
+    model.del_cache()
+
+    # Tokenize prompt
+    tokens_cond, mask_cond = get_tokens_and_mask(
+        model.tokenizer, prompt, context_len=model.text_ctx
+    )
+    tokens_cond = tokens_cond.unsqueeze(0).expand(batch_size, -1).to(device)
+    mask_cond = mask_cond.unsqueeze(0).expand(batch_size, -1).to(device)
+
+    # Unconditional tokens for CFG
+    tokens_uncond, mask_uncond = get_uncond_tokens_mask(model.tokenizer)
+    tokens_uncond = tokens_uncond.unsqueeze(0).expand(batch_size, -1).to(device)
+    mask_uncond = mask_uncond.unsqueeze(0).expand(batch_size, -1).to(device)
+
+    shape = (batch_size, 3, 64, 64)
+    sample_fn = flow.sample_euler if sampler == "euler" else flow.sample_heun
+
+    samples = sample_fn(
+        model=model,
+        shape=shape,
+        num_steps=num_steps,
+        device=device,
+        guidance_scale=guidance_scale,
+        tokens_cond=tokens_cond,
+        mask_cond=mask_cond,
+        tokens_uncond=tokens_uncond,
+        mask_uncond=mask_uncond,
+        progress=True,
+    )
+
+    model.del_cache()
+    return samples

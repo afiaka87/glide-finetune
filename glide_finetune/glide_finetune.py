@@ -1,4 +1,5 @@
 import os
+import signal
 import time
 import glob
 from typing import Tuple
@@ -151,6 +152,29 @@ def latent_train_step(
     return th.nn.functional.mse_loss(epsilon, noise.detach())
 
 
+def jit_train_step(
+    glide_model,
+    glide_diffusion,  # Actually a RectifiedFlow, but same param name for dispatch compat
+    batch: Tuple[th.Tensor, th.Tensor, th.Tensor],
+    device: str,
+):
+    """
+    Perform a single JiT rectified flow training step.
+
+    Args:
+        glide_model: JiTModel to train.
+        glide_diffusion: RectifiedFlow instance (named for dispatch compat).
+        batch: (tokens, masks, images) where images is [B, 3, 64, 64] in [-1, 1].
+        device: The device.
+    Returns:
+        The loss.
+    """
+    tokens = batch[0].to(device, non_blocking=True)
+    masks = batch[1].to(device, non_blocking=True)
+    images = batch[2].to(device, non_blocking=True)
+    return glide_diffusion.training_losses(glide_model, images, tokens, masks, device)
+
+
 def run_glide_finetune_epoch(
     glide_model: Text2ImUNet,
     glide_diffusion: SpacedDiffusion,
@@ -192,14 +216,21 @@ def run_glide_finetune_epoch(
     use_compile: bool = False,
     use_tf32: bool = False,
     use_channels_last: bool = False,
-):
+    jit_mode: bool = False,
+    jit_flow=None,
+    jit_sampler: str = "euler",
+    jit_sampler_steps: int = 50,
+    iter_offset: int = 0,
+) -> int:
     # Tell wandb to use "iter" (the batch index) as the x-axis for all metrics.
     # This avoids the default auto-incrementing step counter, which diverges
     # from train_idx when gradient_accumulation_steps > 1.
     wandb.define_metric("iter")
     wandb.define_metric("*", step_metric="iter")
 
-    if latent_mode:
+    if jit_mode:
+        train_step = jit_train_step  # type: ignore
+    elif latent_mode:
         train_step = latent_train_step  # type: ignore
     elif train_upsample:
         train_step = upsample_train_step  # type: ignore
@@ -265,12 +296,27 @@ def run_glide_finetune_epoch(
     # Zero gradients at the start
     optimizer.zero_grad(set_to_none=True)
 
+    # SIGINT handler: first CTRL+C sets flag for graceful save, second forces exit
+    interrupted = False
+
+    def _handle_sigint(signum, frame):
+        nonlocal interrupted
+        if interrupted:
+            raise KeyboardInterrupt  # Second CTRL+C: force exit
+        interrupted = True
+        tqdm.write(
+            "\nInterrupt received, finishing current step and saving checkpoint..."
+        )
+
+    old_sigint = signal.signal(signal.SIGINT, _handle_sigint)
+
     print("Waiting for first batch from dataloader (workers are loading tar files)...")
     dl_t0 = time.time()
     pbar = tqdm(
         enumerate(dataloader), desc=f"Epoch {epoch}", unit="step", dynamic_ncols=True
     )
     for train_idx, batch in pbar:
+        global_iter = iter_offset + train_idx
         if train_idx == 0:
             print(f"First batch received in {time.time() - dl_t0:.1f}s")
 
@@ -360,7 +406,7 @@ def run_glide_finetune_epoch(
                 "loss": avg_accumulated_loss,
                 "loss_step": avg_accumulated_loss,
                 "loss_ema": loss_ema,
-                "iter": train_idx,
+                "iter": global_iter,
                 "samples_per_sec": avg_samples_per_sec,
                 "total_samples": samples_processed,
                 "spikes_skipped": spikes_skipped,
@@ -388,7 +434,7 @@ def run_glide_finetune_epoch(
             pbar.set_postfix(postfix)
 
         # Sample from the model at sample_interval
-        if train_idx % sample_interval == 0:
+        if global_iter % sample_interval == 0:
             glide_model.eval()
             # Swap in EMA weights for evaluation
             if ema_model is not None:
@@ -397,7 +443,7 @@ def run_glide_finetune_epoch(
             sample_prompts = eval_prompts
 
             print(
-                f"Sampling {len(sample_prompts)} images from model at iteration {train_idx}"
+                f"Sampling {len(sample_prompts)} images from model at iteration {global_iter}"
             )
 
             # Generate images for all prompts
@@ -478,7 +524,25 @@ def run_glide_finetune_epoch(
                             )
 
                 # Generate samples
-                if latent_mode:
+                if jit_mode:
+                    samples_64 = glide_util.sample_jit(
+                        model=glide_model,
+                        flow=jit_flow or glide_diffusion,
+                        prompt=sample_prompt,
+                        batch_size=sample_bs,
+                        guidance_scale=sample_gs,
+                        device=device,
+                        num_steps=jit_sampler_steps,
+                        sampler=jit_sampler,
+                    )
+                    pil_image_64 = train_util.pred_to_pil(samples_64)
+                    all_images_64.append(pil_image_64)
+                    wandb_images_64.append(
+                        wandb.Image(
+                            pil_image_64, caption=f"{sample_prompt} (JiT 64x64)"
+                        )
+                    )
+                elif latent_mode:
                     samples = glide_util.sample(
                         glide_model=glide_model,
                         glide_options=glide_options,
@@ -580,7 +644,7 @@ def run_glide_finetune_epoch(
                     )
 
             # Create and save grid images
-            wandb_log_dict = {"iter": train_idx}
+            wandb_log_dict = {"iter": global_iter}
 
             # For upsampler training, create comparison galleries
             if train_upsample:
@@ -768,7 +832,7 @@ def run_glide_finetune_epoch(
 
                                 # Save and log the comparison grid
                                 comparison_grid_path = os.path.join(
-                                    outputs_dir, f"{train_idx}_comparison_grid.png"
+                                    outputs_dir, f"{global_iter}_comparison_grid.png"
                                 )
                                 full_comparison.save(comparison_grid_path)
                                 wandb_log_dict["sr_comparison_grid"] = wandb.Image(
@@ -793,7 +857,7 @@ def run_glide_finetune_epoch(
 
                 # Save 64x64 grid
                 grid_save_path_64 = os.path.join(
-                    outputs_dir, f"{train_idx}_grid_64px.png"
+                    outputs_dir, f"{global_iter}_grid_64px.png"
                 )
                 grid_image_64.save(grid_save_path_64)
                 # Also save as current_grid.png for easy monitoring
@@ -814,7 +878,7 @@ def run_glide_finetune_epoch(
                 )
             elif not train_upsample and len(all_images_64) == 1:
                 # Single 64x64 image case
-                sample_save_path_64 = os.path.join(outputs_dir, f"{train_idx}_64px.png")
+                sample_save_path_64 = os.path.join(outputs_dir, f"{global_iter}_64px.png")
                 all_images_64[0].save(sample_save_path_64)
                 # Also save as current_grid.png for easy monitoring (single image)
                 all_images_64[0].save("current_grid.png")
@@ -839,7 +903,7 @@ def run_glide_finetune_epoch(
 
                     # Save 256x256 grid
                     grid_save_path_256 = os.path.join(
-                        outputs_dir, f"{train_idx}_grid_256px.png"
+                        outputs_dir, f"{global_iter}_grid_256px.png"
                     )
                     grid_image_256.save(grid_save_path_256)
                     # Save as current_grid.png for easy monitoring (prefer 256px version)
@@ -861,7 +925,7 @@ def run_glide_finetune_epoch(
                 else:
                     # Single 256x256 image case
                     sample_save_path_256 = os.path.join(
-                        outputs_dir, f"{train_idx}_256px.png"
+                        outputs_dir, f"{global_iter}_256px.png"
                     )
                     all_images_256[0].save(sample_save_path_256)
                     # Save as current_grid.png for easy monitoring (prefer 256px version)
@@ -906,8 +970,8 @@ def run_glide_finetune_epoch(
         if (
             eval_interval > 0
             and reference_stats
-            and train_idx > 0
-            and train_idx % eval_interval == 0
+            and global_iter > 0
+            and global_iter % eval_interval == 0
         ):
             glide_model.eval()
             # Swap in EMA weights for evaluation
@@ -918,7 +982,7 @@ def run_glide_finetune_epoch(
 
                 # Use eval prompts if available, else use default human prompts
                 fid_prompts = eval_prompts if eval_prompts else [""] * 100
-                print(f"\nComputing FID/KID at step {train_idx}...")
+                print(f"\nComputing FID/KID at step {global_iter}...")
                 fid_kid_results = compute_fid_kid(
                     glide_model=glide_model,
                     glide_diffusion=glide_diffusion,
@@ -938,7 +1002,7 @@ def run_glide_finetune_epoch(
                         "fid": fid_kid_results["fid"],
                         "kid_mean": fid_kid_results["kid_mean"],
                         "kid_std": fid_kid_results["kid_std"],
-                        "iter": train_idx,
+                        "iter": global_iter,
                     }
                 )
                 print(
@@ -959,32 +1023,45 @@ def run_glide_finetune_epoch(
 
         if (
             save_checkpoint_interval > 0
-            and train_idx % save_checkpoint_interval == 0
-            and train_idx > 0
+            and global_iter % save_checkpoint_interval == 0
+            and global_iter > 0
         ):
-            train_util.save_model(glide_model, checkpoints_dir, train_idx, epoch)
+            train_util.save_model(glide_model, checkpoints_dir, global_iter, epoch)
 
             # Save EMA model if available
             if ema_model is not None:
                 train_util.save_ema_model(
-                    ema_model, checkpoints_dir, train_idx, epoch, ema_model.decay
+                    ema_model, checkpoints_dir, global_iter, epoch, ema_model.decay
                 )
                 print(f"Saved EMA checkpoint with decay {ema_model.decay}")
 
+        if interrupted:
+            break
+
     pbar.close()
+    signal.signal(signal.SIGINT, old_sigint)  # Restore original handler
 
-    # Flush any remaining accumulated gradients from a partial accumulation
-    if (train_idx + 1) % gradient_accumulation_steps != 0:
-        optimizer.step()
-        optimizer.zero_grad(set_to_none=True)
-        if ema_model is not None:
-            ema_model.update()
+    if not interrupted:
+        # Flush any remaining accumulated gradients from a partial accumulation
+        if (train_idx + 1) % gradient_accumulation_steps != 0:
+            optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
+            if ema_model is not None:
+                ema_model.update()
 
-    print("Finished training, saving final checkpoint")
-    train_util.save_model(glide_model, checkpoints_dir, train_idx, epoch)
-    # Save final EMA model if available
+    label = "Interrupted, saving" if interrupted else "Finished training, saving final"
+    print(f"{label} checkpoint at iter {global_iter}")
+    train_util.save_model(glide_model, checkpoints_dir, global_iter, epoch)
+    # Save EMA model if available
     if ema_model is not None:
         train_util.save_ema_model(
-            ema_model, checkpoints_dir, train_idx, epoch, ema_model.decay
+            ema_model, checkpoints_dir, global_iter, epoch, ema_model.decay
         )
-        print(f"Saved final EMA checkpoint with decay {ema_model.decay}")
+        print(f"Saved EMA checkpoint with decay {ema_model.decay}")
+
+    if interrupted:
+        print("Checkpoint saved. Exiting.")
+        raise SystemExit(0)
+
+    # Return next iter offset for the caller to pass to the next epoch
+    return global_iter + 1

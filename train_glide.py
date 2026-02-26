@@ -19,6 +19,7 @@ from glide_finetune.glide_finetune import run_glide_finetune_epoch
 from glide_finetune.glide_util import (
     load_model,
     load_latent_model,
+    load_jit_model,
 )
 from glide_finetune.loader import TextImageDataset
 from glide_finetune.lazy_loader import LazyImageDataset
@@ -270,7 +271,7 @@ def validate_tar_files(
     return valid_tars
 
 
-def parse_init_strategy(init_str, latent_mode):
+def parse_init_strategy(init_str, latent_mode, jit_mode=False):
     """Parse --init value into (strategy, path).
 
     Returns:
@@ -278,8 +279,8 @@ def parse_init_strategy(init_str, latent_mode):
         checkpoint, pixel-transfer; and path is empty or a file path.
     """
     if not init_str:
-        # Auto-default: scratch for latent, pretrained for pixel
-        return ("scratch", "") if latent_mode else ("pretrained", "")
+        # Auto-default: scratch for latent/jit, pretrained for pixel
+        return ("scratch", "") if (latent_mode or jit_mode) else ("pretrained", "")
 
     if init_str == "pretrained":
         return ("pretrained", "")
@@ -432,6 +433,20 @@ def run_glide_finetune(
     use_tf32=False,
     use_channels_last=False,
     use_fused_adam=False,
+    # JiT mode
+    jit_mode=False,
+    jit_size="B",
+    jit_depth=0,
+    jit_hidden_dim=0,
+    jit_heads=0,
+    jit_patch_size=0,
+    jit_bottleneck_dim=0,
+    time_mu=-0.8,
+    time_sigma=0.8,
+    jit_sampler="euler",
+    jit_sampler_steps=50,
+    glide_text_encoder_path="",
+    cfg_drop_prob=0.1,
 ):
     if "~" in data_dir:
         data_dir = os.path.expanduser(data_dir)
@@ -445,6 +460,11 @@ def run_glide_finetune(
     if latent_mode:
         side_x, side_y = 32, 32
         print("Latent mode: diffusion on 32x32 latents (256x256 pixel output)")
+
+    # JiT mode overrides: CFG dropout is handled internally by RectifiedFlow
+    if jit_mode and uncond_p > 0:
+        print(f"JiT mode: overriding uncond_p={uncond_p} to 0.0 (CFG dropout handled by RectifiedFlow cfg_drop_prob={cfg_drop_prob})")
+        uncond_p = 0.0
 
     # Start wandb logging
     wandb_run = wandb_setup(
@@ -477,7 +497,26 @@ def run_glide_finetune(
         print("  TRAINING FROM SCRATCH (random init)")
     print("=" * 60)
 
-    if latent_mode:
+    jit_flow = None
+    if jit_mode:
+        glide_model, jit_flow, glide_options = load_jit_model(
+            init_strategy=init_strategy,
+            init_path=init_path,
+            precision=precision,
+            jit_size=jit_size,
+            jit_depth=jit_depth,
+            jit_hidden_dim=jit_hidden_dim,
+            jit_heads=jit_heads,
+            jit_patch_size=jit_patch_size,
+            jit_bottleneck_dim=jit_bottleneck_dim,
+            time_mu=time_mu,
+            time_sigma=time_sigma,
+            cfg_drop_prob=cfg_drop_prob,
+            glide_text_encoder_path=glide_text_encoder_path,
+        )
+        # For dispatch compat, glide_diffusion is the RectifiedFlow
+        glide_diffusion = jit_flow
+    elif latent_mode:
         glide_model, glide_diffusion, glide_options = load_latent_model(
             init_strategy=init_strategy,
             init_path=init_path,
@@ -688,14 +727,24 @@ def run_glide_finetune(
     # Move model to device before creating EMA (ensures both models are on same device)
     glide_model = glide_model.to(device)
 
-    # Optimizer setup - GLIDE paper uses AdamW with default betas (0.9, 0.999)
-    adam_kwargs = dict(
-        lr=learning_rate,
-        weight_decay=adam_weight_decay,
-    )
+    # Optimizer setup
+    if jit_mode:
+        # JiT paper uses Adam with betas=(0.9, 0.95), no weight decay
+        adam_kwargs = dict(
+            lr=learning_rate,
+            betas=(0.9, 0.95),
+            weight_decay=0,
+        )
+    else:
+        # GLIDE paper uses AdamW with default betas (0.9, 0.999)
+        adam_kwargs = dict(
+            lr=learning_rate,
+            weight_decay=adam_weight_decay,
+        )
     if use_fused_adam and th.cuda.is_available() and str(device) != "cpu":
         adam_kwargs["fused"] = True
-    optimizer = th.optim.AdamW(
+    optimizer_cls = th.optim.Adam if jit_mode else th.optim.AdamW
+    optimizer = optimizer_cls(
         [x for x in glide_model.parameters() if x.requires_grad],
         **adam_kwargs,
     )
@@ -733,9 +782,10 @@ def run_glide_finetune(
 
     os.makedirs(current_run_ckpt_dir, exist_ok=True)
 
+    iter_offset = 0
     for epoch in trange(num_epochs):
         print(f"Starting epoch {epoch}")
-        run_glide_finetune_epoch(
+        iter_offset = run_glide_finetune_epoch(
             glide_model=glide_model,
             glide_diffusion=glide_diffusion,
             glide_options=glide_options,
@@ -775,6 +825,11 @@ def run_glide_finetune(
             use_compile=use_compile,
             use_tf32=use_tf32,
             use_channels_last=use_channels_last,
+            jit_mode=jit_mode,
+            jit_flow=jit_flow,
+            jit_sampler=jit_sampler,
+            jit_sampler_steps=jit_sampler_steps,
+            iter_offset=iter_offset,
         )
 
 
@@ -1122,6 +1177,58 @@ def parse_args():
         help="Enable fused AdamW optimizer (different numerical path for parameter updates)",
     )
 
+    # JiT (Just image Transformer) mode arguments
+    parser.add_argument(
+        "--jit_mode",
+        action="store_true",
+        help="Enable JiT (ViT + rectified flow) training instead of GLIDE UNet + DDPM",
+    )
+    parser.add_argument(
+        "--jit_size",
+        type=str,
+        default="B",
+        choices=["B", "L", "H", "G"],
+        help="JiT model size preset (B=768d/12L, L=1024d/24L, H=1280d/32L, G=1536d/40L)",
+    )
+    parser.add_argument("--jit_depth", type=int, default=0, help="Override JiT depth (0=use preset)")
+    parser.add_argument("--jit_hidden_dim", type=int, default=0, help="Override JiT hidden dim (0=use preset)")
+    parser.add_argument("--jit_heads", type=int, default=0, help="Override JiT attention heads (0=use preset)")
+    parser.add_argument("--jit_patch_size", type=int, default=0, help="Override JiT patch size (0=use preset)")
+    parser.add_argument("--jit_bottleneck_dim", type=int, default=0, help="Override JiT bottleneck dim (0=use preset)")
+    parser.add_argument(
+        "--time_mu", type=float, default=-0.8,
+        help="Logit-normal time sampling mean (default: -0.8)",
+    )
+    parser.add_argument(
+        "--time_sigma", type=float, default=0.8,
+        help="Logit-normal time sampling std (default: 0.8)",
+    )
+    parser.add_argument(
+        "--jit_sampler",
+        type=str,
+        default="euler",
+        choices=["euler", "heun"],
+        help="ODE sampler for JiT evaluation sampling (default: euler)",
+    )
+    parser.add_argument(
+        "--jit_sampler_steps",
+        type=int,
+        default=50,
+        help="Number of ODE steps for JiT evaluation sampling (default: 50)",
+    )
+    parser.add_argument(
+        "--glide_text_encoder_path",
+        type=str,
+        default="",
+        help="Path to GLIDE checkpoint to initialize JiT text encoder from",
+    )
+    parser.add_argument(
+        "--cfg_drop_prob",
+        type=float,
+        default=0.1,
+        help="CFG dropout probability for JiT training (default: 0.1)",
+    )
+
     args = parser.parse_args()
 
     return args
@@ -1203,7 +1310,7 @@ if __name__ == "__main__":
         data_dir = args.data_dir
 
     # Parse --init and --train into structured values
-    init_strategy, init_path = parse_init_strategy(args.init, args.latent_mode)
+    init_strategy, init_path = parse_init_strategy(args.init, args.latent_mode, args.jit_mode)
     freeze_transformer, freeze_diffusion, reinit_transformer, reinit_unet = (
         parse_train_scope(args.train)
     )
@@ -1271,4 +1378,18 @@ if __name__ == "__main__":
         use_tf32=args.use_tf32,
         use_channels_last=args.use_channels_last,
         use_fused_adam=args.use_fused_adam,
+        # JiT mode
+        jit_mode=args.jit_mode,
+        jit_size=args.jit_size,
+        jit_depth=args.jit_depth,
+        jit_hidden_dim=args.jit_hidden_dim,
+        jit_heads=args.jit_heads,
+        jit_patch_size=args.jit_patch_size,
+        jit_bottleneck_dim=args.jit_bottleneck_dim,
+        time_mu=args.time_mu,
+        time_sigma=args.time_sigma,
+        jit_sampler=args.jit_sampler,
+        jit_sampler_steps=args.jit_sampler_steps,
+        glide_text_encoder_path=args.glide_text_encoder_path,
+        cfg_drop_prob=args.cfg_drop_prob,
     )
