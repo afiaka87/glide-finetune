@@ -407,6 +407,7 @@ def run_glide_finetune_epoch(
                 "loss_step": avg_accumulated_loss,
                 "loss_ema": loss_ema,
                 "iter": global_iter,
+                "epoch": epoch,
                 "samples_per_sec": avg_samples_per_sec,
                 "total_samples": samples_processed,
                 "spikes_skipped": spikes_skipped,
@@ -1035,6 +1036,12 @@ def run_glide_finetune_epoch(
                 )
                 print(f"Saved EMA checkpoint with decay {ema_model.decay}")
 
+            # Save full training state for seamless resume
+            train_util.save_training_state(
+                glide_model, optimizer, checkpoints_dir, global_iter, epoch,
+                ema_model=ema_model,
+            )
+
         if interrupted:
             break
 
@@ -1058,6 +1065,11 @@ def run_glide_finetune_epoch(
             ema_model, checkpoints_dir, global_iter, epoch, ema_model.decay
         )
         print(f"Saved EMA checkpoint with decay {ema_model.decay}")
+    # Save full training state for seamless resume
+    train_util.save_training_state(
+        glide_model, optimizer, checkpoints_dir, global_iter, epoch,
+        ema_model=ema_model,
+    )
 
     if interrupted:
         print("Checkpoint saved. Exiting.")

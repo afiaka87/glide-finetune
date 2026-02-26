@@ -20,6 +20,47 @@ def save_model(
     )
 
 
+def save_training_state(
+    glide_model: th.nn.Module,
+    optimizer: th.optim.Optimizer,
+    checkpoints_dir: str,
+    global_iter: int,
+    epoch: int,
+    ema_model=None,
+    ema_rate: float = 0.9999,
+):
+    """Save full training state for seamless resume."""
+    state = {
+        "model": glide_model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "epoch": epoch,
+        "global_iter": global_iter,
+    }
+    if ema_model is not None:
+        state["ema"] = ema_model.state_dict()
+        state["ema_rate"] = ema_rate
+    path = os.path.join(checkpoints_dir, f"training_state_{global_iter:08d}.pt")
+    th.save(state, path)
+    tqdm.write(f"Saved training state to {path}")
+    return path
+
+
+def load_training_state(path: str, glide_model, optimizer, ema_model=None, device="cpu"):
+    """Load full training state. Returns (epoch, global_iter)."""
+    state = th.load(path, map_location=device)
+    weights = state["model"]
+    if any(k.startswith("_orig_mod.") for k in weights):
+        weights = {k.removeprefix("_orig_mod."): v for k, v in weights.items()}
+    glide_model.load_state_dict(weights)
+    optimizer.load_state_dict(state["optimizer"])
+    if ema_model is not None and "ema" in state:
+        ema_model.load_state_dict(state["ema"])
+    epoch = state.get("epoch", 0)
+    global_iter = state.get("global_iter", 0)
+    print(f"Resumed training state from {path} (epoch={epoch}, global_iter={global_iter})")
+    return epoch, global_iter
+
+
 def save_ema_model(
     ema_model, checkpoints_dir: str, train_idx: int, epoch: int, ema_rate: float
 ):

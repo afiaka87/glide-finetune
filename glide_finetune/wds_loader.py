@@ -115,6 +115,8 @@ def glide_wds_loader(
     captions_jsonl_path=None,  # Path to external JSONL captions (required for datacomp-synthetic and datacomp-clip)
     latent_mode=False,  # Latent diffusion mode: resize to 256x256, return caption strings
     clip_threshold=0.0,  # Minimum CLIP score for datacomp-clip (max of orig/gen must meet this)
+    epoch_length=0,  # Number of samples per epoch (0 = infinite, use with resampled=True)
+    color_jitter=0.0,  # Color jitter strength (0 = disabled)
 ):
     if debug:
         print("\nDEBUG: glide_wds_loader called with:")
@@ -379,6 +381,18 @@ def glide_wds_loader(
         else:
             return item[caption_key].decode("utf-8")
 
+    # Color jitter transform (applied after resize, before normalization)
+    _color_jitter = None
+    if color_jitter > 0:
+        from torchvision.transforms import ColorJitter
+        _color_jitter = ColorJitter(
+            brightness=color_jitter,
+            contrast=color_jitter,
+            saturation=color_jitter,
+            hue=min(color_jitter * 0.5, 0.1),
+        )
+        print(f"Color jitter enabled: brightness/contrast/saturation={color_jitter}, hue={min(color_jitter * 0.5, 0.1)}")
+
     def preprocess_dataset(item):
         if debug and processed_count is not None:
             processed_count[0] += 1
@@ -418,6 +432,8 @@ def glide_wds_loader(
         base_pil_image = original_pil_image.resize(
             base_image_shape, resample=PIL.Image.BICUBIC
         ).convert("RGB")
+        if _color_jitter is not None:
+            base_pil_image = _color_jitter(base_pil_image)
         base_tensor = pil_image_to_norm_tensor(base_pil_image)
 
         # The upsample model needs both the base and the upsample images e.g. 64x64 and 256x256.
@@ -443,6 +459,12 @@ def glide_wds_loader(
         # Note: batched() creates an extra dimension, skip it for now
         # The DataLoader will handle batching
     )
+
+    # Set epoch length so the DataLoader iterator terminates after this many samples.
+    # Without this, resampled=True creates an infinite iterator and epochs never end.
+    if epoch_length > 0:
+        transformed_dataset = transformed_dataset.with_epoch(epoch_length)
+        print(f"WebDataset epoch length: {epoch_length:,} samples")
 
     if debug:
         print("\nDEBUG: WebDataset loader setup complete")

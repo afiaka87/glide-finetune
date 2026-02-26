@@ -286,6 +286,13 @@ def parse_init_strategy(init_str, latent_mode, jit_mode=False):
         return ("pretrained", "")
     if init_str == "scratch":
         return ("scratch", "")
+    if init_str.startswith("resume:"):
+        path = init_str[len("resume:") :]
+        if not path:
+            raise SystemExit(
+                "Error: --init resume:<path> requires a path to a training_state_*.pt file."
+            )
+        return ("resume", path)
     if init_str.startswith("checkpoint:"):
         path = init_str[len("checkpoint:") :]
         if not path:
@@ -303,7 +310,7 @@ def parse_init_strategy(init_str, latent_mode, jit_mode=False):
 
     raise SystemExit(
         f"Error: Unknown --init value '{init_str}'. "
-        f"Valid values: pretrained, scratch, checkpoint:<path>, pixel-transfer:<path>"
+        f"Valid values: pretrained, scratch, checkpoint:<path>, resume:<path>, pixel-transfer:<path>"
     )
 
 
@@ -481,13 +488,15 @@ def run_glide_finetune(
     print("Wandb setup.")
 
     # Model setup — resolve checkpoint path relative to checkpoints_dir if needed
-    if init_strategy == "checkpoint" and init_path and not os.path.exists(init_path):
+    if init_strategy in ("checkpoint", "resume") and init_path and not os.path.exists(init_path):
         candidate = os.path.join(checkpoints_dir, init_path)
         if os.path.exists(candidate):
             init_path = candidate
 
     print("=" * 60)
-    if init_strategy == "checkpoint":
+    if init_strategy == "resume":
+        print(f"  RESUMING FULL TRAINING STATE: {init_path}")
+    elif init_strategy == "checkpoint":
         print(f"  RESUMING FROM CHECKPOINT: {init_path}")
     elif init_strategy == "pixel-transfer":
         print(f"  PIXEL-TRANSFER FROM: {init_path}")
@@ -497,11 +506,15 @@ def run_glide_finetune(
         print("  TRAINING FROM SCRATCH (random init)")
     print("=" * 60)
 
+    # For resume, load architecture with scratch init — weights come from training state later
+    model_init_strategy = "scratch" if init_strategy == "resume" else init_strategy
+    model_init_path = "" if init_strategy == "resume" else init_path
+
     jit_flow = None
     if jit_mode:
         glide_model, jit_flow, glide_options = load_jit_model(
-            init_strategy=init_strategy,
-            init_path=init_path,
+            init_strategy=model_init_strategy,
+            init_path=model_init_path,
             precision=precision,
             jit_size=jit_size,
             jit_depth=jit_depth,
@@ -512,14 +525,13 @@ def run_glide_finetune(
             time_mu=time_mu,
             time_sigma=time_sigma,
             cfg_drop_prob=cfg_drop_prob,
-            glide_text_encoder_path=glide_text_encoder_path,
         )
         # For dispatch compat, glide_diffusion is the RectifiedFlow
         glide_diffusion = jit_flow
     elif latent_mode:
         glide_model, glide_diffusion, glide_options = load_latent_model(
-            init_strategy=init_strategy,
-            init_path=init_path,
+            init_strategy=model_init_strategy,
+            init_path=model_init_path,
             precision=precision,
             freeze_transformer=freeze_transformer,
             freeze_diffusion=freeze_diffusion,
@@ -527,8 +539,8 @@ def run_glide_finetune(
         )
     else:
         glide_model, glide_diffusion, glide_options = load_model(
-            init_strategy=init_strategy,
-            init_path=init_path,
+            init_strategy=model_init_strategy,
+            init_path=model_init_path,
             precision=precision,
             freeze_transformer=freeze_transformer,
             freeze_diffusion=freeze_diffusion,
@@ -662,6 +674,8 @@ def run_glide_finetune(
             captions_jsonl_path=captions_jsonl_path,
             latent_mode=latent_mode,
             clip_threshold=clip_threshold,
+            epoch_length=args.wds_epoch_length if args.wds_epoch_length > 0 else len(data_dir) * 10000,
+            color_jitter=args.color_jitter,
         )
         dataset = wds_result["dataset"]
         clip_caption_stats = wds_result["clip_caption_stats"]
@@ -757,6 +771,24 @@ def run_glide_finetune(
         print(f"Setting up EMA with decay rate {ema_rate}")
         ema_model = SimpleEMA(glide_model, decay=ema_rate)
 
+    # Resume full training state (model + optimizer + EMA + epoch/iter)
+    resume_epoch = 0
+    resume_iter_offset = 0
+    if init_strategy == "resume":
+        from glide_finetune.train_util import load_training_state
+
+        resume_epoch, resume_iter_offset = load_training_state(
+            init_path, glide_model, optimizer, ema_model=ema_model, device=device
+        )
+
+    # Apply GLIDE text encoder after resume so it overrides resumed weights
+    if jit_mode and glide_text_encoder_path:
+        assert os.path.exists(glide_text_encoder_path), (
+            f"GLIDE text encoder path does not exist: {glide_text_encoder_path}"
+        )
+        glide_weights = th.load(glide_text_encoder_path, map_location="cpu")
+        glide_model.init_text_from_glide(glide_weights)
+
     # Note: Freezing is already handled in load_model
     # No need for additional requires_grad_ modifications here
 
@@ -782,8 +814,8 @@ def run_glide_finetune(
 
     os.makedirs(current_run_ckpt_dir, exist_ok=True)
 
-    iter_offset = 0
-    for epoch in trange(num_epochs):
+    iter_offset = resume_iter_offset
+    for epoch in trange(resume_epoch, num_epochs):
         print(f"Starting epoch {epoch}")
         iter_offset = run_glide_finetune_epoch(
             glide_model=glide_model,
@@ -858,6 +890,12 @@ def parse_args():
         "--random_hflip",
         action="store_true",
         help="Apply random horizontal flip augmentation during training (50%% probability)",
+    )
+    parser.add_argument(
+        "--color_jitter",
+        type=float,
+        default=0.0,
+        help="Color jitter strength (0 = disabled, 0.1 = mild)",
     )
     parser.add_argument(
         "--uncond_p",
@@ -1069,6 +1107,12 @@ def parse_args():
         "--wds_debug",
         action="store_true",
         help="Enable debug printing for WebDataset loading",
+    )
+    parser.add_argument(
+        "--wds_epoch_length",
+        type=int,
+        default=0,
+        help="Samples per epoch for WebDataset (0 = auto: num_tars * 10000)",
     )
     parser.add_argument(
         "--skip_tar_validation",

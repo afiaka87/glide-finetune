@@ -776,7 +776,6 @@ def load_jit_model(
     time_mu: float = -0.8,
     time_sigma: float = 0.8,
     cfg_drop_prob: float = 0.1,
-    glide_text_encoder_path: str = "",
 ):
     """Load a JiT model and RectifiedFlow instance.
 
@@ -826,16 +825,6 @@ def load_jit_model(
             f"Unknown init_strategy '{init_strategy}' for JiT model. "
             f"Valid strategies: scratch, checkpoint:<path>"
         )
-
-    # Optionally initialize text encoder from GLIDE checkpoint
-    if glide_text_encoder_path:
-        import os
-
-        assert os.path.exists(glide_text_encoder_path), (
-            f"GLIDE text encoder path does not exist: {glide_text_encoder_path}"
-        )
-        glide_weights = th.load(glide_text_encoder_path, map_location="cpu")
-        model.init_text_from_glide(glide_weights)
 
     # Precision conversion
     if precision == "fp16":
