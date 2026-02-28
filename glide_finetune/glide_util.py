@@ -21,16 +21,16 @@ from glide_text2im.tokenizer.bpe import Encoder
 MODEL_TYPES = ["base", "upsample", "base-inpaint", "upsample-inpaint"]
 
 
-def get_uncond_tokens_mask(tokenizer: Encoder):
-    uncond_tokens, uncond_mask = tokenizer.padded_tokens_and_mask([], 128)
+def get_uncond_tokens_mask(tokenizer, context_len: int = 128):
+    uncond_tokens, uncond_mask = tokenizer.padded_tokens_and_mask([], context_len)
     return th.tensor(uncond_tokens), th.tensor(uncond_mask, dtype=th.bool)
 
 
 def get_tokens_and_mask(
-    tokenizer: Encoder, prompt: str = "", context_len: int = 128
+    tokenizer, prompt: str = "", context_len: int = 128
 ) -> Tuple[th.Tensor, th.Tensor]:
     if len(prompt) == 0:
-        return get_uncond_tokens_mask(tokenizer)  # type: ignore
+        return get_uncond_tokens_mask(tokenizer, context_len=context_len)
     else:
         tokens = tokenizer.encode(prompt)
         tokens, mask = tokenizer.padded_tokens_and_mask(tokens, context_len)
@@ -776,6 +776,7 @@ def load_jit_model(
     time_mu: float = -0.8,
     time_sigma: float = 0.8,
     cfg_drop_prob: float = 0.1,
+    text_encoder: str = "glide",
 ):
     """Load a JiT model and RectifiedFlow instance.
 
@@ -806,6 +807,7 @@ def load_jit_model(
         depth=config["depth"],
         heads=config["heads"],
         bottleneck_dim=config["bottleneck_dim"],
+        text_encoder=text_encoder,
     )
 
     # Weight loading
@@ -850,9 +852,11 @@ def load_jit_model(
     }
 
     total_params = sum(p.numel() for p in model.parameters())
-    print(f"JiT-{jit_size}: {total_params:,} parameters "
-          f"(hidden={config['hidden_dim']}, depth={config['depth']}, "
-          f"heads={config['heads']}, patch={config['patch_size']})")
+    print(
+        f"JiT-{jit_size}: {total_params:,} parameters "
+        f"(hidden={config['hidden_dim']}, depth={config['depth']}, "
+        f"heads={config['heads']}, patch={config['patch_size']})"
+    )
 
     return model, flow, options
 
@@ -893,7 +897,9 @@ def sample_jit(
     mask_cond = mask_cond.unsqueeze(0).expand(batch_size, -1).to(device)
 
     # Unconditional tokens for CFG
-    tokens_uncond, mask_uncond = get_uncond_tokens_mask(model.tokenizer)
+    tokens_uncond, mask_uncond = get_uncond_tokens_mask(
+        model.tokenizer, context_len=model.text_ctx
+    )
     tokens_uncond = tokens_uncond.unsqueeze(0).expand(batch_size, -1).to(device)
     mask_uncond = mask_uncond.unsqueeze(0).expand(batch_size, -1).to(device)
 
