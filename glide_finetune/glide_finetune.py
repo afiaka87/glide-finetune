@@ -1,3 +1,4 @@
+import math
 import os
 import signal
 import time
@@ -221,6 +222,7 @@ def run_glide_finetune_epoch(
     jit_sampler: str = "euler",
     jit_sampler_steps: int = 50,
     iter_offset: int = 0,
+    warmup_steps: int = 0,
 ) -> int:
     # Tell wandb to use "iter" (the batch index) as the x-axis for all metrics.
     # This avoids the default auto-incrementing step counter, which diverges
@@ -296,6 +298,14 @@ def run_glide_finetune_epoch(
     # Zero gradients at the start
     optimizer.zero_grad(set_to_none=True)
 
+    # LR warmup state
+    warmup_step_counter = 0
+    target_lr = optimizer.param_groups[0]["lr"]
+    if warmup_steps > 0:
+        for pg in optimizer.param_groups:
+            pg["lr"] = 0.0
+        print(f"LR warmup: 0 -> {target_lr} over {warmup_steps} optimizer steps")
+
     # SIGINT handler: first CTRL+C sets flag for graceful save, second forces exit
     interrupted = False
 
@@ -353,6 +363,15 @@ def run_glide_finetune_epoch(
             current_loss = avg_accumulated_loss
             accumulated_loss_gpu.zero_()
 
+            # NaN/Inf guard (paper checks math.isfinite)
+            if not math.isfinite(avg_accumulated_loss):
+                tqdm.write(
+                    f"WARNING: Non-finite loss ({avg_accumulated_loss}) at iter "
+                    f"{global_iter}, skipping step"
+                )
+                optimizer.zero_grad(set_to_none=True)
+                continue
+
             # Loss spike detection: skip update if loss is way above running average
             skip_step = False
             if loss_ema > 0 and loss_spike_threshold > 0:
@@ -379,6 +398,13 @@ def run_glide_finetune_epoch(
 
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
+
+                # LR warmup: linearly ramp from 0 to target
+                if warmup_steps > 0 and warmup_step_counter < warmup_steps:
+                    warmup_step_counter += 1
+                    warmup_lr = target_lr * (warmup_step_counter / warmup_steps)
+                    for pg in optimizer.param_groups:
+                        pg["lr"] = warmup_lr
 
                 # Update EMA after optimizer step (as per OpenAI's guided-diffusion)
                 if ema_model is not None:
@@ -411,6 +437,7 @@ def run_glide_finetune_epoch(
                 "samples_per_sec": avg_samples_per_sec,
                 "total_samples": samples_processed,
                 "spikes_skipped": spikes_skipped,
+                "lr": optimizer.param_groups[0]["lr"],
             }
             if not skip_step and max_grad_norm > 0:
                 log["grad_norm"] = grad_norm
