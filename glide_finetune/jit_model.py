@@ -10,7 +10,7 @@ Key design choices:
 - adaLN-Zero conditioning (timestep + pooled text → shift/scale/gate)
 - Cross-attention for per-token text conditioning
 - Zero-initialized output layers for identity initialization
-- Text encoder identical to GLIDE's (Transformer from xf.py)
+- Text encoder: GLIDE (512-dim, 76M) or OpenCLIP ViT-L/14 (768-dim, 124M)
 """
 
 from typing import Optional
@@ -26,6 +26,41 @@ from glide_text2im.xf import (
     convert_module_to_bf16,
     convert_module_to_f16,
 )
+
+
+# ---------------------------------------------------------------------------
+# CLIP tokenizer wrapper
+# ---------------------------------------------------------------------------
+
+
+class CLIPTokenizerWrapper:
+    """Wraps OpenCLIP tokenizer to match GLIDE BPE tokenizer interface."""
+
+    def __init__(self, model_name="ViT-L-14"):
+        import open_clip
+
+        self._tokenizer = open_clip.get_tokenizer(model_name)
+        # Access the internal SimpleTokenizer for encode()
+        self._inner = (
+            self._tokenizer.tokenizer
+            if hasattr(self._tokenizer, "tokenizer")
+            else self._tokenizer
+        )
+        self.n_vocab = 49408
+
+    def encode(self, text: str) -> list[int]:
+        """Tokenize text to token IDs (without SOT/EOT)."""
+        return self._inner.encode(text)
+
+    def padded_tokens_and_mask(self, tokens: list[int], text_ctx: int):
+        """Pad/truncate tokens and create attention mask."""
+        SOT, EOT = 49406, 49407
+        tokens = [SOT] + tokens[: text_ctx - 2] + [EOT]
+        mask = [True] * len(tokens)
+        padding = text_ctx - len(tokens)
+        tokens = tokens + [0] * padding
+        mask = mask + [False] * padding
+        return tokens, mask
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +254,8 @@ class JiTModel(nn.Module):
         xf_width: int = 512,
         xf_layers: int = 16,
         xf_heads: int = 8,
+        # Text encoder selection
+        text_encoder: str = "glide",
     ):
         super().__init__()
         self.image_size = image_size
@@ -226,6 +263,7 @@ class JiTModel(nn.Module):
         self.in_channels = in_channels
         self.hidden_dim = hidden_dim
         self.depth = depth
+        self.text_encoder = text_encoder
 
         # Patch dimensions
         self.num_patches = (image_size // patch_size) ** 2  # 256 for 64/4
@@ -253,28 +291,52 @@ class JiTModel(nn.Module):
             nn.Linear(self.cond_dim, self.cond_dim),
         )
 
-        # --- Text encoder (GLIDE-compatible) ---
-        self.text_ctx = text_ctx
-        self.xf_width = xf_width
+        # --- Text encoder ---
+        if text_encoder == "clip":
+            # OpenCLIP ViT-L/14 (DataComp): 768-dim, 77 context, 49408 vocab
+            import open_clip
 
-        # Import tokenizer
-        from glide_text2im.tokenizer.bpe import get_encoder
+            xf_width = 768
+            text_ctx = 77
+            self.text_ctx = text_ctx
+            self.xf_width = xf_width
 
-        self.tokenizer = get_encoder()
+            clip_model, _, _ = open_clip.create_model_and_transforms(
+                "ViT-L-14", pretrained="datacomp_xl_s13b_b90k"
+            )
+            # Extract only text encoder components (drop vision tower to save ~600MB)
+            self.clip_token_embedding = clip_model.token_embedding
+            self.clip_positional_embedding = clip_model.positional_embedding
+            self.clip_transformer = clip_model.transformer
+            self.clip_ln_final = clip_model.ln_final
+            self.clip_text_projection = clip_model.text_projection
+            del clip_model
+            self.tokenizer = CLIPTokenizerWrapper()
 
-        self.token_embedding = nn.Embedding(self.tokenizer.n_vocab, xf_width)
-        self.positional_embedding = nn.Parameter(
-            th.empty(text_ctx, xf_width, dtype=th.float32)
-        )
-        nn.init.normal_(self.positional_embedding, std=0.01)
+            # Projection layers (trainable)
+            self.text_proj = nn.Linear(xf_width, self.cond_dim)
+            self.text_token_proj = nn.Linear(xf_width, hidden_dim)
+        else:
+            # GLIDE text encoder: 512-dim, 128 context, ~16k vocab
+            self.text_ctx = text_ctx
+            self.xf_width = xf_width
 
-        self.transformer = Transformer(text_ctx, xf_width, xf_layers, xf_heads)
-        self.final_ln = LayerNorm(xf_width)
+            from glide_text2im.tokenizer.bpe import get_encoder
 
-        # Pooled text → cond_dim (for adaLN-Zero)
-        self.text_proj = nn.Linear(xf_width, self.cond_dim)
-        # Per-token text → hidden_dim (for cross-attention)
-        self.text_token_proj = nn.Linear(xf_width, hidden_dim)
+            self.tokenizer = get_encoder()
+
+            self.token_embedding = nn.Embedding(self.tokenizer.n_vocab, xf_width)
+            self.positional_embedding = nn.Parameter(
+                th.empty(text_ctx, xf_width, dtype=th.float32)
+            )
+            nn.init.normal_(self.positional_embedding, std=0.01)
+
+            self.transformer = Transformer(text_ctx, xf_width, xf_layers, xf_heads)
+            self.final_ln = LayerNorm(xf_width)
+
+            # Projection layers (trainable)
+            self.text_proj = nn.Linear(xf_width, self.cond_dim)
+            self.text_token_proj = nn.Linear(xf_width, hidden_dim)
 
         # --- Transformer blocks ---
         self.blocks = nn.ModuleList(
@@ -323,6 +385,45 @@ class JiTModel(nn.Module):
             assert (tokens == self.cache["tokens"]).all()
             return self.cache
 
+        if self.text_encoder == "clip":
+            outputs = self._get_text_emb_clip(tokens)
+        else:
+            outputs = self._get_text_emb_glide(tokens)
+
+        if self.cache_text_emb:
+            self.cache = dict(
+                tokens=tokens,
+                xf_pooled=outputs["xf_pooled"].detach(),
+                xf_tokens=outputs["xf_tokens"].detach(),
+            )
+
+        return outputs
+
+    def _get_text_emb_clip(self, tokens: th.Tensor) -> dict:
+        """Text encoding via frozen OpenCLIP ViT-L/14."""
+        x = self.clip_token_embedding(tokens.long())  # [B, 77, 768]
+        x = x + self.clip_positional_embedding
+        x = x.permute(1, 0, 2)  # NLD -> LND
+        x = self.clip_transformer(x)
+        x = x.permute(1, 0, 2)  # LND -> NLD
+        x = self.clip_ln_final(x)
+
+        # Pooled: EOT token (argmax of token IDs) with text_projection
+        pooled = x[th.arange(x.shape[0], device=x.device), tokens.argmax(dim=-1)]
+        pooled = pooled @ self.clip_text_projection
+
+        # L2-normalize CLIP outputs — raw CLIP embeddings have norm ~20-30
+        # which overwhelms the time conditioning (~7). Normalizing to unit
+        # vectors lets the trainable projection layers learn the right scale.
+        pooled = F.normalize(pooled, dim=-1)
+        x = F.normalize(x, dim=-1)
+
+        xf_pooled = self.text_proj(pooled)  # [B, cond_dim]
+        xf_tokens = self.text_token_proj(x)  # [B, 77, hidden_dim]
+        return dict(xf_pooled=xf_pooled, xf_tokens=xf_tokens)
+
+    def _get_text_emb_glide(self, tokens: th.Tensor) -> dict:
+        """Text encoding via GLIDE transformer."""
         xf_in = self.token_embedding(tokens.long())
         xf_in = xf_in + self.positional_embedding[None]
         xf_out = self.transformer(xf_in.to(self.dtype))
@@ -332,17 +433,7 @@ class JiTModel(nn.Module):
         xf_pooled = self.text_proj(xf_out[:, -1])
         # Per-token representation → cross-attention context
         xf_tokens = self.text_token_proj(xf_out)
-
-        outputs = dict(xf_pooled=xf_pooled, xf_tokens=xf_tokens)
-
-        if self.cache_text_emb:
-            self.cache = dict(
-                tokens=tokens,
-                xf_pooled=xf_pooled.detach(),
-                xf_tokens=xf_tokens.detach(),
-            )
-
-        return outputs
+        return dict(xf_pooled=xf_pooled, xf_tokens=xf_tokens)
 
     def del_cache(self):
         """Clear text embedding cache (compat with sampling code)."""
@@ -360,9 +451,16 @@ class JiTModel(nn.Module):
         self.patch_embed.apply(convert_module_to_f16)
         self.pos_embed.data = self.pos_embed.data.half()
         self.time_embed.apply(convert_module_to_f16)
-        self.transformer.apply(convert_module_to_f16)
-        self.token_embedding.to(th.float16)
-        self.positional_embedding.data = self.positional_embedding.data.half()
+        if self.text_encoder == "clip":
+            self.clip_token_embedding.to(th.float16)
+            self.clip_positional_embedding.data = self.clip_positional_embedding.data.half()
+            self.clip_transformer.to(th.float16)
+            self.clip_ln_final.to(th.float16)
+            self.clip_text_projection.data = self.clip_text_projection.data.half()
+        else:
+            self.transformer.apply(convert_module_to_f16)
+            self.token_embedding.to(th.float16)
+            self.positional_embedding.data = self.positional_embedding.data.half()
         self.text_proj.apply(convert_module_to_f16)
         self.text_token_proj.apply(convert_module_to_f16)
         self.blocks.apply(convert_module_to_f16)
@@ -374,14 +472,57 @@ class JiTModel(nn.Module):
         self.patch_embed.apply(convert_module_to_bf16)
         self.pos_embed.data = self.pos_embed.data.bfloat16()
         self.time_embed.apply(convert_module_to_bf16)
-        self.transformer.apply(convert_module_to_bf16)
-        self.token_embedding.to(th.bfloat16)
-        self.positional_embedding.data = self.positional_embedding.data.bfloat16()
+        if self.text_encoder == "clip":
+            self.clip_token_embedding.to(th.bfloat16)
+            self.clip_positional_embedding.data = self.clip_positional_embedding.data.bfloat16()
+            self.clip_transformer.to(th.bfloat16)
+            self.clip_ln_final.to(th.bfloat16)
+            self.clip_text_projection.data = self.clip_text_projection.data.bfloat16()
+        else:
+            self.transformer.apply(convert_module_to_bf16)
+            self.token_embedding.to(th.bfloat16)
+            self.positional_embedding.data = self.positional_embedding.data.bfloat16()
         self.text_proj.apply(convert_module_to_bf16)
         self.text_token_proj.apply(convert_module_to_bf16)
         self.blocks.apply(convert_module_to_bf16)
         self.final_layer.linear.apply(convert_module_to_bf16)
         self.final_layer.adaLN_modulation.apply(convert_module_to_bf16)
+
+    # ----- Text encoder freezing -----
+
+    def freeze_text_encoder(self):
+        """Freeze the text encoder core, keeping bridge layers trainable.
+
+        For CLIP: freezes clip_text_model.* (all of it).
+        For GLIDE: freezes transformer, embeddings, LN.
+        text_proj and text_token_proj always stay trainable.
+        """
+        frozen = 0
+        if self.text_encoder == "clip":
+            for name, param in self.named_parameters():
+                if name.startswith("clip_"):
+                    param.requires_grad = False
+                    frozen += 1
+        else:
+            for name, param in self.named_parameters():
+                if any(
+                    name.startswith(prefix)
+                    for prefix in [
+                        "token_embedding",
+                        "positional_embedding",
+                        "transformer.",
+                        "final_ln.",
+                    ]
+                ):
+                    param.requires_grad = False
+                    frozen += 1
+        trainable = sum(1 for p in self.parameters() if p.requires_grad)
+        total = sum(1 for p in self.parameters())
+        encoder_name = "CLIP ViT-L/14" if self.text_encoder == "clip" else "GLIDE"
+        print(
+            f"JiT: froze {frozen} {encoder_name} text encoder params "
+            f"({trainable}/{total} params still trainable)"
+        )
 
     # ----- Weight initialization from GLIDE -----
 
@@ -390,7 +531,11 @@ class JiTModel(nn.Module):
 
         Loads: transformer, final_ln, token_embedding, positional_embedding.
         Does NOT load: text_proj, text_token_proj (different architecture).
+        Skipped entirely when using CLIP text encoder.
         """
+        if self.text_encoder == "clip":
+            print("JiT: skipping GLIDE text init (using CLIP text encoder)")
+            return
         # Strip _orig_mod. prefix if present (torch.compile)
         if any(k.startswith("_orig_mod.") for k in state_dict):
             state_dict = {
