@@ -122,9 +122,12 @@ class RectifiedFlow:
         t = th.full((B,), t_scalar, device=z.device, dtype=z.dtype)
 
         # Check if we should apply CFG at this timestep
+        # Match paper: t < high, and (low == 0 or t > low) — exclusive lower bound
+        low, high = self.cfg_interval
         if (
             guidance_scale > 1.0
-            and self.cfg_interval[0] <= t_scalar <= self.cfg_interval[1]
+            and t_scalar < high
+            and (low == 0 or t_scalar > low)
         ):
             # Double batch for CFG
             z_double = th.cat([z, z], dim=0)
