@@ -39,6 +39,7 @@ def save_training_state(
     if ema_model is not None:
         state["ema"] = ema_model.state_dict()
         state["ema_rate"] = ema_rate
+        state["ema_step"] = getattr(ema_model, "step", 0)
     path = os.path.join(checkpoints_dir, f"training_state_{global_iter:08d}.pt")
     th.save(state, path)
     tqdm.write(f"Saved training state to {path}")
@@ -55,6 +56,8 @@ def load_training_state(path: str, glide_model, optimizer, ema_model=None, devic
     optimizer.load_state_dict(state["optimizer"])
     if ema_model is not None and "ema" in state:
         ema_model.load_state_dict(state["ema"])
+        if hasattr(ema_model, "step"):
+            ema_model.step = state.get("ema_step", 0)
     epoch = state.get("epoch", 0)
     global_iter = state.get("global_iter", 0)
     print(f"Resumed training state from {path} (epoch={epoch}, global_iter={global_iter})")
