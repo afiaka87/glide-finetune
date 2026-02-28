@@ -453,7 +453,10 @@ def run_glide_finetune(
     jit_sampler="euler",
     jit_sampler_steps=50,
     glide_text_encoder_path="",
+    freeze_text_encoder=False,
+    text_encoder="glide",
     cfg_drop_prob=0.1,
+    warmup_steps=5000,
 ):
     if "~" in data_dir:
         data_dir = os.path.expanduser(data_dir)
@@ -470,7 +473,9 @@ def run_glide_finetune(
 
     # JiT mode overrides: CFG dropout is handled internally by RectifiedFlow
     if jit_mode and uncond_p > 0:
-        print(f"JiT mode: overriding uncond_p={uncond_p} to 0.0 (CFG dropout handled by RectifiedFlow cfg_drop_prob={cfg_drop_prob})")
+        print(
+            f"JiT mode: overriding uncond_p={uncond_p} to 0.0 (CFG dropout handled by RectifiedFlow cfg_drop_prob={cfg_drop_prob})"
+        )
         uncond_p = 0.0
 
     # Start wandb logging
@@ -488,7 +493,11 @@ def run_glide_finetune(
     print("Wandb setup.")
 
     # Model setup — resolve checkpoint path relative to checkpoints_dir if needed
-    if init_strategy in ("checkpoint", "resume") and init_path and not os.path.exists(init_path):
+    if (
+        init_strategy in ("checkpoint", "resume")
+        and init_path
+        and not os.path.exists(init_path)
+    ):
         candidate = os.path.join(checkpoints_dir, init_path)
         if os.path.exists(candidate):
             init_path = candidate
@@ -525,6 +534,7 @@ def run_glide_finetune(
             time_mu=time_mu,
             time_sigma=time_sigma,
             cfg_drop_prob=cfg_drop_prob,
+            text_encoder=text_encoder,
         )
         # For dispatch compat, glide_diffusion is the RectifiedFlow
         glide_diffusion = jit_flow
@@ -674,8 +684,11 @@ def run_glide_finetune(
             captions_jsonl_path=captions_jsonl_path,
             latent_mode=latent_mode,
             clip_threshold=clip_threshold,
-            epoch_length=args.wds_epoch_length if args.wds_epoch_length > 0 else len(data_dir) * 10000,
+            epoch_length=args.wds_epoch_length
+            if args.wds_epoch_length > 0
+            else len(data_dir) * 10000,
             color_jitter=args.color_jitter,
+            text_ctx=glide_options["text_ctx"],
         )
         dataset = wds_result["dataset"]
         clip_caption_stats = wds_result["clip_caption_stats"]
@@ -757,6 +770,19 @@ def run_glide_finetune(
         )
     if use_fused_adam and th.cuda.is_available() and str(device) != "cpu":
         adam_kwargs["fused"] = True
+    # Apply GLIDE text encoder override before freezing (only for glide text encoder)
+    if jit_mode and glide_text_encoder_path and text_encoder == "glide":
+        assert os.path.exists(glide_text_encoder_path), (
+            f"GLIDE text encoder path does not exist: {glide_text_encoder_path}"
+        )
+        glide_weights = th.load(glide_text_encoder_path, map_location="cpu")
+        glide_model.init_text_from_glide(glide_weights)
+
+    # Freeze text encoder core to prevent drift (text_proj/text_token_proj stay trainable)
+    # Must happen before optimizer creation so param counts match saved state on resume
+    if jit_mode and freeze_text_encoder:
+        glide_model.freeze_text_encoder()
+
     optimizer_cls = th.optim.Adam if jit_mode else th.optim.AdamW
     optimizer = optimizer_cls(
         [x for x in glide_model.parameters() if x.requires_grad],
@@ -781,17 +807,6 @@ def run_glide_finetune(
             init_path, glide_model, optimizer, ema_model=ema_model, device=device
         )
 
-    # Apply GLIDE text encoder after resume so it overrides resumed weights
-    if jit_mode and glide_text_encoder_path:
-        assert os.path.exists(glide_text_encoder_path), (
-            f"GLIDE text encoder path does not exist: {glide_text_encoder_path}"
-        )
-        glide_weights = th.load(glide_text_encoder_path, map_location="cpu")
-        glide_model.init_text_from_glide(glide_weights)
-
-    # Note: Freezing is already handled in load_model
-    # No need for additional requires_grad_ modifications here
-
     # Training setup
     outputs_dir = "./outputs"
     os.makedirs(outputs_dir, exist_ok=True)
@@ -815,6 +830,7 @@ def run_glide_finetune(
     os.makedirs(current_run_ckpt_dir, exist_ok=True)
 
     iter_offset = resume_iter_offset
+    effective_warmup = warmup_steps  # Only warm up in first epoch
     for epoch in trange(resume_epoch, num_epochs):
         print(f"Starting epoch {epoch}")
         iter_offset = run_glide_finetune_epoch(
@@ -862,7 +878,9 @@ def run_glide_finetune(
             jit_sampler=jit_sampler,
             jit_sampler_steps=jit_sampler_steps,
             iter_offset=iter_offset,
+            warmup_steps=effective_warmup,
         )
+        effective_warmup = 0  # No warmup on subsequent epochs
 
 
 def parse_args():
@@ -1234,17 +1252,43 @@ def parse_args():
         choices=["B", "L", "H", "G"],
         help="JiT model size preset (B=768d/12L, L=1024d/24L, H=1280d/32L, G=1536d/40L)",
     )
-    parser.add_argument("--jit_depth", type=int, default=0, help="Override JiT depth (0=use preset)")
-    parser.add_argument("--jit_hidden_dim", type=int, default=0, help="Override JiT hidden dim (0=use preset)")
-    parser.add_argument("--jit_heads", type=int, default=0, help="Override JiT attention heads (0=use preset)")
-    parser.add_argument("--jit_patch_size", type=int, default=0, help="Override JiT patch size (0=use preset)")
-    parser.add_argument("--jit_bottleneck_dim", type=int, default=0, help="Override JiT bottleneck dim (0=use preset)")
     parser.add_argument(
-        "--time_mu", type=float, default=-0.8,
+        "--jit_depth", type=int, default=0, help="Override JiT depth (0=use preset)"
+    )
+    parser.add_argument(
+        "--jit_hidden_dim",
+        type=int,
+        default=0,
+        help="Override JiT hidden dim (0=use preset)",
+    )
+    parser.add_argument(
+        "--jit_heads",
+        type=int,
+        default=0,
+        help="Override JiT attention heads (0=use preset)",
+    )
+    parser.add_argument(
+        "--jit_patch_size",
+        type=int,
+        default=0,
+        help="Override JiT patch size (0=use preset)",
+    )
+    parser.add_argument(
+        "--jit_bottleneck_dim",
+        type=int,
+        default=0,
+        help="Override JiT bottleneck dim (0=use preset)",
+    )
+    parser.add_argument(
+        "--time_mu",
+        type=float,
+        default=-0.8,
         help="Logit-normal time sampling mean (default: -0.8)",
     )
     parser.add_argument(
-        "--time_sigma", type=float, default=0.8,
+        "--time_sigma",
+        type=float,
+        default=0.8,
         help="Logit-normal time sampling std (default: 0.8)",
     )
     parser.add_argument(
@@ -1267,10 +1311,29 @@ def parse_args():
         help="Path to GLIDE checkpoint to initialize JiT text encoder from",
     )
     parser.add_argument(
+        "--freeze_text_encoder",
+        action="store_true",
+        help="Freeze the text encoder core (transformer, embeddings, LN). "
+        "text_proj and text_token_proj bridge layers remain trainable.",
+    )
+    parser.add_argument(
+        "--text_encoder",
+        type=str,
+        default="glide",
+        choices=["glide", "clip"],
+        help="Text encoder for JiT mode: 'glide' (512-dim, 76M) or 'clip' (OpenCLIP ViT-L/14, 768-dim, 124M)",
+    )
+    parser.add_argument(
         "--cfg_drop_prob",
         type=float,
         default=0.1,
         help="CFG dropout probability for JiT training (default: 0.1)",
+    )
+    parser.add_argument(
+        "--warmup_steps",
+        type=int,
+        default=5000,
+        help="Linear LR warmup over N optimizer steps (0 to disable, e.g. on resume)",
     )
 
     args = parser.parse_args()
@@ -1354,7 +1417,9 @@ if __name__ == "__main__":
         data_dir = args.data_dir
 
     # Parse --init and --train into structured values
-    init_strategy, init_path = parse_init_strategy(args.init, args.latent_mode, args.jit_mode)
+    init_strategy, init_path = parse_init_strategy(
+        args.init, args.latent_mode, args.jit_mode
+    )
     freeze_transformer, freeze_diffusion, reinit_transformer, reinit_unet = (
         parse_train_scope(args.train)
     )
@@ -1435,5 +1500,8 @@ if __name__ == "__main__":
         jit_sampler=args.jit_sampler,
         jit_sampler_steps=args.jit_sampler_steps,
         glide_text_encoder_path=args.glide_text_encoder_path,
+        freeze_text_encoder=args.freeze_text_encoder,
+        text_encoder=args.text_encoder,
         cfg_drop_prob=args.cfg_drop_prob,
+        warmup_steps=args.warmup_steps,
     )
