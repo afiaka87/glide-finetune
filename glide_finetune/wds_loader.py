@@ -117,6 +117,7 @@ def glide_wds_loader(
     clip_threshold=0.0,  # Minimum CLIP score for datacomp-clip (max of orig/gen must meet this)
     epoch_length=0,  # Number of samples per epoch (0 = infinite, use with resampled=True)
     color_jitter=0.0,  # Color jitter strength (0 = disabled)
+    text_ctx=128,  # Text context length for tokenizer padding
 ):
     if debug:
         print("\nDEBUG: glide_wds_loader called with:")
@@ -408,11 +409,11 @@ def glide_wds_loader(
         if not is_uncond:
             caption_text = _extract_caption(item)
 
-        # Tokenize for the GLIDE text transformer
+        # Tokenize for the text transformer
         if is_uncond:
-            tokens, mask = get_uncond_tokens_mask(tokenizer)
+            tokens, mask = get_uncond_tokens_mask(tokenizer, context_len=text_ctx)
         else:
-            tokens, mask = get_tokens_and_mask(tokenizer, caption_text)
+            tokens, mask = get_tokens_and_mask(tokenizer, caption_text, context_len=text_ctx)
 
         image_data = item[_find_image_key(item) or image_key]
         original_pil_image = PIL.Image.open(io.BytesIO(image_data))
